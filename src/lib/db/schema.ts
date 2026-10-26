@@ -32,6 +32,10 @@ export const businesses = pgTable("businesses", {
   whatsapp: text("whatsapp"),
   telegram: text("telegram"),
   hours: text("hours"), // часы работы, например «Ежедневно 10:00–21:00»
+  orgUrl: text("org_url"), // ссылка на организацию в Яндекс Картах / Бизнесе
+  orgId: text("org_id"), // ID организации (permalink) — для BusinessId в Директе
+  legalInfo: text("legal_info"), // «ИП Иванова А. А., ИНН …» — для блока «о компании» в VK и маркировки
+  geo: jsonb("geo").$type<{ lat: number; lng: number; source?: string } | null>(), // координаты адреса для показов в радиусе
   siteUrl: text("site_url"), // если пусто — объявления ведут на нашу страницу записи
   description: text("description").notNull().default(""),
   services: jsonb("services").$type<Service[]>().notNull().default([]),
@@ -191,6 +195,10 @@ export const leads = pgTable("leads", {
   source: text("source"), // yandex | vk | other
   campaignExt: text("campaign_ext"),
   adExt: text("ad_ext"),
+  status: text("status"), // null — новая | booked (записался) | no_answer (не дозвонились) | spam
+  statusAt: timestamp("status_at", { withTimezone: true }),
+  metrikaClientId: text("metrika_client_id"), // ClientID Метрики — для офлайн-конверсий
+  yclid: text("yclid"),
   createdAt: createdAt(),
 }, (t) => [index("leads_business").on(t.businessId, t.createdAt)]);
 

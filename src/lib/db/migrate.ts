@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS businesses (
   whatsapp text,
   telegram text,
   hours text,
+  org_url text,
+  org_id text,
+  legal_info text,
+  geo jsonb,
   site_url text,
   description text NOT NULL DEFAULT '',
   services jsonb NOT NULL DEFAULT '[]',
@@ -180,6 +184,10 @@ CREATE TABLE IF NOT EXISTS leads (
   source text,
   campaign_ext text,
   ad_ext text,
+  status text,
+  status_at timestamptz,
+  metrika_client_id text,
+  yclid text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS leads_business ON leads(business_id, created_at);
@@ -227,4 +235,12 @@ CREATE TABLE IF NOT EXISTS notify_settings (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS leads_business_contact ON leads(business_id, contact);
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS org_url text;
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS org_id text;
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS legal_info text;
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS geo jsonb;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS status text;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS status_at timestamptz;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS metrika_client_id text;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS yclid text;
 `;
