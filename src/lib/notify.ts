@@ -1,9 +1,10 @@
 import "server-only";
-import { and, eq, gte, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { randomBytes } from "node:crypto";
+import { and, eq, gte, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
-import { mac, macEqual } from "./crypto";
+import { mac } from "./crypto";
 import { reportNow } from "./engine/report";
-import { addDays, appUrl, errorText, isoDay, pl, rub } from "./util";
+import { addDays, appUrl, isoDay, pl, rub } from "./util";
 
 /**
  * Уведомления владельцу: новые заявки и утренняя сводка — в Telegram.
@@ -31,8 +32,20 @@ async function tg<T = unknown>(method: string, body: Record<string, unknown> = {
     signal: AbortSignal.timeout(5000),
   });
   const d = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: T; description?: string; error_code?: number };
-  if (!d.ok) throw new TgError(d.description || `Telegram ответил ошибкой ${res.status}`, d.error_code ?? res.status);
+  if (!d.ok) throw new TgError(d.description || `HTTP ${res.status}`, d.error_code ?? res.status);
   return d.result as T;
+}
+
+/** Понятная причина сбоя запроса к Telegram — без «Telegram не ответил: Telegram ответил ошибкой…» */
+export function tgErrorText(e: unknown): string {
+  if (e instanceof TgError) {
+    if (e.code === 401 || e.code === 404) return "Telegram не принял токен бота — проверьте TELEGRAM_BOT_TOKEN на сервере";
+    if (e.code === 429) return "Telegram просит подождать: слишком много сообщений подряд. Попробуйте через минуту";
+    return `Telegram вернул ошибку ${e.code}: ${e.message}`;
+  }
+  const name = (e as { name?: string })?.name;
+  if (name === "TimeoutError" || name === "AbortError") return "Telegram не ответил за 5 секунд — попробуйте чуть позже";
+  return "Сервер не смог связаться с Telegram (api.telegram.org недоступен) — попробуйте позже или задайте TELEGRAM_API_URL";
 }
 
 export const esc = (s: unknown) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -71,32 +84,61 @@ const webhookMode = () => appUrl().startsWith("https://");
 export async function ensureWebhook() {
   if (!tgConfigured() || !webhookMode()) return;
   const url = `${appUrl()}/api/notify/telegram`;
-  const fp = mac(`wh:${url}:${token()}`, 16);
+  const fp = mac(`wh2:${url}:${token()}`, 16); // wh2: добавились нажатия кнопок (callback_query)
   if ((await kvGet<string>("tg:webhook")) === fp) return;
-  await tg("setWebhook", { url, secret_token: webhookSecret(), allowed_updates: ["message"], drop_pending_updates: true });
+  await tg("setWebhook", { url, secret_token: webhookSecret(), allowed_updates: ["message", "callback_query"], drop_pending_updates: true });
   await kvSet("tg:webhook", fp);
 }
 
-// --- Код привязки: подпись (16) + срок действия (7, base36, секунды) + id бизнеса. Только [A-Za-z0-9_-], ≤ 64 символов
-const LINK_TTL_SEC = 3600;
-export function linkCode(businessId: string, now = Date.now()): string {
-  const exp = Math.floor(now / 1000 + LINK_TTL_SEC).toString(36).padStart(7, "0");
-  return mac(`tg-link:${exp}:${businessId}`, 16) + exp + businessId;
+// --- Код привязки: случайный, одноразовый, живёт 15 минут. Хранится в kv: tg:link:<код> → { businessId, exp }.
+// Привязка — в два шага: /start <код> → бот спрашивает «Подключить уведомления для «…»?» → кнопка «Подключить».
+// Так чужой человек, увидевший ссылку, не получит заявки незаметно: код гаснет после первого подтверждения,
+// а владелец видит на странице настроек, какой чат подключён.
+export const LINK_TTL_MIN = 15;
+type LinkRec = { businessId: string; exp: number };
+
+async function newLinkCode(businessId: string): Promise<string> {
+  const db = await getDb();
+  // Старые коды этого бизнеса больше не нужны; заодно подчищаем просроченные
+  await db.delete(schema.kv).where(and(sql`${schema.kv.key} like 'tg:link:%'`, or(sql`(${schema.kv.value}->>'businessId') = ${businessId}`, sql`(${schema.kv.value}->>'exp')::bigint < ${Date.now()}`)));
+  const code = randomBytes(18).toString("base64url"); // 24 символа [A-Za-z0-9_-]
+  await kvSet(`tg:link:${code}`, { businessId, exp: Date.now() + LINK_TTL_MIN * 60e3 } satisfies LinkRec);
+  return code;
 }
 
-export function parseLinkCode(code: string): string | null {
-  if (!/^[A-Za-z0-9_-]{24,64}$/.test(code)) return null;
-  const sig = code.slice(0, 16), exp = code.slice(16, 23), bid = code.slice(23);
-  if (!macEqual(sig, mac(`tg-link:${exp}:${bid}`, 16))) return null;
-  if (parseInt(exp, 36) * 1000 < Date.now()) return null;
-  return bid;
+async function peekLink(code: string): Promise<LinkRec | null> {
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(code)) return null;
+  const r = await kvGet<LinkRec>(`tg:link:${code}`);
+  return r && r.exp > Date.now() ? r : null;
+}
+
+/** Погасить код: удаляем атомарно, второй раз он не сработает */
+async function takeLink(code: string): Promise<LinkRec | null> {
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(code)) return null;
+  const db = await getDb();
+  const [r] = await db.delete(schema.kv).where(eq(schema.kv.key, `tg:link:${code}`)).returning({ value: schema.kv.value });
+  const v = r?.value as LinkRec | undefined;
+  return v && v.exp > Date.now() ? v : null;
 }
 
 export async function linkUrl(businessId: string): Promise<string | null> {
   const bot = await botUsername();
   if (!bot) return null;
   await ensureWebhook();
-  return `https://t.me/${bot}?start=${linkCode(businessId)}`;
+  return `https://t.me/${bot}?start=${await newLinkCode(businessId)}`;
+}
+
+// --- Почему уведомления отключились: показываем владельцу в настройках
+export type Unlinked = { reason: string; at: string; chat: string | null };
+export async function setUnlinked(businessId: string, reason: string, chat: string | null) {
+  await kvSet(`tg:unlinked:${businessId}`, { reason, at: new Date().toISOString(), chat } satisfies Unlinked);
+}
+export async function getUnlinked(businessId: string): Promise<Unlinked | null> {
+  return kvGet<Unlinked>(`tg:unlinked:${businessId}`);
+}
+async function clearUnlinked(businessId: string) {
+  const db = await getDb();
+  await db.delete(schema.kv).where(eq(schema.kv.key, `tg:unlinked:${businessId}`));
 }
 
 export async function getNotify(businessId: string) {
@@ -122,44 +164,96 @@ export async function sendToBusiness(businessId: string, html: string): Promise<
     await tg("sendMessage", { chat_id: s.telegramChatId, text: html, parse_mode: "HTML", link_preview_options: { is_disabled: true } });
     return { ok: true };
   } catch (e) {
-    if (e instanceof TgError && (e.code === 403 || /chat not found/i.test(e.message))) {
+    if (e instanceof TgError && (e.code === 403 || /chat not found|bot was kicked|user is deactivated/i.test(e.message))) {
+      const why = /kicked/i.test(e.message)
+        ? "бота удалили из группы, куда приходили заявки"
+        : /deactivated/i.test(e.message)
+          ? "аккаунт Telegram, куда приходили заявки, удалён"
+          : /chat not found/i.test(e.message)
+            ? "чат, куда приходили заявки, удалён"
+            : "бота остановили или заблокировали в Telegram";
       await saveNotify(businessId, { telegramChatId: null, telegramName: null });
-      return { ok: false, error: "Бот заблокирован или чат удалён — подключите Telegram заново" };
+      await setUnlinked(businessId, why, s.telegramName);
+      return { ok: false, error: `Сообщение не дошло: ${why}. Уведомления отключены — подключите Telegram заново в настройках.` };
     }
-    if (e instanceof TgError && e.code === 401) return { ok: false, error: "Telegram не принял токен бота — проверьте TELEGRAM_BOT_TOKEN на сервере" };
-    return { ok: false, error: `Telegram не ответил: ${errorText(e)}` };
+    return { ok: false, error: tgErrorText(e) };
   }
 }
 
-const reply = (chatId: number | string, text: string) => tg("sendMessage", { chat_id: chatId, text, parse_mode: "HTML" }).catch(() => {});
+const reply = (chatId: number | string, text: string, extra: Record<string, unknown> = {}) => tg("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", ...extra }).catch(() => {});
 
-type TgUpdate = { update_id: number; message?: { text?: string; chat: { id: number; title?: string; username?: string; first_name?: string; last_name?: string } } };
+type TgChat = { id: number; type?: string; title?: string; username?: string; first_name?: string; last_name?: string };
+type TgUpdate = {
+  update_id: number;
+  message?: { text?: string; chat: TgChat };
+  callback_query?: { id: string; data?: string; message?: { message_id: number; chat: TgChat } };
+};
 
-/** Обработка сообщения боту: /start <код> — привязка, /stop — отвязка */
+const chatName = (chat: TgChat) => (chat.title || (chat.username ? `@${chat.username}` : [chat.first_name, chat.last_name].filter(Boolean).join(" ")) || "Telegram").slice(0, 80);
+
+async function businessName(id: string) {
+  const db = await getDb();
+  const [b] = await db.select({ id: schema.businesses.id, name: schema.businesses.name }).from(schema.businesses).where(eq(schema.businesses.id, id));
+  return b ?? null;
+}
+
+const STALE = `Ссылка не сработала: она одноразовая и действует ${LINK_TTL_MIN} минут. Откройте «Настройки» в сервисе «Полный зал» и нажмите «Подключить Telegram» ещё раз.`;
+
+/** Обработка сообщений боту: /start <код> — спросить подтверждение, кнопка «Подключить» — привязать, /stop — отвязать */
 export async function processUpdate(u: TgUpdate) {
+  const db = await getDb();
+  const cq = u.callback_query;
+  if (cq) {
+    const answer = (text?: string) => tg("answerCallbackQuery", { callback_query_id: cq.id, ...(text ? { text } : {}) }).catch(() => {});
+    const chat = cq.message?.chat;
+    const [act, code] = String(cq.data || "").split(":");
+    if (!chat || !code) return void (await answer());
+    const edit = (text: string) => tg("editMessageText", { chat_id: chat.id, message_id: cq.message!.message_id, text, parse_mode: "HTML" }).catch(() => {});
+    if (act === "no") {
+      await answer();
+      await edit("Не подключили. Если это была не ваша ссылка — всё в порядке, ничего не изменилось.");
+      return;
+    }
+    if (act !== "link") return void (await answer());
+    const rec = await takeLink(code);
+    if (!rec) {
+      await answer("Ссылка устарела");
+      await edit(STALE);
+      return;
+    }
+    const b = await businessName(rec.businessId);
+    if (!b) return void (await edit("Бизнес не найден. Попробуйте подключить Telegram заново из настроек."));
+    await saveNotify(b.id, { telegramChatId: String(chat.id), telegramName: chatName(chat), linkedAt: new Date() });
+    await clearUnlinked(b.id);
+    await answer("Подключено");
+    await edit(`Готово! Новые заявки «${esc(b.name)}» будут приходить сюда сразу, а по утрам — короткая сводка.\n\nОтключить — в настройках сервиса или командой /stop.`);
+    return;
+  }
+
   const m = u.message;
   if (!m?.text) return;
   const chat = m.chat;
   const text = m.text.trim();
-  const db = await getDb();
   if (text.startsWith("/start")) {
     const code = text.slice(6).trim();
-    const bid = code ? parseLinkCode(code) : null;
-    if (!bid) {
-      await reply(chat.id, code
-        ? "Ссылка устарела. Откройте «Настройки» в сервисе «Полный зал» и нажмите «Подключить Telegram» ещё раз."
-        : "Это бот сервиса «Полный зал». Чтобы получать сюда заявки, откройте «Настройки» в сервисе и нажмите «Подключить Telegram».");
+    if (!code) {
+      await reply(chat.id, "Это бот сервиса «Полный зал». Чтобы получать сюда заявки, откройте «Настройки» в сервисе и нажмите «Подключить Telegram».");
       return;
     }
-    const [b] = await db.select({ id: schema.businesses.id, name: schema.businesses.name }).from(schema.businesses).where(eq(schema.businesses.id, bid));
+    const rec = await peekLink(code);
+    if (!rec) return void (await reply(chat.id, STALE));
+    const b = await businessName(rec.businessId);
     if (!b) return void (await reply(chat.id, "Бизнес не найден. Попробуйте подключить Telegram заново из настроек."));
-    const name = chat.title || (chat.username ? `@${chat.username}` : [chat.first_name, chat.last_name].filter(Boolean).join(" ")) || "Telegram";
-    await saveNotify(b.id, { telegramChatId: String(chat.id), telegramName: name.slice(0, 80), linkedAt: new Date() });
-    await reply(chat.id, `Готово! Новые заявки «${esc(b.name)}» будут приходить сюда сразу, а по утрам — короткая сводка.\n\nОтключить — в настройках сервиса или командой /stop.`);
+    await reply(
+      chat.id,
+      `Подключить уведомления для «${esc(b.name)}»?\n\nСюда будут приходить новые заявки с именем и телефоном клиента. Подключайте, только если это ваш бизнес и вы сами нажали «Подключить Telegram» в сервисе «Полный зал».`,
+      { reply_markup: { inline_keyboard: [[{ text: "Подключить", callback_data: `link:${code}` }, { text: "Это не я", callback_data: `no:${code}` }]] } },
+    );
     return;
   }
   if (text.startsWith("/stop")) {
-    await db.update(schema.notifySettings).set({ telegramChatId: null, telegramName: null, updatedAt: new Date() }).where(eq(schema.notifySettings.telegramChatId, String(chat.id)));
+    const rows = await db.update(schema.notifySettings).set({ telegramChatId: null, telegramName: null, updatedAt: new Date() }).where(eq(schema.notifySettings.telegramChatId, String(chat.id))).returning({ businessId: schema.notifySettings.businessId });
+    for (const r of rows) await setUnlinked(r.businessId, "уведомления отключили командой /stop в Telegram", chatName(chat));
     await reply(chat.id, "Уведомления отключены. Включить снова можно в настройках сервиса «Полный зал».");
     return;
   }
@@ -170,7 +264,7 @@ export async function processUpdate(u: TgUpdate) {
 export async function pollUpdates() {
   if (!tgConfigured() || webhookMode()) return;
   const offset = (await kvGet<number>("tg:offset")) ?? 0;
-  const list = await tg<TgUpdate[]>("getUpdates", { offset, timeout: 0, allowed_updates: ["message"] }).catch(() => [] as TgUpdate[]);
+  const list = await tg<TgUpdate[]>("getUpdates", { offset, timeout: 0, allowed_updates: ["message", "callback_query"] }).catch(() => [] as TgUpdate[]);
   for (const u of list) await processUpdate(u).catch(() => {});
   if (list.length) await kvSet("tg:offset", list[list.length - 1].update_id + 1);
 }
@@ -199,6 +293,19 @@ export async function notifyLead(l: { businessId: string; businessName: string; 
   return sendToBusiness(l.businessId, lines.join("\n"));
 }
 
+/** Всплеск заявок: шлём одно предупреждение вместо десятков сообщений */
+export async function notifySuspect(businessId: string, name: string, perHour: number) {
+  if (!tgConfigured()) return { ok: false };
+  return sendToBusiness(businessId, [
+    `<b>Подозрительно много заявок</b> · ${esc(name)}`,
+    "",
+    `За последний час пришло больше ${perHour} заявок со страницы записи — похоже на спам или накрутку.`,
+    "Мы их сохраняем, но больше не присылаем по одной и не учитываем в решениях робота. Проверьте их в разделе «Статистика → Последние обращения» — там они помечены «похоже на спам».",
+    "",
+    `${appUrl()}/app/stats`,
+  ].join("\n"));
+}
+
 /** Утренняя сводка за вчера: расход, обращения, что сделал робот. null — если сообщать нечего. */
 export async function buildDigest(businessId: string): Promise<string | null> {
   const db = await getDb();
@@ -215,7 +322,7 @@ export async function buildDigest(businessId: string): Promise<string | null> {
   const [own] = await db
     .select({ n: sql<number>`count(*)::int`, untracked: sql<number>`count(*) filter (where ${schema.leads.adExt} is null)::int`, forms: sql<number>`count(*) filter (where ${schema.leads.contact} is not null)::int` })
     .from(schema.leads)
-    .where(and(eq(schema.leads.businessId, b.id), gte(schema.leads.createdAt, dayStart), lt(schema.leads.createdAt, dayEnd)));
+    .where(and(eq(schema.leads.businessId, b.id), ne(schema.leads.kind, "suspect"), gte(schema.leads.createdAt, dayStart), lt(schema.leads.createdAt, dayEnd)));
   const robot = await db
     .select({ title: schema.changes.title })
     .from(schema.changes)

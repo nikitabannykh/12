@@ -12,7 +12,7 @@ export type BusinessInput = {
   description: string; services: Service[]; advantages: string[]; audience: string; offer: string; review: string; leadToClientRate: number;
 };
 
-export function BusinessForm({ initial, niches, next, aiOn }: { initial: BusinessInput; niches: NicheLite[]; next: string; aiOn: boolean }) {
+export function BusinessForm({ initial, niches, next, aiOn, nicheLock = null }: { initial: BusinessInput; niches: NicheLite[]; next: string; aiOn: boolean; nicheLock?: "launched" | "plan" | null }) {
   const [f, setF] = useState<BusinessInput>({ ...initial, services: initial.services.length ? initial.services : [{ name: "", price: "" }] });
   const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -81,9 +81,14 @@ export function BusinessForm({ initial, niches, next, aiOn }: { initial: Busines
           <span className="label">Чем занимаетесь</span>
           <div className="flex flex-wrap gap-2">
             {niches.map((n) => (
-              <button type="button" key={n.id} className="chip" aria-pressed={f.niche === n.id} onClick={() => set("niche", n.id)}>{n.label}</button>
+              <button type="button" key={n.id} className="chip disabled:opacity-50 disabled:cursor-not-allowed" aria-pressed={f.niche === n.id} disabled={nicheLock === "launched" && n.id !== initial.niche} onClick={() => set("niche", n.id)}>{n.label}</button>
             ))}
           </div>
+          {nicheLock === "launched" ? (
+            <p className="hint mt-1.5">Сферу нельзя сменить, пока реклама запущена: запросы, аудитории и объявления подобраны под неё. Если вы сменили направление — напишите в поддержку, поможем перезапустить.</p>
+          ) : nicheLock === "plan" && f.niche !== initial.niche ? (
+            <p className="mt-1.5 text-sm text-warn">План объявлений был подготовлен для «{niches.find((n) => n.id === initial.niche)?.label}». После сохранения подготовим его заново — ваши правки в плане не сохранятся.</p>
+          ) : null}
         </div>
         <div>
           <label className="label" htmlFor="address">Адрес</label>

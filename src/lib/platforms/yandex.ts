@@ -135,73 +135,137 @@ export class YandexDirect implements PlatformClient {
     return channel === "search" ? { Search: active, Network: off } : { Search: off, Network: active };
   }
 
+  /**
+   * Создаёт ЕПК с группами и объявлениями. Объявления остаются черновиками (DRAFT) — на модерацию их отправляет
+   * activateCampaign в конце запуска: «Отправить на модерацию можно только объявления со статусом DRAFT» (ads.moderate),
+   * а черновики не показываются, поэтому недозапущенная кампания не тратит деньги.
+   * Возобновляемо: spec.resume — что уже создано (кампания, группы, объявления); хуки сохраняют каждый шаг сразу.
+   * Объявления группы уходят одним ads.add (до 1000 в вызове по документации), поштучно — только отклонённые.
+   */
   async launchCampaign(spec: CampaignSpec, hooks?: LaunchHooks): Promise<LaunchResult> {
     const warnings: string[] = [];
-    const unified: Record<string, unknown> = {
-      BiddingStrategy: this.strategy(spec.channel, spec.weeklyBudget, spec.strategy, spec.goalId),
-      Settings: [
-        { Option: "ADD_METRICA_TAG", Value: "YES" },
-        { Option: "ENABLE_SITE_MONITORING", Value: "YES" },
-        { Option: "ALTERNATIVE_TEXTS_ENABLED", Value: "YES" },
-      ],
-    };
-    if (spec.counterId) unified.CounterIds = { Items: [spec.counterId] };
-    if (spec.counterId && spec.goalId) unified.PriorityGoals = { Items: [{ GoalId: spec.goalId, Value: micros(1000) }] };
+    const resume = spec.resume ?? null;
+    const late = () => spec.deadline !== undefined && Date.now() > spec.deadline;
+    this.onImageUploaded = hooks?.onImageUploaded;
 
-    const campaign: Record<string, unknown> = {
-      Name: spec.name.slice(0, 255),
-      StartDate: spec.startDate,
-      UnifiedCampaign: unified,
-    };
-    if (spec.negativeKeywords.length) campaign.NegativeKeywords = { Items: spec.negativeKeywords.slice(0, 1000) };
+    let campaignExt = resume?.campaignExt ?? null;
+    if (!campaignExt) {
+      const unified: Record<string, unknown> = {
+        BiddingStrategy: this.strategy(spec.channel, spec.weeklyBudget, spec.strategy, spec.goalId),
+        Settings: [
+          { Option: "ADD_METRICA_TAG", Value: "YES" },
+          { Option: "ENABLE_SITE_MONITORING", Value: "YES" },
+          { Option: "ALTERNATIVE_TEXTS_ENABLED", Value: "YES" },
+        ],
+      };
+      if (spec.counterId) unified.CounterIds = { Items: [spec.counterId] };
+      if (spec.counterId && spec.goalId) unified.PriorityGoals = { Items: [{ GoalId: spec.goalId, Value: micros(1000) }] };
 
-    const res = await this.call("campaigns", "add", { Campaigns: [campaign] });
-    const [c] = this.items(res.AddResults, "Кампания", warnings);
-    const campaignExt = String(c.Id);
-    await hooks?.onCampaignCreated?.(campaignExt);
+      const campaign: Record<string, unknown> = {
+        Name: spec.name.slice(0, 255),
+        StartDate: spec.startDate,
+        UnifiedCampaign: unified,
+      };
+      if (spec.negativeKeywords.length) campaign.NegativeKeywords = { Items: spec.negativeKeywords.slice(0, 1000) };
 
-    const out: LaunchResult = { campaignExt, groups: [], warnings };
-    for (const g of spec.groups) {
-      const gr = await this.call("adgroups", "add", {
-        AdGroups: [{ Name: g.name.slice(0, 255), CampaignId: Number(campaignExt), RegionIds: g.regionIds, UnifiedAdGroup: { OfferRetargeting: "NO" } }],
-      });
-      const [gi] = this.items(gr.AddResults, `Группа «${g.name}»`, warnings);
-      const groupExt = String(gi.Id);
-
-      const keywords = [...new Set(g.keywords.map((k) => k.trim()).filter(Boolean))].slice(0, 200);
-      if (g.autotargeting) keywords.push("---autotargeting");
-      if (keywords.length) {
-        try {
-          const kr = await this.call("keywords", "add", { Keywords: keywords.map((Keyword) => ({ Keyword, AdGroupId: Number(groupExt) })) });
-          for (const [i, r] of ((kr.AddResults ?? []) as DirectItemResult[]).entries()) {
-            if (r.Errors?.length) warnings.push(`Фраза «${keywords[i]}» не добавлена: ${r.Errors[0].Message}`);
-          }
-        } catch (e) {
-          warnings.push(`Ключевые фразы группы «${g.name}»: ${(e as Error).message}`);
-        }
-      }
-
-      const ads: LaunchResult["groups"][number]["ads"] = [];
-      for (const ad of g.ads) {
-        try {
-          const r = await this.addAd(campaignExt, groupExt, ad, { channel: spec.channel }, warnings, false);
-          ads.push({ localId: ad.localId, adExt: r.adExt, imageRef: r.imageRef });
-        } catch (e) {
-          ads.push({ localId: ad.localId, adExt: null, error: (e as Error).message });
-        }
-      }
-      out.groups.push({ localId: g.localId, groupExt, ads });
+      const res = await this.call("campaigns", "add", { Campaigns: [campaign] });
+      const [c] = this.items(res.AddResults, "Кампания", warnings);
+      campaignExt = String(c.Id);
+      await hooks?.onCampaignCreated?.(campaignExt);
     }
 
-    const toModerate = out.groups.flatMap((g) => g.ads.map((a) => a.adExt)).filter(Boolean) as string[];
-    if (toModerate.length) {
-      try {
-        await this.call("ads", "moderate", { SelectionCriteria: { Ids: toModerate.map(Number) } });
-      } catch (e) {
-        warnings.push(`Отправка на модерацию: ${(e as Error).message}`);
+    const out: LaunchResult = { campaignExt, groups: [], warnings, complete: true };
+    for (const g of spec.groups) {
+      const done = resume?.groups[g.localId];
+      let groupExt = done?.groupExt ?? "";
+      const known: Record<string, string> = { ...(done?.ads ?? {}) };
+      const todo = g.ads.filter((a) => !known[a.localId]);
+      if (!groupExt || todo.length) {
+        if (late()) {
+          out.complete = false;
+          break;
+        }
       }
+      if (!groupExt) {
+        const gr = await this.call("adgroups", "add", {
+          AdGroups: [{ Name: g.name.slice(0, 255), CampaignId: Number(campaignExt), RegionIds: g.regionIds, UnifiedAdGroup: { OfferRetargeting: "NO" } }],
+        });
+        const [gi] = this.items(gr.AddResults, `Группа «${g.name}»`, warnings);
+        groupExt = String(gi.Id);
+
+        const keywords = [...new Set(g.keywords.map((k) => k.trim()).filter(Boolean))].slice(0, 200);
+        if (g.autotargeting) keywords.push("---autotargeting");
+        if (keywords.length) {
+          try {
+            const kr = await this.call("keywords", "add", { Keywords: keywords.map((Keyword) => ({ Keyword, AdGroupId: Number(groupExt) })) });
+            for (const [i, r] of ((kr.AddResults ?? []) as DirectItemResult[]).entries()) {
+              if (r.Errors?.length) warnings.push(`Фраза «${keywords[i]}» не добавлена: ${r.Errors[0].Message}`);
+            }
+          } catch (e) {
+            warnings.push(`Ключевые фразы группы «${g.name}»: ${(e as Error).message}`);
+          }
+        }
+        await hooks?.onGroupCreated?.(g.localId, groupExt);
+      }
+
+      const created: LaunchResult["groups"][number]["ads"] = [];
+      if (todo.length) {
+        // Готовим все объявления группы (картинки, уточнения, ссылки, визитка), затем одним ads.add
+        const built: { ad: AdSpec; b: Awaited<ReturnType<YandexDirect["buildTextAd"]>> }[] = [];
+        for (const ad of todo) {
+          try {
+            built.push({ ad, b: await this.buildTextAd(campaignExt, ad, warnings) });
+          } catch (e) {
+            created.push({ localId: ad.localId, adExt: null, error: (e as Error).message });
+          }
+        }
+        let batch: DirectItemResult[] | null = null;
+        if (built.length) {
+          try {
+            const res = await this.call("ads", "add", {
+              Ads: built.map(({ b }) => ({ AdGroupId: Number(groupExt), TextAd: { ...b.textAd, ...Object.fromEntries(b.optional.map(([k, , v]) => [k, v])) } })),
+            });
+            batch = (res.AddResults ?? []) as DirectItemResult[];
+          } catch {
+            batch = null; // запрос отклонён целиком — пробуем по одному
+          }
+        }
+        for (const [i, { ad, b }] of built.entries()) {
+          const r = batch?.[i];
+          if (r?.Id && !r.Errors?.length) {
+            for (const w of r.Warnings ?? []) warnings.push(`Объявление: ${w.Message}${w.Details ? ` — ${w.Details}` : ""}`);
+            created.push({ localId: ad.localId, adExt: String(r.Id), imageRef: b.imageRef });
+            continue;
+          }
+          // Отклонено в пачке: по одному, убирая необязательные поля
+          try {
+            const adExt = await this.addBuilt(groupExt, ad, b, warnings);
+            created.push({ localId: ad.localId, adExt, imageRef: b.imageRef });
+          } catch (e) {
+            created.push({ localId: ad.localId, adExt: null, error: (e as Error).message });
+          }
+        }
+        await hooks?.onAdsCreated?.(g.localId, groupExt, created);
+      }
+      out.groups.push({
+        localId: g.localId,
+        groupExt,
+        ads: g.ads.map((a) => created.find((x) => x.localId === a.localId) ?? { localId: a.localId, adExt: known[a.localId] ?? null }),
+      });
     }
     return out;
+  }
+
+  /** Включение после запуска: черновики объявлений — на модерацию (до 10 000 ID в вызове ads.moderate) */
+  async activateCampaign(_campaignExt: string, adExts: string[]) {
+    for (let i = 0; i < adExts.length; i += 10_000) {
+      const res = await this.call("ads", "moderate", { SelectionCriteria: { Ids: adExts.slice(i, i + 10_000).map(Number) } });
+      // Объявление уже не черновик (отправлено прошлой попыткой) — не ошибка
+      const bad = ((res?.ModerateResults ?? []) as DirectItemResult[]).filter((r) => r.Errors?.length && !/статус|status|DRAFT|черновик/i.test(r.Errors[0].Message + (r.Errors[0].Details ?? "")));
+      if (bad.length && bad.length === Math.min(10_000, adExts.length - i)) {
+        throw new PlatformError("yandex", `Отправка на модерацию: ${bad[0].Errors![0].Message}`, bad[0].Errors);
+      }
+    }
   }
 
   /** Удаляем недосозданную кампанию; если Директ не даёт (уже были показы) — останавливаем */
@@ -217,6 +281,7 @@ export class YandexDirect implements PlatformClient {
   }
 
   private imageCache = new Map<string, string>();
+  private onImageUploaded?: LaunchHooks["onImageUploaded"];
 
   async uploadImage(img: NonNullable<AdSpec["image"]>): Promise<string> {
     if (img.cachedRef) return img.cachedRef;
@@ -227,6 +292,7 @@ export class YandexDirect implements PlatformClient {
     });
     const [r] = this.items(res.AddResults, "Изображение");
     this.imageCache.set(img.imageId, r.AdImageHash!);
+    await this.onImageUploaded?.(img.imageId, r.AdImageHash!).catch(() => undefined);
     return r.AdImageHash!;
   }
 
@@ -296,7 +362,8 @@ export class YandexDirect implements PlatformClient {
     }
   }
 
-  async addAd(campaignExt: string, groupExt: string, ad: AdSpec, _ctx: { channel: Channel }, warnings: string[] = [], moderate = true) {
+  /** Поля объявления и необязательные дополнения (в порядке, в котором их убираем, если Директ отклонит) */
+  private async buildTextAd(campaignExt: string, ad: AdSpec, warnings: string[]) {
     if (!ad.title.trim() || !ad.text.trim()) throw new PlatformError("yandex", "У объявления пустой заголовок или текст");
     let imageRef: string | undefined;
     if (ad.image) {
@@ -328,14 +395,18 @@ export class YandexDirect implements PlatformClient {
     if (vcardId) optional.push(["VCardId", "визитка", vcardId]);
     if (x?.price) optional.push(["PriceExtension", "цена", { Price: micros(x.price.price), PriceQualifier: x.price.qualifier, PriceCurrency: "RUB" }]);
     if (x?.displayPath) optional.push(["DisplayUrlPath", "отображаемая ссылка", x.displayPath.slice(0, 20)]);
+    return { textAd, optional, imageRef };
+  }
 
+  /** Одно объявление с повторами без необязательных полей */
+  private async addBuilt(groupExt: string, ad: AdSpec, b: { textAd: Record<string, unknown>; optional: [string, string, unknown][] }, warnings: string[]) {
+    const optional = [...b.optional];
     let res: any;
-    const dropped: string[] = [];
     for (;;) {
       const extra = Object.fromEntries(optional.map(([k, , v]) => [k, v]));
       let err: unknown = null;
       try {
-        res = await this.call("ads", "add", { Ads: [{ AdGroupId: Number(groupExt), TextAd: { ...textAd, ...extra } }] });
+        res = await this.call("ads", "add", { Ads: [{ AdGroupId: Number(groupExt), TextAd: { ...b.textAd, ...extra } }] });
         const e = (res.AddResults as DirectItemResult[] | undefined)?.[0]?.Errors?.[0];
         if (e) err = new Error(`${e.Message}${e.Details ? ` — ${e.Details}` : ""}`);
       } catch (e) {
@@ -344,14 +415,18 @@ export class YandexDirect implements PlatformClient {
       if (!err) break;
       if (!optional.length) throw err;
       const [, label] = optional.shift()!;
-      dropped.push(label);
       warnings.push(`Объявление «${ad.title}»: Директ не принял поле «${label}», создаём без него: ${(err as Error).message}`);
     }
     const [r] = this.items(res.AddResults, "Объявление", warnings);
-    const adExt = String(r.Id);
+    return String(r.Id);
+  }
+
+  /** Новое объявление в работающую группу (робот): сразу на модерацию */
+  async addAd(campaignExt: string, groupExt: string, ad: AdSpec, _ctx: { channel: Channel }, warnings: string[] = [], moderate = true) {
+    const b = await this.buildTextAd(campaignExt, ad, warnings);
+    const adExt = await this.addBuilt(groupExt, ad, b, warnings);
     if (moderate) await this.call("ads", "moderate", { SelectionCriteria: { Ids: [Number(adExt)] } });
-    void campaignExt;
-    return { adExt, imageRef };
+    return { adExt, imageRef: b.imageRef };
   }
 
   async setCampaignActive(campaignExt: string, active: boolean) {

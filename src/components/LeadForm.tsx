@@ -29,11 +29,18 @@ function reachGoals(counterId: number | null) {
   } catch {}
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Цвета приходят уже проверенными на контраст (страница /p/[key]/colors.ts): ink — текст на белой карточке,
+ * onAccent — текст на кнопке цвета accent. Цвет текста задаём явно, иначе на тёмных палитрах он наследует светлый.
+ */
 export function LeadForm({
-  publicKey, services, accent, ts, ft, counterId, privacyUrl,
-}: { publicKey: string; services: string[]; accent: string; ts: string; ft: string | null; counterId: number | null; privacyUrl: string }) {
+  publicKey, services, accent, onAccent, ink, ts: ts0, ft, counterId, privacyUrl,
+}: { publicKey: string; services: string[]; accent: string; onAccent: string; ink: string; ts: string; ft: string | null; counterId: number | null; privacyUrl: string }) {
   const [state, setState] = useState<"idle" | "busy" | "done">("idle");
   const [err, setErr] = useState("");
+  const [ts, setTs] = useState(ts0);
 
   // Первый заход по рекламе на нашу страницу: сохраняем подписанные метки, если трекер ещё не успел
   useEffect(() => {
@@ -45,8 +52,8 @@ export function LeadForm({
 
   if (state === "done") {
     return (
-      <div className="rounded-2xl bg-white p-6 text-center" role="status">
-        <div className="mx-auto w-12 h-12 rounded-full grid place-items-center text-white" style={{ background: accent }}><Check /></div>
+      <div className="rounded-2xl bg-white p-6 text-center" role="status" style={{ color: ink }}>
+        <div className="mx-auto w-12 h-12 rounded-full grid place-items-center" style={{ background: accent, color: onAccent }}><Check /></div>
         <div className="font-bold text-lg mt-3">Заявка отправлена</div>
         <p className="text-muted mt-1">Перезвоним в течение рабочего дня и подберём время.</p>
       </div>
@@ -55,7 +62,8 @@ export function LeadForm({
   return (
     <form
       data-pz-ignore
-      className="rounded-2xl bg-white p-5 sm:p-6 grid gap-3"
+      className="rounded-2xl bg-white p-5 sm:p-6 grid gap-3 [&_.field]:placeholder:text-muted"
+      style={{ color: ink }}
       onSubmit={async (e) => {
         e.preventDefault();
         setErr("");
@@ -64,19 +72,32 @@ export function LeadForm({
         let vid: string | null = null;
         try { vid = localStorage.getItem("pz_vid"); } catch {}
         try {
-          const res = await fetch("/api/lead", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              key: publicKey, ts, ft: firstTouch(ft), vid,
-              name: fd.get("name"), contact: fd.get("phone"), message: fd.get("service"), website: fd.get("website"),
-            }),
-          });
-          if (res.ok) {
-            reachGoals(counterId);
+          const send = (token: string) =>
+            fetch("/api/lead", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                key: publicKey, ts: token, ft: firstTouch(ft), vid,
+                name: fd.get("name"), contact: fd.get("phone"), message: fd.get("service"), website: fd.get("website"),
+              }),
+            });
+          let res = await send(ts);
+          let data = await res.json().catch(() => ({}));
+          // Страница открыта больше 2 часов: берём новый токен и отправляем сами — введённое не теряется
+          if (!res.ok && data.code === "stale") {
+            const fresh = await fetch(`/api/lead?key=${encodeURIComponent(publicKey)}`).then((r) => r.json()).catch(() => ({}));
+            if (fresh.ts) {
+              setTs(fresh.ts);
+              await sleep(3200);
+              res = await send(fresh.ts);
+              data = await res.json().catch(() => ({}));
+            }
+          }
+          if (res.ok || data.code === "used") {
+            if (res.ok) reachGoals(counterId);
             setState("done");
           } else {
-            setErr((await res.json().catch(() => ({}))).error || "Не отправилось — попробуйте ещё раз");
+            setErr(data.error || "Не отправилось — попробуйте ещё раз");
             setState("idle");
           }
         } catch {
@@ -100,7 +121,7 @@ export function LeadForm({
         </select>
       ) : null}
       {err ? <div className="text-sm text-bad" role="alert">{err}</div> : null}
-      <button className="btn h-12 text-white" style={{ background: accent }} disabled={state === "busy"}>
+      <button className="btn h-12" style={{ background: accent, color: onAccent }} disabled={state === "busy"}>
         {state === "busy" ? <Loader2 size={16} className="spin" /> : null}Отправить заявку
       </button>
       <p className="text-xs text-muted leading-relaxed">

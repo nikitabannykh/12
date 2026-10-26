@@ -12,7 +12,8 @@ import { ChangeItem } from "@/components/ChangeItem";
 import { DaysChart, Delta } from "@/components/charts";
 import { ClientsWeek } from "@/components/ClientsWeek";
 import { CHANNEL_NAME } from "@/lib/platforms";
-import { rub, num, pl, isoDay, startOfMonth } from "@/lib/util";
+import { rub, num, pl, isoDay } from "@/lib/util";
+import { monthStartDay, nextMonthStart } from "@/lib/engine/budget-plan";
 
 const SHORT: Record<string, string> = { search: "Поиск", network: "Сайты и приложения", vk: "ВКонтакте" };
 const ORDER = ["search", "network", "vk"];
@@ -35,7 +36,7 @@ export default async function Dashboard() {
     .select({ status: schema.ads.status, campaignId: schema.ads.campaignId, adGroupId: schema.ads.adGroupId })
     .from(schema.ads)
     .where(and(eq(schema.ads.businessId, b.id), inArray(schema.ads.status, ["moderation", "rejected", "active"])));
-  const monthCost = (await db.select({ cost: schema.statsDaily.cost }).from(schema.statsDaily).where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, isoDay(startOfMonth(r.now)))))).reduce((s, x) => s + x.cost, 0);
+  const monthCost = (await db.select({ cost: schema.statsDaily.cost }).from(schema.statsDaily).where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, monthStartDay(r.now))))).reduce((s, x) => s + x.cost, 0);
   const tracked = await db.select({ id: schema.leads.id }).from(schema.leads).where(eq(schema.leads.businessId, b.id)).limit(1);
 
   const c = r.cur, p = r.prev;
@@ -55,7 +56,7 @@ export default async function Dashboard() {
   const ownerStopped = stopped.filter((x) => states.get(x.id)?.stopped === "owner" || states.get(x.id)?.stopped === "robot");
   const errorStopped = stopped.filter((x) => states.get(x.id)?.stopped === "error");
   const learning = camps.filter((x) => (states.get(x.id)?.learningLeft ?? 0) > 0);
-  const nextMonth = new Date(Date.UTC(r.now.getUTCFullYear(), r.now.getUTCMonth() + 1, 1)).toLocaleDateString("ru-RU", { day: "numeric", month: "long", timeZone: "UTC" });
+  const nextMonth = nextMonthStart(r.now).toLocaleDateString("ru-RU", { day: "numeric", month: "long", timeZone: "UTC" });
   const overBudget = monthCost >= b.monthlyBudget * 0.98;
   const names = (list: typeof camps) => list.map((x) => `«${SHORT[x.channel] ?? CHANNEL_NAME[x.channel] ?? x.channel}»`).join(", ");
 
@@ -80,18 +81,22 @@ export default async function Dashboard() {
       {guardStopped.length ? (
         <StopBanner
           tone="bad"
-          title={allStopped ? "Реклама остановлена — бюджет месяца израсходован" : `Робот остановил ${names(guardStopped)}: бюджет месяца израсходован`}
-          text={
+          title={
             overBudget
-              ? `Потрачено ${rub(monthCost)} из ${rub(b.monthlyBudget)}. Чтобы не выйти за бюджет, показы стоят до ${nextMonth} — тогда робот включит рекламу сам. Хотите продолжить раньше — поднимите бюджет и включите рекламу.`
-              : `Бюджет теперь ${rub(b.monthlyBudget)}, потрачено ${rub(monthCost)} — деньги на показы есть. Включите рекламу, и показы возобновятся в течение часа.`
+              ? allStopped ? "Реклама остановлена — бюджет месяца израсходован" : `Робот остановил ${names(guardStopped)}: бюджет месяца израсходован`
+              : allStopped ? "Робот остановил рекламу, чтобы уложиться в бюджет месяца" : `Робот остановил ${names(guardStopped)}, чтобы уложиться в бюджет месяца`
           }
+          text={(() => {
+            if (overBudget) return `Потрачено ${rub(monthCost)} из ${rub(b.monthlyBudget)}. Чтобы не выйти за бюджет, показы стоят до ${nextMonth} — тогда робот включит рекламу сам. Хотите продолжить раньше — поднимите бюджет, и реклама включится сразу.`;
+            const one = guardStopped.length === 1;
+            return (
+              `Бюджет — ${rub(b.monthlyBudget)} в месяц, потрачено ${rub(monthCost)}. До конца месяца ` +
+              `на ${allStopped ? "рекламу" : one ? "этот канал" : "эти каналы"} не хватает денег: площадки не принимают лимит меньше своего минимума. ` +
+              `Робот включит ${allStopped ? "рекламу" : one ? "канал" : "каналы"} сам ${nextMonth} или сразу, как только вы поднимете бюджет.`
+            );
+          })()}
         >
-          {overBudget ? (
-            <Link href="/app/settings#budget" className="btn btn-primary btn-sm">Поднять бюджет</Link>
-          ) : (
-            <ActionButton url="/api/campaigns/resume" body={{ ids: guardStopped.map((x) => x.id) }} done="Реклама включена" className="btn btn-primary btn-sm">Включить</ActionButton>
-          )}
+          <Link href="/app/settings#budget" className="btn btn-primary btn-sm">Поднять бюджет</Link>
         </StopBanner>
       ) : null}
       {ownerStopped.length ? (
@@ -231,7 +236,7 @@ export default async function Dashboard() {
                     <span className="font-semibold">{SHORT[x.channel] ?? x.channel}</span>
                     {s?.stopped ? (
                       <span className={`pill ${s.stopped === "guard" || s.stopped === "error" ? "bg-bad-soft text-bad" : "bg-paper text-muted"}`}>
-                        {s.stopped === "guard" ? "стоит: кончился бюджет" : s.stopped === "error" ? "ошибка площадки" : s.stopped === "owner" ? "на паузе — вы остановили" : "на паузе — остановил робот"}
+                        {s.stopped === "guard" ? (overBudget ? "стоит: кончился бюджет" : "стоит: не хватает бюджета") : s.stopped === "error" ? "ошибка площадки" : s.stopped === "owner" ? "на паузе — вы остановили" : "на паузе — остановил робот"}
                       </span>
                     ) : s && s.learningLeft > 0 ? (
                       <span className="pill bg-info-soft text-ink-2" title={`Площадка подбирает аудиторию: после запуска до ${LEARNING_DAYS[x.channel] ?? 14} дней, после изменения бюджета — до 7. Робот в это время не трогает настройки`}>

@@ -10,7 +10,7 @@ import { ClientsWeek } from "@/components/ClientsWeek";
 import { CHANNEL_NAME } from "@/lib/platforms";
 import { num, pl, rub } from "@/lib/util";
 
-const KIND: Record<string, string> = { form: "Заявка", phone: "Звонок", messenger: "Мессенджер" };
+const KIND: Record<string, string> = { form: "Заявка", phone: "Звонок", messenger: "Мессенджер", suspect: "Заявка" };
 const SRC: Record<string, string> = { yandex: "Реклама в Яндексе", vk: "Реклама ВКонтакте", demo: "Реклама (демо)" };
 const CH: Record<string, string> = { ...CHANNEL_NAME, unknown: "Реклама, канал не определён" };
 
@@ -152,6 +152,7 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
                 <span className="font-semibold w-24 shrink-0">{KIND[l.kind] ?? l.kind}</span>
                 <span className="text-muted w-36 shrink-0">{l.createdAt.toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow" })}</span>
                 <span className="flex-1 min-w-[8rem] truncate">{[l.name, l.contact].filter(Boolean).join(", ") || "—"}</span>
+                {l.kind === "suspect" ? <span className="pill bg-warn-soft text-warn" title="Пришла во время всплеска заявок — возможно, спам. В статистику рекламы не входит.">похоже на спам</span> : null}
                 <span className="pill bg-paper text-muted">{l.adExt || l.campaignExt || (l.source && SRC[l.source]) ? SRC[l.source ?? ""] ?? "Реклама" : l.source ? `Не из рекламы (${l.source})` : "Не из рекламы"}</span>
               </li>
             ))}

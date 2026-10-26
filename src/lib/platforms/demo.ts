@@ -12,7 +12,12 @@ import { addDays, isoDay, uid } from "../util";
  */
 type Interval = { from: string; to: string | null };
 type DemoAd = { campaign: string; group: string; title: string; text: string; quality: number; intervals: Interval[]; status: AdState["status"]; note?: string; created: string };
-type DemoCampaign = { channel: Channel; budgets: { from: string; weekly: number }[]; intervals: Interval[]; negatives: string[]; created: string; ceilings?: { from: string; value: number | null }[] };
+type DemoCampaign = {
+  channel: Channel; budgets: { from: string; weekly: number }[]; intervals: Interval[]; negatives: string[]; created: string; ceilings?: { from: string; value: number | null }[];
+  /** Создана, но запуск ещё не завершён — как черновик Директа / заблокированный план VK: не показывается и не тратит */
+  pending?: boolean;
+  name?: string;
+};
 
 /**
  * Модель аукциона на поиске: чем выше место, тем дороже клик и тем чаще кликают.
@@ -36,6 +41,8 @@ export const DEMO_CLOCK = "demo:clock";
 const CLOCK_KEY = (accountId: string) => `demo:clock:${accountId}`;
 /** Дальше этого демо-время не мотаем: статистика за 30 дней и месяц бюджета должны оставаться осмысленными */
 export const DEMO_MAX_SHIFT_DAYS = 180;
+/** На сколько дней «назад» стартуют демо-кампании, чтобы сразу была статистика (смоделированная) */
+export const DEMO_BACKFILL_DAYS = 12;
 
 export type DemoScope = { businessId?: string; accountId?: string };
 
@@ -89,7 +96,7 @@ async function offsetFor(accountId: string | null): Promise<number> {
   const [st] = await db.select().from(schema.kv).where(eq(schema.kv.key, KEY(accountId)));
   const created = Object.values(((st?.value as State | undefined)?.campaigns ?? {})).map((c) => c.created);
   // Демо-кампании «стартуют» за 12 дней до запуска: дата позже реального «сегодня − 12» значит, что их создали по сдвинутым часам
-  const realLaunchFloor = isoDay(addDays(new Date(), -12));
+  const realLaunchFloor = isoDay(addDays(new Date(), -DEMO_BACKFILL_DAYS));
   if (created.some((d) => d > realLaunchFloor)) return Math.min(DEMO_MAX_SHIFT_DAYS, (await readOffset(DEMO_CLOCK)) ?? 0);
   return 0;
 }
@@ -164,27 +171,54 @@ export class DemoPlatform implements PlatformClient {
     return id;
   }
 
+  /**
+   * Демо-кампании «стартуют» за DEMO_BACKFILL_DAYS дней до запуска, чтобы отчёты и решения робота были видны сразу.
+   * Это осознанная особенность демо: статистика этих дней смоделирована, о чём говорит предупреждение запуска.
+   * Как и настоящие площадки, кампания создаётся выключенной (pending) и начинает «работать» только после activateCampaign.
+   */
   async launchCampaign(spec: CampaignSpec, hooks?: LaunchHooks): Promise<LaunchResult> {
     // Закрепляем часы кабинета (до первой перемотки ключа ещё нет)
     await shiftDemoClock(0, { accountId: this.accountId });
     const s = await this.load();
     const now = await this.now();
-    // Демо-кампании «стартуют» 12 дней назад, чтобы сразу была статистика
-    const day = isoDay(addDays(now, -12));
-    const campaignExt = this.id(s);
-    await hooks?.onCampaignCreated?.(campaignExt);
-    s.campaigns[campaignExt] = { channel: spec.channel, budgets: [{ from: day, weekly: spec.weeklyBudget }], intervals: [{ from: day, to: null }], negatives: [...spec.negativeKeywords], created: day };
-    const out: LaunchResult = { campaignExt, groups: [], warnings: [] };
-    for (const g of spec.groups) {
-      const groupExt = this.id(s);
-      out.groups.push({
-        localId: g.localId,
-        groupExt,
-        ads: g.ads.map((a) => ({ localId: a.localId, adExt: this.newAd(s, campaignExt, groupExt, a, day) })),
-      });
+    const day = isoDay(addDays(now, -DEMO_BACKFILL_DAYS));
+    const name = spec.tag ? `${spec.name} #${spec.tag}` : spec.name;
+    // Повтор прерванной попытки: кампания с тем же именем уже есть — используем её
+    const existing = spec.resume?.campaignExt ?? Object.entries(s.campaigns).find(([, c]) => c.name === name && c.pending)?.[0] ?? null;
+    const campaignExt = existing && s.campaigns[existing] ? existing : this.id(s);
+    if (!s.campaigns[campaignExt]) {
+      s.campaigns[campaignExt] = { channel: spec.channel, budgets: [{ from: day, weekly: spec.weeklyBudget }], intervals: [{ from: day, to: null }], negatives: [...spec.negativeKeywords], created: day, pending: true, name };
+      await this.save(s);
     }
-    await this.save(s);
+    await hooks?.onCampaignCreated?.(campaignExt);
+    const out: LaunchResult = {
+      campaignExt, groups: [], complete: true,
+      warnings: [`Демо-кабинет: чтобы отчёты и решения робота были видны сразу, кампания «работает» с ${day} — статистика за ${DEMO_BACKFILL_DAYS} дней до запуска смоделирована`],
+    };
+    for (const g of spec.groups) {
+      const done = spec.resume?.groups[g.localId];
+      const groupExt = done?.groupExt ?? this.id(s);
+      const ads = g.ads.map((a) => ({ localId: a.localId, adExt: done?.ads[a.localId] ?? this.newAd(s, campaignExt, groupExt, a, day) }));
+      await this.save(s);
+      if (!done) await hooks?.onGroupCreated?.(g.localId, groupExt);
+      await hooks?.onAdsCreated?.(g.localId, groupExt, ads.filter((a) => !done?.ads[a.localId]));
+      out.groups.push({ localId: g.localId, groupExt, ads });
+    }
     return out;
+  }
+
+  async activateCampaign(campaignExt: string) {
+    const s = await this.load();
+    const c = s.campaigns[campaignExt];
+    if (c?.pending) {
+      delete c.pending;
+      await this.save(s);
+    }
+  }
+
+  async findCampaignByName(name: string) {
+    const s = await this.load();
+    return Object.entries(s.campaigns).find(([, c]) => c.name === name)?.[0] ?? null;
   }
 
   async removeCampaign(campaignExt: string) {
@@ -276,7 +310,7 @@ export class DemoPlatform implements PlatformClient {
     const activeOn = (iv: Interval[], d: string) => iv.some((i) => i.from <= d && (i.to === null || d < i.to));
     for (const cExt of campaignExts) {
       const c = s.campaigns[cExt];
-      if (!c) continue;
+      if (!c || c.pending) continue;
       const ads = Object.entries(s.ads).filter(([, a]) => a.campaign === cExt);
       for (let d = new Date(from + "T00:00:00Z"); isoDay(d) <= end; d = addDays(d, 1)) {
         const day = isoDay(d);

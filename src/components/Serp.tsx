@@ -23,7 +23,8 @@ export function slotOf(tv: number) {
   return 5;
 }
 
-function priceFor(tiers: Tier[], slot: number) {
+/** Цена клика за место по аукциону Директа — единый источник и для схемы выдачи, и для таблицы мест */
+export function priceFor(tiers: Tier[], slot: number) {
   if (!tiers.length) return null;
   const want = slot <= 3 ? [100, 85, 75, 65][slot] : 15;
   return [...tiers].sort((a, b) => Math.abs(a.trafficVolume - want) - Math.abs(b.trafficVolume - want))[0]?.price ?? null;
@@ -46,9 +47,11 @@ function Competitor({ label, price }: { label: string; price: number | null }) {
 
 export function SerpScheme({ query, tv, tiers, yourCpc, ad }: { query: string; tv: number; tiers: Tier[]; yourCpc: number | null; ad: ReactNode }) {
   const mine = slotOf(tv);
+  // Цена места — из того же аукциона, что и в таблице «Цена клика за место»; фактическая средняя цена — отдельной строкой ниже
+  const minePrice = priceFor(tiers, mine);
   const Mine = (
     <div className="rounded-lg ring-2 ring-mark bg-white relative">
-      <span className="absolute -top-2.5 left-3 pill bg-mark text-ink text-[11px] font-bold whitespace-normal max-w-[calc(100%-1.5rem)]">Вы · {mine <= 3 ? TOP[mine].label : mine === 4 ? "внизу страницы" : "дальше 1-й страницы"}{yourCpc ? ` · клик ≈ ${rub(yourCpc)}` : ""}</span>
+      <span className="absolute -top-2.5 left-3 pill bg-mark text-ink text-[11px] font-bold whitespace-normal max-w-[calc(100%-1.5rem)]">Вы · {mine <= 3 ? TOP[mine].label : mine === 4 ? "внизу страницы" : "дальше 1-й страницы"}{minePrice ? ` · клик ≈ ${rub(minePrice)}` : ""}</span>
       <div className="pt-2">{ad}</div>
     </div>
   );
@@ -73,7 +76,7 @@ export function SerpScheme({ query, tv, tiers, yourCpc, ad }: { query: string; t
         {mine === 5 ? Mine : null}
       </div>
       <p className="mt-3 text-xs text-muted leading-relaxed">
-        Схема по данным Директа за 14 дней: средний объём трафика {Math.round(tv)} из 100. Тексты соседних объявлений Яндекс не показывает — серые блоки только обозначают места и цену клика за них. Выдача у каждого своя: зависит от города, устройства и истории поиска.
+        Схема по данным Директа за 14 дней: средний объём трафика {Math.round(tv)} из 100. Цены мест — по аукциону Директа, как в таблице рядом{yourCpc ? `; ваша фактическая средняя цена клика — ${rub(yourCpc)}: она плавает вместе с аукционом в течение дня и по разным фразам` : ""}. Тексты соседних объявлений Яндекс не показывает — серые блоки только обозначают места и цену клика за них. Выдача у каждого своя: зависит от города, устройства и истории поиска.
       </p>
     </div>
   );

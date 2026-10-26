@@ -84,13 +84,22 @@ export const POST = route(async ({ user, business, req }) => {
     updatedAt: new Date(),
   };
   if (business) {
+    // Сфера определяет запросы, минус-слова, аудитории и тексты. У запущенной рекламы её не меняем:
+    // кампании продолжили бы крутиться со старыми запросами, а робот писал бы объявления уже про другое.
+    const nicheChanged = values.niche !== business.niche;
+    const plan = business.launchPlan as { launch?: unknown } | null;
+    if (nicheChanged && (business.status !== "draft" || plan?.launch)) {
+      return fail("Сферу нельзя сменить, пока реклама запущена: запросы, аудитории и объявления подобраны под неё. Если вы сменили направление — напишите в поддержку, поможем перезапустить рекламу. Остальное в описании можно менять.", 409);
+    }
+    // До запуска: план объявлений был под старую сферу — подготовим его заново
+    const reset = nicheChanged && plan ? { launchPlan: null } : {};
     // Месячный бюджет у запущенной рекламы меняется отдельно (/api/budget) — с пересчётом кампаний
     const { monthlyBudget, ...rest } = values;
-    await db.update(schema.businesses).set(business.status === "active" ? rest : { ...rest, monthlyBudget: monthlyBudget ?? business.monthlyBudget }).where(eq(schema.businesses.id, business.id));
+    await db.update(schema.businesses).set(business.status === "active" ? rest : { ...rest, ...reset, monthlyBudget: monthlyBudget ?? business.monthlyBudget }).where(eq(schema.businesses.id, business.id));
     if (business.status === "active") {
       await logChange({ businessId: business.id, actor: "owner", kind: "profile", title: "Обновлено описание бизнеса", reason: "Новые объявления робот будет писать с учётом изменений. Уже работающие объявления не трогаем — их можно поправить в разделе «Объявления»." });
     }
-    return json({ id: business.id });
+    return json({ id: business.id, planReset: Boolean(nicheChanged && plan) });
   }
   const id = uid("b_");
   await db.insert(schema.businesses).values({ id, userId: user.id, publicKey: uid().replace(/[-_]/g, "").slice(0, 10).toLowerCase(), ...values });

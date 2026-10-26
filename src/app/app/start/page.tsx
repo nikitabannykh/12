@@ -20,6 +20,7 @@ export default async function Start() {
       </div>
       <BusinessForm
         aiOn={aiConfigured()}
+        nicheLock={!b ? null : b.status !== "draft" || (b.launchPlan as { launch?: unknown } | null)?.launch ? "launched" : b.launchPlan ? "plan" : null}
         next={editing && b?.status === "active" ? "/app/settings" : "/app/launch"}
         niches={NICHES.map((n) => ({ id: n.id, label: n.label, examples: n.examples }))}
         initial={{

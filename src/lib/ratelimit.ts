@@ -1,6 +1,7 @@
 import "server-only";
 import { and, eq, lt, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
+import { randomBytes } from "node:crypto";
 import { fingerprint, sign, verify } from "./crypto";
 
 /**
@@ -30,20 +31,56 @@ export async function hit(key: string, limit: number, windowSec: number): Promis
 }
 
 /** Проверяет сразу несколько лимитов; true — если все в пределах */
-export async function within(rules: { key: string; limit: number; windowSec: number }[]): Promise<boolean> {
+export async function within(rules: { key: string | null; limit: number; windowSec: number }[]): Promise<boolean> {
   let ok = true;
-  for (const r of rules) if (!(await hit(r.key, r.limit, r.windowSec)).ok) ok = false;
+  for (const r of rules) if (r.key && !(await hit(r.key, r.limit, r.windowSec)).ok) ok = false;
   return ok;
 }
 
-/** IP клиента (на Vercel — первый адрес в x-forwarded-for) */
-export function clientIp(req: Request): string {
-  const xff = req.headers.get("x-forwarded-for");
-  return (xff ? xff.split(",")[0] : req.headers.get("x-real-ip") || "").trim() || "unknown";
+const first = (v: string | null) => (v ? v.split(",")[0].trim() : "");
+
+/**
+ * IP клиента — только из заголовков, которые не может подделать сам клиент:
+ *  - на Vercel: x-vercel-forwarded-for / x-real-ip (их выставляет платформа, присланные клиентом она перезаписывает);
+ *  - за своим прокси: заголовок из TRUSTED_IP_HEADER (например, x-real-ip у nginx или cf-connecting-ip у Cloudflare).
+ * Иначе — null: x-forwarded-for без доверенного прокси присылает сам клиент (Next.js его не перезаписывает),
+ * и лимит «по IP» превратился бы либо в обходимый, либо в общий на всех. Тогда лимиты по IP не применяются,
+ * а защищают одноразовый токен формы и пометка «похоже на спам».
+ */
+export function clientIp(req: Request): string | null {
+  const h = req.headers;
+  if (process.env.VERCEL) return first(h.get("x-vercel-forwarded-for")) || first(h.get("x-real-ip")) || null;
+  const trusted = process.env.TRUSTED_IP_HEADER?.trim().toLowerCase();
+  if (trusted) return first(h.get(trusted)) || null;
+  return null;
 }
 
-/** Ключ лимита по IP: сам адрес не храним, только необратимый отпечаток */
-export const ipKey = (scope: string, req: Request) => `${scope}:ip:${fingerprint(clientIp(req))}`;
+/** Ключ лимита по IP: сам адрес не храним, только необратимый отпечаток. null — IP неизвестен, лимит пропускаем. */
+export const ipKey = (scope: string, req: Request): string | null => {
+  const ip = clientIp(req);
+  return ip ? `${scope}:ip:${fingerprint(ip)}` : null;
+};
+
+// --- Токен формы заявки ---
+
+/**
+ * Выдаётся при открытии страницы записи: время открытия (быстрее MIN_FILL_MS заполняют только боты)
+ * и случайный nonce. Действует 2 часа и только для одной заявки — повторно отправить тот же токен нельзя.
+ */
+export type FormToken = { k: string; t: number; n: string; exp: number };
+export const FORM_TTL_MS = 2 * 3600e3;
+export function formToken(publicKey: string, now = Date.now()): string {
+  return sign({ k: publicKey, t: now, n: randomBytes(12).toString("base64url"), exp: now + FORM_TTL_MS } satisfies FormToken);
+}
+export function readFormToken(token: unknown, publicKey: string): FormToken | null {
+  const v = typeof token === "string" && token.length < 1000 ? verify<FormToken>(token) : null;
+  return v && v.k === publicKey && typeof v.n === "string" && v.n.length >= 8 ? v : null;
+}
+/** Погасить токен: true — если им ещё не пользовались. Атомарно (тот же счётчик, что у лимитов). */
+export async function consumeFormToken(v: FormToken): Promise<boolean> {
+  const left = Math.max(60, Math.ceil((v.exp - Date.now()) / 1000) + 60);
+  return (await hit(`form-nonce:${v.n}`, 1, left)).ok;
+}
 
 // --- Атрибуция заявок: откуда пришёл человек ---
 

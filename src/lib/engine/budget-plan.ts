@@ -27,19 +27,53 @@ export type SpendModel = {
  */
 export const spendModel = (demo: boolean): SpendModel => (demo ? { horizonDays: 2, peak: 1 } : { horizonDays: 2, peak: 1.3 });
 
-export const monthKey = (d: Date) => d.toISOString().slice(0, 7);
+/** Московское время: статистика площадок и границы месяца — по МСК */
+const MSK_MS = 3 * 3600e3;
+export const mskDate = (d: Date) => new Date(d.getTime() + MSK_MS);
+
+/** Месяц по МСК, YYYY-MM */
+export const monthKey = (d: Date) => mskDate(d).toISOString().slice(0, 7);
+/** Первый день месяца по МСК, YYYY-MM-DD (дни статистики — тоже по МСК) */
+export const monthStartDay = (d: Date) => `${monthKey(d)}-01`;
+/** Число дней в текущем (по МСК) месяце */
+export const monthDays = (d: Date) => daysInMonth(mskDate(d));
+/** Первое число следующего месяца (по МСК) — полночь UTC этого дня, для подписи «до 1 ноября» */
+export const nextMonthStart = (d: Date) => {
+  const m = mskDate(d);
+  return new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + 1, 1));
+};
 
 /** Сколько дней месяца ещё могут тратиться деньги, включая сегодняшний */
-export const daysLeftInMonth = (now: Date) => daysInMonth(now) - now.getUTCDate() + 1;
+export const daysLeftInMonth = (now: Date) => monthDays(now) - mskDate(now).getUTCDate() + 1;
 
 /** Недельный лимит (сумма по каналам), при котором остаток точно хватит до конца месяца */
 export const fitWeekly = (remaining: number, daysLeft: number) => (daysLeft <= 0 ? 0 : Math.floor((Math.max(0, remaining) / daysLeft) * 7));
 
 /** Обычный недельный лимит для этого месяца: бюджет ровно на все его дни */
-export const monthWeekly = (monthly: number, now: Date) => Math.floor((monthly / daysInMonth(now)) * 7);
+export const monthWeekly = (monthly: number, now: Date) => Math.floor((monthly / monthDays(now)) * 7);
 
 /** Сколько реклама успеет потратить до следующей проверки (с запасом) */
 export const reserveFor = (weeklyTotal: number, daysLeft: number, m: SpendModel) => (weeklyTotal / 7) * Math.min(m.horizonDays, Math.max(daysLeft, 0)) * m.peak;
+
+/**
+ * Самый большой недельный лимит (сумма по каналам), который точно не выведет за бюджет:
+ *  - в среднем по оставшимся дням не больше остатка (fitWeekly);
+ *  - и до следующей проверки, даже в пиковый день, не больше остатка (reserveFor ≤ remaining).
+ * Лимит в эту сумму не требует паузы: пауза нужна, только когда в неё не помещается минимум площадки.
+ */
+export const spendableWeekly = (remaining: number, daysLeft: number, m: SpendModel) => {
+  if (daysLeft <= 0 || remaining <= 0) return 0;
+  const safe = Math.floor((remaining * 7) / (Math.min(m.horizonDays, daysLeft) * m.peak));
+  return Math.min(fitWeekly(remaining, daysLeft), safe);
+};
+
+/**
+ * Площадки редко тратят лимит целиком (дни с меньшим спросом, выходные). Чтобы к концу месяца не оставалась
+ * заметная часть бюджета, робот поднимает лимиты под остаток — но не выше этой доли от обычного темпа.
+ */
+export const CATCH_UP = 1.5;
+/** Поднимаем лимиты, только если они ниже цели больше чем на 7 % — чтобы не менять их каждый день */
+export const CATCH_UP_GAP = 0.93;
 
 export type PlanItem = {
   id: string;

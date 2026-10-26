@@ -2,20 +2,21 @@ import { redirect } from "next/navigation";
 import { and, eq, inArray } from "drizzle-orm";
 import { FlaskConical, Trophy, Lightbulb, Image as ImageIcon, Eye, ChevronDown, GraduationCap } from "lucide-react";
 import { requireUser } from "@/lib/auth";
-import { getBusinessForUser, landingUrl } from "@/lib/engine/launch";
+import { accountsFor, channelsFor, getBusinessForUser, landingUrl } from "@/lib/engine/launch";
 import { adStats, reportNow, report, campaignStates, LEARNING_DAYS } from "@/lib/engine/report";
 import { getDb, schema } from "@/lib/db";
 import { LiveToggle } from "@/components/client";
-import { AdActions, BudgetInline } from "@/components/AdsControls";
+import { AdActions, AddChannelButton, BudgetInline } from "@/components/AdsControls";
 import { SearchAdPreview, ImageAdPreview } from "@/components/AdPreview";
 import { SerpScheme, AuctionTable } from "@/components/Serp";
 import { ceilingOf } from "@/lib/engine/ops";
 import { CHANNEL_HINT, CHANNEL_NAME, PLATFORM_NAME } from "@/lib/platforms";
-import { MIN_WEEKLY } from "@/lib/engine/budget";
+import { MAX_MONTHLY, MIN_WEEKLY, allocate } from "@/lib/engine/budget";
 import { ANGLES } from "@/lib/niches";
 import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
 import { adExtras, withPlanCallouts } from "@/lib/engine/extras";
 import { placeName, scoreGroup, liftBy, addS, zeroS, ctrOf, VERDICT, type S, type AdScore } from "@/lib/engine/insights";
+import Link from "next/link";
 import { addDays, hostOf, isoDay, num, pl, plural, rub } from "@/lib/util";
 import type { Channel } from "@/lib/platforms/types";
 
@@ -65,6 +66,8 @@ export default async function AdsPage() {
   const [logoRow] = await db.select({ id: schema.images.id }).from(schema.images).where(and(eq(schema.images.businessId, b.id), eq(schema.images.layout, "logo")));
   const logoId = logoRow?.id ?? null;
   const running = exps.filter((e) => e.status === "running");
+  // В тесте картинок заголовки одинаковые — различаем варианты по макету картинки
+  const imgNote = (imageId?: string | null) => { const l = imageId ? layoutOf.get(imageId) : null; return l ? `картинка: ${LAYOUT_NAME[l] ?? l}` : "другая картинка"; };
   const order: Channel[] = ["search", "network", "vk"];
   camps.sort((a, b) => order.indexOf(a.channel as Channel) - order.indexOf(b.channel as Channel));
   const chOf = new Map(camps.map((c) => [c.id, c.channel as Channel]));
@@ -112,6 +115,22 @@ export default async function AdsPage() {
   const cpl = (id: string) => { const s = st(id); return s.conversions >= 2 ? s.cost / s.conversions : Infinity; };
   const bestAd = leaders.sort((x, y) => cpl(x.id) - cpl(y.id) || ctrOf(st(y.id)) - ctrOf(st(x.id)))[0];
   const weakCount = visible.filter((a) => scores.get(a.id)?.verdict === "weak").length;
+
+  // ─── Каналы, которые подключены, но ещё не запущены ───
+  const allCamps = await db.select({ channel: schema.campaigns.channel, status: schema.campaigns.status }).from(schema.campaigns).where(eq(schema.campaigns.businessId, b.id));
+  const launched = [...new Set(allCamps.filter((c) => ["active", "paused", "creating"].includes(c.status)).map((c) => c.channel as Channel))];
+  const fits = (monthly: number, chs: Channel[]) => allocate(monthly, chs).dropped.length === 0;
+  const addable = channelsFor(await accountsFor(user.id))
+    .map((x) => x.channel)
+    .filter((ch) => !launched.includes(ch))
+    .map((ch) => {
+      const chs = [...launched, ch];
+      const ok = fits(b.monthlyBudget, chs);
+      let need = 0;
+      if (!ok) for (let m = Math.ceil(b.monthlyBudget / 500) * 500; m <= MAX_MONTHLY; m += 500) if (fits(m, chs)) { need = m; break; }
+      const weekly = allocate(b.monthlyBudget, chs).allocation.find((a) => a.channel === ch)?.weekly ?? MIN_WEEKLY[ch];
+      return { ch, ok, need, weekly };
+    });
 
   return (
     <div className="grid grid-cols-1 gap-6">
@@ -168,7 +187,41 @@ export default async function AdsPage() {
       {chRows.length > 1 ? (
         <section className="card p-5 sm:p-7">
           <h2 className="text-lg font-bold">Каналы рядом</h2>
-          <div className="mt-3 overflow-x-auto">
+          {/* Телефон: карточки вместо таблицы с прокруткой */}
+          <ul className="mt-3 grid gap-3 sm:hidden">
+            {chRows.map((r) => {
+              const share = totalConv ? r.s.conversions / totalConv : 0;
+              const best = bestCh && r.c.id === bestCh.c.id && withLeads.length > 1;
+              const ratio = bestCh && r.cpl !== null && !best ? r.cpl / bestCh.cpl! : 0;
+              const st8 = states.get(r.c.id);
+              return (
+                <li key={r.c.id} className="rounded-xl border border-line p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="font-semibold">{SHORT[r.ch]}</div>
+                      {st8?.stopped ? <span className="pill bg-paper text-muted mt-1">пауза</span> : best ? <span className="pill bg-good text-white mt-1">дешевле всех</span> : ratio >= 1.6 ? <span className="pill bg-warn-soft text-warn mt-1">в {ratio.toFixed(1).replace(".", ",")} раза дороже</span> : null}
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="font-extrabold tabular-nums">{r.cac !== null ? `${r.estimated ? "≈ " : ""}${rub(r.cac)}` : "—"}</div>
+                      <div className="text-xs text-muted">клиент</div>
+                    </div>
+                  </div>
+                  <dl className="mt-3 grid grid-cols-3 gap-2 text-sm">
+                    <div><dt className="text-xs text-muted">Потрачено</dt><dd className="font-semibold tabular-nums">{rub(r.s.cost)}</dd></div>
+                    <div><dt className="text-xs text-muted">Обращения</dt><dd className="font-semibold tabular-nums">{num(r.s.conversions)}</dd></div>
+                    <div><dt className="text-xs text-muted">Обращение</dt><dd className="font-semibold tabular-nums">{r.cpl !== null ? rub(r.cpl) : "—"}</dd></div>
+                  </dl>
+                  {totalConv ? (
+                    <div className="mt-3 flex items-center gap-2 text-xs text-muted">
+                      <div className="h-1.5 flex-1 rounded-full bg-paper overflow-hidden"><div className={`h-full rounded-full ${best ? "bg-good" : "bg-ink-2"}`} style={{ width: `${Math.round(share * 100)}%` }} /></div>
+                      <span className="tabular-nums">{Math.round(share * 100)}% обращений</span>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          <div className="mt-3 overflow-x-auto hidden sm:block">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-faint">
@@ -212,6 +265,32 @@ export default async function AdsPage() {
         </section>
       ) : null}
 
+      {/* ─── Добавить канал ─── */}
+      {addable.length ? (
+        <section className="card p-5 sm:p-7">
+          <h2 className="text-lg font-bold">Можно добавить</h2>
+          <p className="text-sm text-muted mt-1 max-w-2xl">Эти каналы подключены, но реклама в них ещё не запущена. Больше каналов — больше людей увидят рекламу, а робот сравнит, где клиенты дешевле.</p>
+          <ul className="mt-4 grid gap-3">
+            {addable.map((x) => (
+              <li key={x.ch} className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-semibold">{CHANNEL_NAME[x.ch]}</div>
+                  <div className="text-sm text-muted">{CHANNEL_HINT[x.ch]}</div>
+                </div>
+                {x.ok ? (
+                  <AddChannelButton channel={x.ch} name={SHORT[x.ch]} weekly={x.weekly} />
+                ) : (
+                  <p className="text-sm text-muted max-w-sm">
+                    {x.need ? <>Нужен бюджет от {rub(x.need)} в месяц, сейчас {rub(b.monthlyBudget)}. </> : <>Не хватает бюджета. </>}
+                    <Link href="/app/settings#budget" className="font-semibold text-ink-2 underline">Изменить бюджет</Link>
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       {/* ─── Идут проверки ─── */}
       {running.length ? (
         <section className="card p-5 sm:p-7">
@@ -229,8 +308,8 @@ export default async function AdsPage() {
                 <li key={e.id} className="text-[0.95rem] leading-relaxed">
                   <div>Проверяем, {e.hypothesis.replace(/\.$/, "")}</div>
                   <div className="mt-1.5 grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-                    <Duel label="Было" title={c?.title} s={sc} ahead={lead === "old"} />
-                    <Duel label={e.kind === "creative" ? "Новая картинка" : "Новый вариант"} title={v?.title} s={sv} ahead={lead === "new"} />
+                    <Duel label="Было" title={c?.title} note={e.kind === "creative" ? imgNote(c?.imageId) : undefined} s={sc} ahead={lead === "old"} />
+                    <Duel label={e.kind === "creative" ? "Новая картинка" : "Новый вариант"} title={v?.title} note={e.kind === "creative" ? imgNote(v?.imageId) : undefined} s={sv} ahead={lead === "new"} />
                   </div>
                 </li>
               );
@@ -250,8 +329,8 @@ export default async function AdsPage() {
                     <li key={e.id} className="text-[0.95rem] leading-relaxed">
                       <div>Проверяем, {e.hypothesis.replace(/\.$/, "")}</div>
                       <div className="mt-1.5 grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-                        <Duel label="Было" title={c?.title} s={sc} ahead={lead === "old"} />
-                        <Duel label={e.kind === "creative" ? "Новая картинка" : "Новый вариант"} title={v?.title} s={sv} ahead={lead === "new"} />
+                        <Duel label="Было" title={c?.title} note={e.kind === "creative" ? imgNote(c?.imageId) : undefined} s={sc} ahead={lead === "old"} />
+                        <Duel label={e.kind === "creative" ? "Новая картинка" : "Новый вариант"} title={v?.title} note={e.kind === "creative" ? imgNote(v?.imageId) : undefined} s={sv} ahead={lead === "new"} />
                       </div>
                     </li>
                   );
@@ -308,7 +387,7 @@ export default async function AdsPage() {
                 return (
                   <div className="mt-4 rounded-xl bg-paper p-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
                     <div><span className="text-muted">Место среди объявлений: </span><b>{placeName(tv)}</b> <span className="text-faint">(видят {Math.round(tv)}% из возможных)</span></div>
-                    <div><span className="text-muted">Цена клика: </span><b>{row.s.clicks ? rub(row.s.cost / row.s.clicks) : "—"}</b></div>
+                    <div><span className="text-muted">Средняя цена клика: </span><b>{row.s.clicks ? rub(row.s.cost / row.s.clicks) : "—"}</b></div>
                     <div><span className="text-muted">Максимальная цена клика: </span><b>{ceiling ? rub(ceiling) : "нет — Директ решает сам"}</b></div>
                   </div>
                 );
@@ -335,7 +414,7 @@ export default async function AdsPage() {
                         {ch === "search" && gTv !== null ? (
                           <div className="mt-1.5 flex flex-wrap gap-1.5">
                             <span className="pill bg-mark-soft text-ink">≈ {placeName(gTv)}</span>
-                            {gs.clicks ? <span className="pill bg-paper text-ink-2">клик ≈ {rub(gs.cost / gs.clicks)}</span> : null}
+                            {gs.clicks ? <span className="pill bg-paper text-ink-2">средний клик {rub(gs.cost / gs.clicks)}</span> : null}
                           </div>
                         ) : null}
                       </div>
@@ -454,11 +533,12 @@ function Tile({ icon, label, children }: { icon: React.ReactNode; label: string;
   );
 }
 
-function Duel({ label, title, s, ahead }: { label: string; title?: string; s: S; ahead: boolean }) {
+function Duel({ label, title, note, s, ahead }: { label: string; title?: string; note?: string; s: S; ahead: boolean }) {
   return (
     <div className={`min-w-0 rounded-lg p-3 ${ahead ? "bg-good-soft" : "bg-paper"}`}>
       <div className="text-xs text-faint flex justify-between"><span>{label}</span>{ahead ? <span className="text-good font-semibold">пока впереди</span> : null}</div>
       <div className="font-medium truncate">«{title ?? "—"}»</div>
+      {note ? <div className="text-xs text-ink-2 truncate">{note}</div> : null}
       <div className="text-xs text-muted mt-0.5">{s.impressions ? `${pl(s.clicks, "клик", "клика", "кликов")} из ${pl(s.impressions, "показа", "показов", "показов")} · ${pct(ctrOf(s))}` : "копим показы"}</div>
     </div>
   );

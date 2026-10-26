@@ -1,9 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
-import { act } from "@/lib/engine/ops";
+import { act, applyBudgetTrims, assertFitsBudget } from "@/lib/engine/ops";
 import { CHANNEL_NAME } from "@/lib/platforms";
-import { MIN_WEEKLY, WEEKS_IN_MONTH } from "@/lib/engine/budget";
+import { MIN_WEEKLY } from "@/lib/engine/budget";
 import { rub } from "@/lib/util";
 import type { Channel } from "@/lib/platforms/types";
 
@@ -17,6 +17,8 @@ export const PATCH = route<{ id: string }>(async ({ business, params, req }) => 
 
   if (body.status === "active" || body.status === "paused") {
     if (body.status === c.status) return json({ ok: true });
+    const trims = body.status === "active" ? await assertFitsBudget(business.id, [{ campaignId: c.id, status: "active" }], "resume") : [];
+    await applyBudgetTrims(business.id, trims, `Вы включаете канал «${name}»`);
     await act(
       {
         businessId: business.id, actor: "owner", kind: body.status === "active" ? "resume" : "pause",
@@ -35,13 +37,15 @@ export const PATCH = route<{ id: string }>(async ({ business, params, req }) => 
     const min = MIN_WEEKLY[c.channel as Channel];
     const next = Math.round(body.weeklyBudget);
     if (next < min) return fail(`Минимум для этого канала — ${rub(min)} в неделю`);
-    const others = (await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, business.id), eq(schema.campaigns.status, "active")))).filter((x) => x.id !== c.id);
-    const monthly = Math.round((others.reduce((s, x) => s + x.weeklyBudget, 0) + next) * WEEKS_IN_MONTH);
-    if (monthly > business.monthlyBudget * 1.02) {
-      return fail(`С таким лимитом расходы составят ≈ ${rub(monthly)} в месяц — больше вашего бюджета ${rub(business.monthlyBudget)}. Сначала увеличьте месячный бюджет.`);
-    }
+    if (!Number.isFinite(next) || next > 10_000_000) return fail("Укажите лимит в рублях числом");
+    // Новый лимит должен помещаться в остаток бюджета этого месяца (для канала на паузе проверим при включении)
+    const trims = c.status === "active" ? await assertFitsBudget(business.id, [{ campaignId: c.id, weekly: next }], "limit") : [];
+    await applyBudgetTrims(business.id, trims, `Вы меняете лимит канала «${name}»`);
     await act(
-      { businessId: business.id, actor: "owner", kind: "budget", title: `Лимит канала «${name}»: ${rub(c.weeklyBudget)} → ${rub(next)} в неделю`, reason: "Вы изменили недельный лимит вручную." },
+      {
+        businessId: business.id, actor: "owner", kind: "budget", title: `Лимит канала «${name}»: ${rub(c.weeklyBudget)} → ${rub(next)} в неделю`,
+        reason: "Вы изменили недельный лимит вручную.",
+      },
       [{ op: "campaignBudget", campaignId: c.id, weeklyBudget: next }],
     );
     return json({ ok: true });

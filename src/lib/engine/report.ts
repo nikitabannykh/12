@@ -1,9 +1,11 @@
 import "server-only";
-import { and, desc, eq, gte, lte } from "drizzle-orm";
+import { and, desc, eq, gte, lte, ne } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { Business, Campaign } from "../db/schema";
 import { demoNow } from "../platforms/demo";
 import { addDays, isoDay, startOfWeek } from "../util";
+import { firstDays, learningLeft as learningLeftFor, LEARN_LOOKBACK_DAYS, LEARNING_DAYS } from "./budget-learning";
+import { pausedForBudget } from "./budget-guard";
 
 /**
  * Цифры для владельца. Правила, общие для «Главного», «Статистики» и «Рекламы»:
@@ -35,16 +37,12 @@ export type DayPoint = { day: string; cost: number; leads: number; clicks: numbe
 const AD_SOURCES = new Set(["yandex", "vk", "demo"]);
 const CHANNEL_ORDER = ["search", "network", "vk", "unknown"];
 
-// Демо-часы: другой агент делает их отдельными для каждого бизнеса (`demoNow({ businessId })`).
-// Обёртка совместима и со старой сигнатурой без аргументов.
-const demoNowFor = demoNow as unknown as (scope?: { businessId?: string; accountId?: string }) => Promise<Date>;
-
 const zero = (): Totals => ({ impressions: 0, clicks: 0, cost: 0, leads: 0, clients: 0, clientsEstimated: false, otherLeads: 0, otherClients: 0 });
 
 export async function reportNow(b: Business) {
   const db = await getDb();
   const camps = await db.select({ platform: schema.campaigns.platform }).from(schema.campaigns).where(eq(schema.campaigns.businessId, b.id));
-  return camps.some((c) => c.platform === "demo") ? demoNowFor({ businessId: b.id }) : new Date();
+  return camps.some((c) => c.platform === "demo") ? demoNow({ businessId: b.id }) : new Date();
 }
 
 type DayAgg = {
@@ -53,16 +51,27 @@ type DayAgg = {
   byChannel: Map<string, { impressions: number; clicks: number; cost: number; leads: number }>;
 };
 
+/**
+ * Сдвиг демо-часов бизнеса относительно реального времени, мс (0 — не демо). Заявки сохраняются по реальному времени,
+ * а статистика демо — по демо-часам: чтобы заявка, оставленная сейчас, попала в «сегодня» демо, сдвигаем её на столько же.
+ */
+async function leadShiftMs(b: Business) {
+  const now = await reportNow(b);
+  const shift = now.getTime() - Date.now();
+  return Math.abs(shift) < 3600e3 ? 0 : Math.round(shift / 864e5) * 864e5;
+}
+
 /** Все расходы и обращения по дням с разбивкой «реклама / другие» и по каналам. Каждая заявка — один раз. */
 async function loadDays(b: Business, fromDay: string, toDay: string) {
   const db = await getDb();
+  const shift = await leadShiftMs(b);
   const camps = await db.select().from(schema.campaigns).where(eq(schema.campaigns.businessId, b.id));
   const ads = await db.select({ id: schema.ads.id, campaignId: schema.ads.campaignId, externalId: schema.ads.externalId }).from(schema.ads).where(eq(schema.ads.businessId, b.id));
   const rows = await db.select().from(schema.statsDaily).where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, fromDay), lte(schema.statsDaily.day, toDay)));
   const leads = await db
     .select({ createdAt: schema.leads.createdAt, source: schema.leads.source, adExt: schema.leads.adExt, campaignExt: schema.leads.campaignExt })
     .from(schema.leads)
-    .where(and(eq(schema.leads.businessId, b.id), gte(schema.leads.createdAt, new Date(fromDay + "T00:00:00Z")), lte(schema.leads.createdAt, new Date(toDay + "T23:59:59.999Z"))));
+    .where(and(eq(schema.leads.businessId, b.id), ne(schema.leads.kind, "suspect"), gte(schema.leads.createdAt, new Date(new Date(fromDay + "T00:00:00Z").getTime() - shift)), lte(schema.leads.createdAt, new Date(new Date(toDay + "T23:59:59.999Z").getTime() - shift))));
 
   const campById = new Map(camps.map((c) => [c.id, c]));
   const campByExt = new Map(camps.filter((c) => c.externalId).map((c) => [c.externalId!, c]));
@@ -96,7 +105,7 @@ async function loadDays(b: Business, fromDay: string, toDay: string) {
   }
 
   for (const l of leads) {
-    const day = isoDay(l.createdAt);
+    const day = isoDay(new Date(l.createdAt.getTime() + shift));
     const x = dayOf(day);
     const ad = l.adExt ? adByExt.get(l.adExt) : undefined;
     // Уже вошла в статистику площадки (sync подмешивает такие заявки в conversions объявления за день)
@@ -255,7 +264,7 @@ export async function weeksForMarking(b: Business, n = 4): Promise<WeekMark[]> {
 }
 
 /** Обучение площадки: после запуска или крупной перемены алгоритм заново подбирает аудиторию */
-export const LEARNING_DAYS: Record<string, number> = { vk: 7, search: 14, network: 14 };
+export { LEARNING_DAYS };
 const PAUSE_KINDS = new Set(["pause", "resume", "revert"]);
 
 export type CampaignState = {
@@ -271,33 +280,17 @@ export type CampaignState = {
 
 export async function campaignStates(b: Business, camps: Campaign[], now: Date): Promise<Map<string, CampaignState>> {
   const db = await getDb();
-  const changes = await db.select().from(schema.changes).where(eq(schema.changes.businessId, b.id)).orderBy(desc(schema.changes.at)).limit(300);
-  const month = isoDay(now).slice(0, 7);
-  const firstRows = camps.length
-    ? await db.select({ campaignId: schema.statsDaily.campaignId, day: schema.statsDaily.day }).from(schema.statsDaily)
-        .where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, isoDay(addDays(now, -29)))))
+  const since = addDays(now, -LEARN_LOOKBACK_DAYS);
+  const changes = await db.select().from(schema.changes).where(and(eq(schema.changes.businessId, b.id), gte(schema.changes.at, since))).orderBy(desc(schema.changes.at));
+  // Обучение — по тому же правилу и тем же данным, что у робота (budget-learning.ts)
+  const statRows = camps.length
+    ? await db.select({ campaignId: schema.statsDaily.campaignId, day: schema.statsDaily.day, impressions: schema.statsDaily.impressions }).from(schema.statsDaily)
+        .where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, isoDay(since))))
     : [];
-  const firstDay = new Map<string, string>();
-  for (const r of firstRows) { const d = String(r.day); if (!firstDay.has(r.campaignId) || d < firstDay.get(r.campaignId)!) firstDay.set(r.campaignId, d); }
+  const learnInput = { now, history: changes, firstDay: firstDays(statRows.map((r) => ({ ...r, day: String(r.day) }))) };
   const out = new Map<string, CampaignState>();
   for (const c of camps) {
-    const mine = changes.filter((ch) => !ch.revertedAt && (ch.undo ?? []).some((u) => "campaignId" in u && u.campaignId === c.id));
-    // Те же правила, что у робота (optimizer.learningLeft): запуск — 14 дней (VK — 7), смена стратегии — 14,
-    // изменение бюджета или цены клика — 7; поправки защиты бюджета обучение не сбрасывают.
-    const vk = c.channel === "vk";
-    const start = firstDay.get(c.id);
-    const events: { at: number; days: number }[] = [{ at: start ? new Date(start + "T00:00:00Z").getTime() : new Date(c.createdAt).getTime(), days: vk ? 7 : 14 }];
-    for (const ch of changes) {
-      if (ch.at.getTime() < now.getTime() - 30 * 864e5 || (ch.details as any)?.guard) continue;
-      for (const u of ch.undo ?? []) {
-        if (!("campaignId" in u) || u.campaignId !== c.id) continue;
-        if (u.op === "campaignStrategy") events.push({ at: ch.at.getTime(), days: vk ? 7 : 14 });
-        if (u.op === "campaignBudget" || u.op === "bidCeiling") events.push({ at: ch.at.getTime(), days: 7 });
-      }
-    }
-    const leftMs = Math.max(...events.map((e) => e.at + e.days * 864e5 - now.getTime()));
-    const learningLeft = c.status === "active" && leftMs > 0 ? Math.ceil(leftMs / 864e5) : 0;
-
+    const learningLeft = c.status === "active" ? learningLeftFor(c, learnInput) : 0;
     if (c.status === "error") {
       out.set(c.id, { stopped: "error", note: c.statusNote, learningLeft: 0 });
       continue;
@@ -306,9 +299,11 @@ export async function campaignStates(b: Business, camps: Campaign[], now: Date):
       out.set(c.id, { stopped: null, learningLeft });
       continue;
     }
-    const guard = (c.meta as any)?.pausedByGuard;
+    const mine = changes.filter((ch) => !ch.revertedAt && (ch.undo ?? []).some((u) => "campaignId" in u && u.campaignId === c.id));
     const pauseCh = mine.find((ch) => (ch.undo ?? []).some((u) => u.op === "campaignStatus" && u.campaignId === c.id && u.status === "active"));
-    if (guard === month && (!pauseCh || pauseCh.actor === "robot")) out.set(c.id, { stopped: "guard", stoppedAt: pauseCh?.at, learningLeft: 0 });
+    // Та же логика, что у робота: стоит из-за бюджета, если робот пометил паузу «бюджетной» и владелец её не ставил сам
+    // (в том числе когда канал остановлен вместе со снижением бюджета владельцем — это решение робота, не владельца)
+    if (pausedForBudget(c)) out.set(c.id, { stopped: "guard", stoppedAt: pauseCh?.at, note: pauseCh?.reason ?? null, via: pauseCh && !PAUSE_KINDS.has(pauseCh.kind) ? pauseCh.title : null, learningLeft: 0 });
     else out.set(c.id, { stopped: pauseCh?.actor === "robot" ? "robot" : "owner", stoppedAt: pauseCh?.at, note: pauseCh?.reason, via: pauseCh && !PAUSE_KINDS.has(pauseCh.kind) ? pauseCh.title : null, learningLeft: 0 });
   }
   return out;

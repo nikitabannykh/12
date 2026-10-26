@@ -1,8 +1,8 @@
 import "server-only";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
 import { getDb, schema } from "../db";
-import type { AdAccount, Business, Campaign } from "../db/schema";
-import { allocate } from "./budget";
+import type { AdAccount, Business, Campaign, UndoOp } from "../db/schema";
+import { allocate, MAX_MONTHLY } from "./budget";
 import { generateCopyPlan, type CopyPlan } from "../ai/copy";
 import { generatePhotos, listPhotos, makeCreative, getImage, ensureLogo } from "./images";
 import { adExtras, withPlanCallouts } from "./extras";
@@ -14,7 +14,7 @@ import { VkAds } from "../platforms/vk";
 import { ensureCounter, ensureGoals } from "../platforms/metrica";
 import { decrypt } from "../crypto";
 import { regionIdsFor } from "./regions";
-import { logChange } from "./ops";
+import { act, logChange } from "./ops";
 import { nicheById } from "../niches";
 import { appUrl, errorText, pl, rub, uid } from "../util";
 
@@ -34,7 +34,13 @@ export type LaunchPlan = {
   /** Ход запуска: запуск идёт по одному каналу за запрос и возобновляется после обрыва */
   launch?: LaunchProgress;
 };
-export type LaunchProgress = { id: string; startedAt: string; warnings: string[]; done: Channel[]; failed: Channel[] };
+export type LaunchProgress = {
+  id: string; startedAt: string; warnings: string[]; done: Channel[]; failed: Channel[];
+  /** Когда был последний шаг — по нему робот понимает, что запуск брошен, и доводит его сам */
+  lastStepAt?: string;
+  /** Неудачные попытки включить кампанию (id → число) */
+  activation?: Record<string, number>;
+};
 
 /** Сегодняшняя дата по Москве (YYYY-MM-DD): кампании Директа и VK живут в московском времени, а сервер — в UTC */
 export function moscowDay(d: Date = new Date()) {
@@ -47,14 +53,27 @@ export const publishable = (a: PlanAd) => a.enabled && Boolean(a.title?.trim()) 
 /**
  * Делит бюджет между включёнными каналами плана: доля выключенного владельцем канала
  * переходит оставшимся (по тем же весам, что и при подготовке плана).
+ * Канал, на который при текущем бюджете не хватает минимума площадки, выключается (enabled=false) —
+ * иначе он запустился бы со старым лимитом сверх бюджета. exclude — каналы, которые в раскладке не участвуют
+ * (например, не создались при запуске: их доля переходит остальным).
  */
-export function rebalancePlan(plan: LaunchPlan, monthly: number): LaunchPlan {
-  const on = plan.channels.filter((c) => c.enabled).map((c) => c.channel);
+export function rebalancePlan(plan: LaunchPlan, monthly: number, exclude: Channel[] = []): LaunchPlan {
+  const on = plan.channels.filter((c) => c.enabled && !exclude.includes(c.channel)).map((c) => c.channel);
   if (!on.length) return plan;
-  const { allocation } = allocate(monthly, on);
+  const { allocation, dropped } = allocate(monthly, on);
   for (const ch of plan.channels) {
+    if (dropped.includes(ch.channel)) {
+      ch.enabled = false;
+      continue;
+    }
     const a = allocation.find((x) => x.channel === ch.channel);
     if (ch.enabled && a) ch.weekly = a.weekly;
+  }
+  if (dropped.length) {
+    plan.dropped = [...new Set([...(plan.dropped ?? []), ...dropped])];
+    const notes = dropped.map((d) => `Канал «${CHANNEL_NAME[d]}» выключен: при бюджете ${rub(monthly)} в месяц на него не хватает минимума площадки. Увеличьте бюджет, чтобы добавить его.`);
+    plan.warnings = [...new Set([...(plan.warnings ?? []), ...notes])];
+    if (plan.launch) plan.launch.warnings = [...new Set([...plan.launch.warnings, ...notes])];
   }
   return plan;
 }
@@ -104,6 +123,23 @@ function withUtm(href: string, platform: string) {
   return u.toString().replace(/%7B/g, "{").replace(/%7D/g, "}");
 }
 
+/** Канал плана из сгенерированных текстов */
+function channelFromCopy(b: Business, copy: CopyPlan, channel: Channel, acc: AdAccount, weekly: number): PlanChannel {
+  const n = nicheById(b.niche);
+  const groups = copy[channel].map((g) => ({
+    id: uid("g_"),
+    name: g.name,
+    audience: g.audience,
+    keywords: g.keywords,
+    autotargeting: channel !== "vk",
+    ageFrom: g.ageFrom ?? n.audience.ageFrom,
+    ageTo: g.ageTo ?? n.audience.ageTo,
+    sex: n.audience.sex,
+    ads: g.ads.map((ad) => ({ id: uid("a_"), angle: ad.angle, title: ad.title, title2: ad.title2 ?? null, text: ad.text, enabled: true })),
+  }));
+  return { channel, accountId: acc.id, platform: acc.platform, weekly, enabled: true, groups };
+}
+
 /** Шаг 1: тексты, семантика, аудитории */
 export async function prepareCopy(b: Business, accounts: AdAccount[]): Promise<LaunchPlan> {
   const available = channelsFor(accounts);
@@ -112,23 +148,8 @@ export async function prepareCopy(b: Business, accounts: AdAccount[]): Promise<L
   const want = { search: false, network: false, vk: false };
   for (const a of allocation) want[a.channel] = true;
   const copy: CopyPlan = await generateCopyPlan(b, want);
-  const n = nicheById(b.niche);
 
-  const channels: PlanChannel[] = allocation.map((a) => {
-    const acc = available.find((x) => x.channel === a.channel)!.account;
-    const groups = copy[a.channel].map((g) => ({
-      id: uid("g_"),
-      name: g.name,
-      audience: g.audience,
-      keywords: g.keywords,
-      autotargeting: a.channel !== "vk",
-      ageFrom: g.ageFrom ?? n.audience.ageFrom,
-      ageTo: g.ageTo ?? n.audience.ageTo,
-      sex: n.audience.sex,
-      ads: g.ads.map((ad) => ({ id: uid("a_"), angle: ad.angle, title: ad.title, title2: ad.title2 ?? null, text: ad.text, enabled: true })),
-    }));
-    return { channel: a.channel, accountId: acc.id, platform: acc.platform, weekly: a.weekly, enabled: true, groups };
-  });
+  const channels: PlanChannel[] = allocation.map((a) => channelFromCopy(b, copy, a.channel, available.find((x) => x.channel === a.channel)!.account, a.weekly));
 
   const warnings: string[] = [];
   for (const d of dropped) warnings.push(`На канал «${CHANNEL_NAME[d]}» не хватает бюджета — начнём без него. Увеличьте бюджет, чтобы добавить.`);
@@ -232,16 +253,37 @@ async function setupMetrica(b: Business, account: AdAccount, warnings: string[])
   }
 }
 
-/** Недосозданная кампания прошлого (прерванного) запуска: убираем с площадки и из БД, чтобы создать заново без дублей */
+/** Ход создания кампании в meta: что уже есть на площадке — повторный вызов продолжает отсюда */
+type BuildProgress = {
+  /** localId группы плана → ID на площадке, ID строки в БД, созданные объявления (localId → ID на площадке) */
+  groups: Record<string, { groupExt: string; dbId: string; ads: Record<string, string> }>;
+  /** Объявления, которые площадка не приняла (строка в БД уже есть со статусом error) — повторно не шлём */
+  failedAds: string[];
+  ads: number;
+  errors: number;
+};
+type CampaignMeta = { launchId?: string; extName?: string; build?: BuildProgress; launchStats?: { ads: number; errors: number }; [k: string]: unknown };
+const metaOf = (c: Pick<Campaign, "meta">) => (c.meta ?? {}) as CampaignMeta;
+
+/** Короткая метка запуска для имени кампании на площадке */
+const launchTag = (launchId: string) => launchId.replace(/[^A-Za-z0-9]/g, "").slice(-6);
+
+/**
+ * Недосозданная кампания прошлого (прерванного) запуска: убираем с площадки и из БД, чтобы создать заново без дублей.
+ * Если ID на площадке сохранить не успели, ищем кампанию по имени с меткой того запуска.
+ */
 async function cleanupCreating(stale: Campaign[], client: PlatformClient | null, warnings: string[]) {
   const db = await getDb();
   for (const c of stale) {
-    if (c.externalId && client?.removeCampaign) {
+    let ext = c.externalId;
+    const extName = metaOf(c).extName;
+    if (!ext && extName && client?.findCampaignByName) ext = await client.findCampaignByName(extName).catch(() => null);
+    if (ext && client?.removeCampaign) {
       try {
-        await client.removeCampaign(c.externalId);
+        await client.removeCampaign(ext);
       } catch (e) {
-        await db.update(schema.campaigns).set({ status: "error", statusNote: `Запуск прервался. Удалите кампанию ${c.externalId} в кабинете площадки: ${errorText(e)}` }).where(eq(schema.campaigns.id, c.id));
-        warnings.push(`${CHANNEL_NAME[c.channel]}: прерванный запуск оставил кампанию ${c.externalId} — удалите её в кабинете`);
+        await db.update(schema.campaigns).set({ externalId: ext, status: "error", statusNote: `Запуск прервался. Удалите кампанию ${ext} в кабинете площадки: ${errorText(e)}` }).where(eq(schema.campaigns.id, c.id));
+        warnings.push(`${CHANNEL_NAME[c.channel]}: прерванный запуск оставил кампанию ${ext} — удалите её в кабинете`);
         continue;
       }
     }
@@ -251,15 +293,23 @@ async function cleanupCreating(stale: Campaign[], client: PlatformClient | null,
   }
 }
 
-/** Создаёт кампанию одного канала. Запись в БД появляется до вызова площадки, а внешний ID — сразу после создания кампании. */
-async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, account: AdAccount, launchId: string, warnings: string[]) {
+type ChannelResult = { state: "ready"; campaignId: string; ads: number; errors: number } | { state: "pending" } | { state: "skipped" };
+
+/**
+ * Создаёт кампанию одного канала — выключенной (см. PlatformClient.launchCampaign); включает её activateLaunch.
+ * Возобновляемо: строка кампании («creating») появляется в БД до вызова площадки, а ID кампании, групп и объявлений
+ * пишутся в БД сразу, как площадка их вернула. Повторный вызов того же запуска продолжает с места обрыва;
+ * «creating» от другого (прошлого) запуска убирается. Не успели до deadline — state "pending", продолжим следующим вызовом.
+ */
+async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, account: AdAccount, launchId: string, warnings: string[], deadline: number): Promise<ChannelResult> {
   const db = await getDb();
   const href = landingUrl(b);
   const n = nicheById(b.niche);
   const client = await clientFor(account);
 
-  const stale = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), eq(schema.campaigns.channel, ch.channel), eq(schema.campaigns.status, "creating")));
-  await cleanupCreating(stale, client, warnings);
+  const creating = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), eq(schema.campaigns.channel, ch.channel), eq(schema.campaigns.status, "creating")));
+  const mine = creating.find((c) => metaOf(c).launchId === launchId) ?? null;
+  await cleanupCreating(creating.filter((c) => c !== mine), client, warnings);
 
   let counterId: number | null = null;
   let goalId: number | null = null;
@@ -270,6 +320,7 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
     goalId = m.goalId;
   }
 
+  const build: BuildProgress = mine ? { groups: {}, failedAds: [], ads: 0, errors: 0, ...(metaOf(mine).build ?? {}) } : { groups: {}, failedAds: [], ads: 0, errors: 0 };
   const imageCache = new Map<string, Awaited<ReturnType<typeof getImage>>>();
   const logo = ch.channel === "vk" ? await ensureLogo(b).catch(() => null) : null;
   const spec: CampaignSpec = {
@@ -283,10 +334,13 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
     negativeKeywords: ch.channel === "vk" ? [] : plan.negatives,
     siteUrl: withUtm(href, account.platform),
     groups: [],
+    tag: launchTag(launchId),
+    deadline,
   };
   for (const g of ch.groups) {
     const ads = [];
     for (const ad of g.ads.filter(publishable)) {
+      if (build.failedAds.includes(ad.id)) continue;
       let image = null;
       if (ad.imageId) {
         const img = imageCache.get(ad.imageId) ?? (await getImage(ad.imageId));
@@ -305,29 +359,55 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
         marking: `${n.label}: ${b.name}`,
       });
     }
-    if (!ads.length) continue;
+    if (!ads.length && !build.groups[g.id]) continue;
     spec.groups.push({ localId: g.id, name: g.name, keywords: ch.channel === "vk" ? [] : g.keywords, autotargeting: g.autotargeting, regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, ads });
   }
   if (!spec.groups.length) {
     warnings.push(`${CHANNEL_NAME[ch.channel]}: нет ни одного объявления с заголовком и текстом — канал пропущен`);
-    return null;
+    if (mine) await cleanupCreating([mine], client, warnings);
+    return { state: "skipped" };
   }
 
-  const campaignId = uid("c_");
-  await db.insert(schema.campaigns).values({
-    id: campaignId,
-    businessId: b.id,
-    accountId: account.id,
-    platform: account.platform,
-    channel: ch.channel,
-    externalId: null,
-    name: spec.name,
-    weeklyBudget: ch.weekly,
-    strategy: "clicks",
-    status: "creating",
-    negativeKeywords: spec.negativeKeywords,
-    meta: { regionIds, launchId, startedAt: new Date().toISOString() },
-  });
+  // Имя на площадке — с меткой запуска: по нему находим свою кампанию, если ID сохранить не успели
+  const extName = account.platform === "vk" ? VkAds.planName(spec) : spec.tag ? `${spec.name} #${spec.tag}` : spec.name;
+  const campaignId = mine?.id ?? uid("c_");
+  const baseMeta = { ...(mine ? metaOf(mine) : {}), regionIds, launchId, extName, startedAt: (mine ? metaOf(mine).startedAt : null) ?? new Date().toISOString() };
+  if (!mine) {
+    await db.insert(schema.campaigns).values({
+      id: campaignId,
+      businessId: b.id,
+      accountId: account.id,
+      platform: account.platform,
+      channel: ch.channel,
+      externalId: null,
+      name: spec.name,
+      weeklyBudget: ch.weekly,
+      strategy: "clicks",
+      status: "creating",
+      negativeKeywords: spec.negativeKeywords,
+      meta: { ...baseMeta, build },
+    });
+  }
+  // Лимит уже созданной кампании здесь не трогаем: если бюджет поменялся, activateLaunch выставит новый перед включением
+  spec.resume = { campaignExt: mine?.externalId ?? null, groups: Object.fromEntries(Object.entries(build.groups).map(([k, v]) => [k, { groupExt: v.groupExt, ads: v.ads }])) };
+  const saveBuild = () => db.update(schema.campaigns).set({ meta: { ...baseMeta, build } }).where(eq(schema.campaigns.id, campaignId));
+
+  const groupRow = async (localId: string, groupExt: string) => {
+    if (build.groups[localId]) return build.groups[localId];
+    const g = ch.groups.find((x) => x.id === localId)!;
+    const dbId = uid("g_");
+    await db.insert(schema.adGroups).values({
+      id: dbId,
+      campaignId,
+      externalId: groupExt,
+      name: g.name,
+      audience: g.audience,
+      keywords: g.keywords,
+      targeting: { regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, autotargeting: g.autotargeting },
+    });
+    build.groups[localId] = { groupExt, dbId, ads: {} };
+    return build.groups[localId];
+  };
 
   let res;
   try {
@@ -335,6 +415,43 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
       onCampaignCreated: async (ext) => {
         await db.update(schema.campaigns).set({ externalId: ext }).where(eq(schema.campaigns.id, campaignId));
       },
+      onGroupCreated: async (localId, groupExt) => {
+        await groupRow(localId, groupExt);
+        await saveBuild();
+      },
+      onAdsCreated: async (localId, groupExt, created) => {
+        const g = ch.groups.find((x) => x.id === localId);
+        if (!g) return;
+        const row = await groupRow(localId, groupExt);
+        for (const ra of created) {
+          const ad = g.ads.find((x) => x.id === ra.localId);
+          if (!ad || row.ads[ra.localId] || build.failedAds.includes(ra.localId)) continue;
+          await db.insert(schema.ads).values({
+            id: uid("ad_"),
+            businessId: b.id,
+            campaignId,
+            adGroupId: row.dbId,
+            externalId: ra.adExt,
+            angle: ad.angle,
+            title: ad.title.trim(),
+            title2: ad.title2?.trim() || null,
+            text: ad.text.trim(),
+            imageId: ad.imageId ?? null,
+            status: ra.adExt ? "moderation" : "error",
+            statusNote: ra.error ?? null,
+          });
+          if (ra.adExt) {
+            row.ads[ra.localId] = ra.adExt;
+            build.ads++;
+          } else {
+            build.failedAds.push(ra.localId);
+            build.errors++;
+          }
+          if (ra.imageRef && ad.imageId) await rememberImageRef(ad.imageId, account.platform, ra.imageRef, imageCache);
+        }
+        await saveBuild();
+      },
+      onImageUploaded: (imageId, ref) => rememberImageRef(imageId, account.platform, ref, imageCache),
     });
   } catch (e) {
     const [row] = await db.select().from(schema.campaigns).where(eq(schema.campaigns.id, campaignId));
@@ -342,56 +459,107 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
     throw e;
   }
   warnings.push(...res.warnings.map((w) => `${CHANNEL_NAME[ch.channel]}: ${w}`));
+  if (res.complete === false) return { state: "pending" };
 
-  let adsCount = 0, errors = 0;
-  for (const g of ch.groups) {
-    const r = res.groups.find((x) => x.localId === g.id);
-    if (!r) continue;
-    const groupId = uid("g_");
-    await db.insert(schema.adGroups).values({
-      id: groupId,
-      campaignId,
-      externalId: r.groupExt,
-      name: g.name,
-      audience: g.audience,
-      keywords: g.keywords,
-      targeting: { regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, autotargeting: g.autotargeting },
-    });
-    for (const ad of g.ads.filter(publishable)) {
-      const ra = r.ads.find((x) => x.localId === ad.id);
-      if (!ra) continue;
-      if (ra.adExt) adsCount++;
-      else errors++;
-      await db.insert(schema.ads).values({
-        id: uid("ad_"),
-        businessId: b.id,
-        campaignId,
-        adGroupId: groupId,
-        externalId: ra.adExt,
-        angle: ad.angle,
-        title: ad.title.trim(),
-        title2: ad.title2?.trim() || null,
-        text: ad.text.trim(),
-        imageId: ad.imageId ?? null,
-        status: ra.adExt ? "moderation" : "error",
-        statusNote: ra.error ?? null,
-      });
-      if (ra.imageRef && ad.imageId) {
-        const img = imageCache.get(ad.imageId);
-        if (img && !img.platformRefs?.[account.platform]) {
-          const refs = { ...(img.platformRefs ?? {}), [account.platform]: ra.imageRef };
-          img.platformRefs = refs;
-          await db.update(schema.images).set({ platformRefs: refs }).where(eq(schema.images.id, img.id));
-        }
+  await db.update(schema.campaigns).set({
+    externalId: res.campaignExt,
+    status: "ready",
+    meta: { ...baseMeta, build, launchStats: { ads: build.ads, errors: build.errors } },
+  }).where(eq(schema.campaigns.id, campaignId));
+  return { state: "ready", campaignId, ads: build.ads, errors: build.errors };
+}
+
+/** Ссылку на загруженную картинку сохраняем сразу — повтор запуска не грузит её второй раз */
+async function rememberImageRef(imageId: string, platform: string, ref: string, cache: Map<string, Awaited<ReturnType<typeof getImage>>>) {
+  const db = await getDb();
+  const img = cache.get(imageId) ?? (await getImage(imageId));
+  if (!img || img.platformRefs?.[platform] === ref) return;
+  const refs = { ...(img.platformRefs ?? {}), [platform]: ref };
+  img.platformRefs = refs;
+  cache.set(imageId, img);
+  await db.update(schema.images).set({ platformRefs: refs }).where(eq(schema.images.id, imageId));
+}
+
+/**
+ * Включает кампании запуска (статус «ready»), предварительно сверив их лимиты с текущим бюджетом:
+ * если бюджет снизили, пока шёл запуск, канал без минимума площадки удаляется, а остальным ставится новый лимит.
+ * rebudgetLive — заодно пересчитать лимиты уже работающих кампаний (добавление канала к работающей рекламе).
+ * Возвращает включённые кампании и признак, что что-то не включилось и стоит повторить.
+ */
+async function activateLaunch(b: Business, launchId: string, warnings: string[], opts: { rebudgetLive?: boolean; failures?: Record<string, number> } = {}) {
+  const db = await getDb();
+  const all = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["ready", "active", "paused"])));
+  const ready = all.filter((c) => c.status === "ready" && metaOf(c).launchId === launchId);
+  const live = all.filter((c) => c.status !== "ready");
+  const channels = [...new Set([...ready, ...live].map((c) => c.channel as Channel))];
+  const { allocation, dropped } = allocate(b.monthlyBudget, channels);
+  const clients = new Map<string, PlatformClient>();
+  const clientOf = async (c: Campaign) => {
+    if (!clients.has(c.accountId)) {
+      const [acc] = await db.select().from(schema.adAccounts).where(eq(schema.adAccounts.id, c.accountId));
+      if (!acc) throw new Error("Рекламный кабинет отключён");
+      clients.set(c.accountId, await clientFor(acc));
+    }
+    return clients.get(c.accountId)!;
+  };
+
+  if (opts.rebudgetLive) {
+    // Сначала уменьшаем лимиты работающих кампаний, потом включаем новую — чтобы сумма не выходила за бюджет
+    const ops: UndoOp[] = [];
+    for (const c of live) {
+      const a = allocation.find((x) => x.channel === c.channel);
+      if (a && a.weekly < c.weeklyBudget) ops.push({ op: "campaignBudget", campaignId: c.id, weeklyBudget: a.weekly });
+    }
+    if (ops.length) {
+      await act({
+        businessId: b.id, actor: "owner", kind: "budget",
+        title: "Перераспределили бюджет под новый канал",
+        reason: `Месячный бюджет ${rub(b.monthlyBudget)} теперь делится и на новый канал, поэтому недельные лимиты остальных кампаний уменьшены.`,
+      }, ops);
+    }
+  }
+
+  const activated: Campaign[] = [];
+  let retry = false;
+  for (const c of ready) {
+    const client = await clientOf(c).catch(() => null);
+    const a = allocation.find((x) => x.channel === c.channel);
+    if (dropped.includes(c.channel as Channel) || !a) {
+      warnings.push(`Канал «${CHANNEL_NAME[c.channel]}» не включили: при бюджете ${rub(b.monthlyBudget)} в месяц на него не хватает минимума площадки`);
+      await cleanupCreating([c], client, warnings);
+      continue;
+    }
+    if (!client) {
+      warnings.push(`${CHANNEL_NAME[c.channel]}: кабинет отключён — кампанию не включили`);
+      await db.update(schema.campaigns).set({ status: "error", statusNote: "Кабинет отключён до окончания запуска" }).where(eq(schema.campaigns.id, c.id));
+      continue;
+    }
+    try {
+      if (a.weekly !== c.weeklyBudget && c.externalId) {
+        // Бюджет поменялся, пока шёл запуск: лимит — по текущему бюджету, а не по плану
+        await client.setBudget(c.externalId, { channel: c.channel as Channel, weeklyBudget: a.weekly, strategy: c.strategy as "clicks" | "conversions", goalId: b.goalIds?.lead ?? null });
+        await db.update(schema.campaigns).set({ weeklyBudget: a.weekly }).where(eq(schema.campaigns.id, c.id));
+        c.weeklyBudget = a.weekly;
+      }
+      const ads = await db.select({ ext: schema.ads.externalId }).from(schema.ads).where(and(eq(schema.ads.campaignId, c.id), notInArray(schema.ads.status, ["error", "archived"])));
+      if (c.externalId) await client.activateCampaign(c.externalId, ads.map((x) => x.ext).filter(Boolean) as string[]);
+      const meta = { ...metaOf(c), launchedAt: new Date().toISOString() };
+      delete (meta as Record<string, unknown>).build;
+      await db.update(schema.campaigns).set({ status: "active", statusNote: null, meta }).where(eq(schema.campaigns.id, c.id));
+      activated.push({ ...c, status: "active", meta });
+    } catch (e) {
+      const n = (opts.failures?.[c.id] ?? 0) + 1;
+      if (opts.failures) opts.failures[c.id] = n;
+      if (n < 3) {
+        retry = true;
+        warnings.push(`${CHANNEL_NAME[c.channel]}: не удалось включить кампанию, пробуем ещё раз — ${errorText(e)}`);
+      } else {
+        await db.update(schema.campaigns).set({ status: "error", statusNote: `Кампания создана, но не включилась: ${errorText(e)}. Включите её в кабинете площадки.` }).where(eq(schema.campaigns.id, c.id));
+        warnings.push(`${CHANNEL_NAME[c.channel]}: кампания создана, но не включилась — ${errorText(e)}`);
       }
     }
   }
-  await db.update(schema.campaigns).set({
-    externalId: res.campaignExt,
-    status: "active",
-    meta: { regionIds, launchId, launchedAt: new Date().toISOString(), launchStats: { ads: adsCount, errors } },
-  }).where(eq(schema.campaigns.id, campaignId));
-  return { channel: ch.channel, campaignId, ads: adsCount, errors };
+  return { activated, retry, live };
 }
 
 export type PublishStep = {
@@ -402,60 +570,80 @@ export type PublishStep = {
   created?: { channel: Channel; campaignId: string; ads: number; errors: number }[];
 };
 
+/** Запас до лимита функции (60 с): новый шаг не начинаем, если до дедлайна меньше этого */
+const STEP_RESERVE_MS = 20_000;
+export const PUBLISH_BUDGET_MS = 45_000;
+
 /**
- * Шаг 3: создаём кампании на площадках — по одному каналу за вызов (чтобы уложиться в лимит функции Vercel).
+ * Шаг 3: создаём кампании на площадках — по каналу за раз, пока есть время (лимит функции Vercel — 60 с).
  * Вызывающий должен держать блокировку запуска (run.tryLock(..., "launch")) и повторять вызов, пока done=false.
- * Повторный вызов после обрыва безопасен: каналы с уже созданными кампаниями пропускаются,
- * недосозданные («creating») удаляются на площадке и создаются заново.
+ * Кампании создаются выключенными и включаются все разом в конце — поэтому брошенный на полпути запуск
+ * не тратит деньги. Повтор после обрыва продолжает с места обрыва (см. launchChannel).
+ * Лимиты каналов пересчитываются от текущего месячного бюджета перед каждым каналом и перед включением.
  */
-export async function publishStep(b: Business, plan: LaunchPlan, accounts: AdAccount[]): Promise<PublishStep> {
+export async function publishStep(b: Business, plan: LaunchPlan, accounts: AdAccount[], opts: { deadline?: number } = {}): Promise<PublishStep> {
   const db = await getDb();
+  const deadline = opts.deadline ?? Date.now() + PUBLISH_BUDGET_MS;
   const prog: LaunchProgress = plan.launch ?? { id: uid("l_"), startedAt: new Date().toISOString(), warnings: [], done: [], failed: [] };
-  if (!plan.launch) rebalancePlan(plan, b.monthlyBudget); // бюджет мог поменяться после подготовки плана
   plan.launch = prog;
+  prog.lastStepAt = new Date().toISOString();
+  rebalancePlan(plan, b.monthlyBudget, prog.failed); // бюджет мог поменяться после подготовки плана или между шагами
   await db.update(schema.businesses).set({ status: "launching", launchPlan: plan, updatedAt: new Date() }).where(eq(schema.businesses.id, b.id));
 
-  const wanted = plan.channels.filter((c) => c.enabled && c.groups.some((g) => g.ads.some(publishable)));
-  const existing = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused"])));
+  const live = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused"])));
+  const wantedOf = () => plan.channels.filter((c) => c.enabled && c.groups.some((g) => g.ads.some(publishable)));
   // Канал, по которому кампания уже есть (в том числе от прошлого запуска), второй раз не создаём
-  for (const ch of wanted) if (!prog.done.includes(ch.channel) && existing.some((c) => c.channel === ch.channel)) prog.done.push(ch.channel);
+  for (const ch of wantedOf()) if (!prog.done.includes(ch.channel) && live.some((c) => c.channel === ch.channel)) prog.done.push(ch.channel);
 
-  const next = wanted.find((c) => !prog.done.includes(c.channel) && !prog.failed.includes(c.channel));
-  if (next) {
+  let first = true;
+  for (;;) {
+    const next = wantedOf().find((c) => !prog.done.includes(c.channel) && !prog.failed.includes(c.channel));
+    if (!next) break;
+    if (!first && deadline - Date.now() < STEP_RESERVE_MS) break;
+    first = false;
     const warnings: string[] = [];
     const account = accounts.find((a) => a.id === next.accountId);
+    let pending = false;
     if (!account) {
       warnings.push(`${CHANNEL_NAME[next.channel]}: кабинет отключён`);
       prog.failed.push(next.channel);
     } else {
       try {
-        const r = await launchChannel(b, plan, next, account, prog.id, warnings);
-        if (r) prog.done.push(next.channel);
-        else prog.failed.push(next.channel);
+        const r = await launchChannel(b, plan, next, account, prog.id, warnings, deadline);
+        if (r.state === "ready") prog.done.push(next.channel);
+        else if (r.state === "skipped") prog.failed.push(next.channel);
+        else pending = true;
       } catch (e) {
         warnings.push(`${CHANNEL_NAME[next.channel]}: не удалось создать кампанию — ${errorText(e)}`);
         prog.failed.push(next.channel);
       }
     }
+    if (prog.failed.includes(next.channel)) rebalancePlan(plan, b.monthlyBudget, prog.failed); // доля не созданного канала — остальным
     prog.warnings = [...new Set([...prog.warnings, ...warnings])];
+    prog.lastStepAt = new Date().toISOString();
     await savePlan(b.id, plan);
+    if (pending) break;
   }
 
+  const wanted = wantedOf();
   const progress = {
     total: wanted.length,
     finished: wanted.filter((c) => prog.done.includes(c.channel) || prog.failed.includes(c.channel)).length,
     channels: wanted.map((c) => ({ channel: c.channel, state: prog.done.includes(c.channel) ? ("done" as const) : prog.failed.includes(c.channel) ? ("failed" as const) : ("pending" as const) })),
   };
-  if (progress.finished < progress.total) return { done: false, ok: true, warnings: prog.warnings, progress };
+  if (progress.finished < progress.total || deadline - Date.now() < 5_000) return { done: false, ok: true, warnings: prog.warnings, progress };
 
-  // Все каналы обработаны — подводим итог
-  const mine = (await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused"]))))
-    .filter((c) => (c.meta as { launchId?: string })?.launchId === prog.id);
-  const created = mine.map((c) => {
-    const st = (c.meta as { launchStats?: { ads: number; errors: number } }).launchStats ?? { ads: 0, errors: 0 };
-    return { channel: c.channel as Channel, campaignId: c.id, ads: st.ads, errors: st.errors };
-  });
-  const anyLive = existing.length > 0 || created.length > 0;
+  // Все каналы обработаны — включаем созданные кампании разом (с лимитами по текущему бюджету)
+  const warnings: string[] = [];
+  prog.activation ??= {};
+  const { activated, retry } = await activateLaunch(b, prog.id, warnings, { failures: prog.activation });
+  prog.warnings = [...new Set([...prog.warnings, ...warnings])];
+  if (retry) {
+    await savePlan(b.id, plan);
+    return { done: false, ok: true, warnings: prog.warnings, progress };
+  }
+  const created = activated.map((c) => ({ channel: c.channel as Channel, campaignId: c.id, ads: metaOf(c).launchStats?.ads ?? 0, errors: metaOf(c).launchStats?.errors ?? 0 }));
+  const anyLive = live.length > 0 || created.length > 0;
   if (!anyLive) {
     // Ничего не создано — возвращаемся к плану, чтобы можно было поправить и запустить снова
     const warnings = prog.warnings;
@@ -465,20 +653,178 @@ export async function publishStep(b: Business, plan: LaunchPlan, accounts: AdAcc
   }
 
   await db.update(schema.businesses).set({ status: "active", launchPlan: null, updatedAt: new Date() }).where(eq(schema.businesses.id, b.id));
-  if (created.length) {
-    const total = created.reduce((s, c) => s + c.ads, 0);
-    const weekly = mine.reduce((s, c) => s + c.weeklyBudget, 0);
-    await logChange({
-      businessId: b.id,
-      actor: "owner",
-      kind: "launch",
-      title: `Запустили рекламу: ${created.map((c) => CHANNEL_NAME[c.channel]).join(", ")}`,
-      reason: `Создали ${pl(total, "объявление", "объявления", "объявлений")} в ${pl(created.length, "канале", "каналах", "каналах")} с бюджетом около ${rub(weekly)} в неделю. Объявления проходят модерацию — обычно это занимает от пары часов до суток. Первые выводы робот сделает через 3 дня, когда накопятся показы.`,
-      details: { created, warnings: prog.warnings },
-      undo: created.map((c) => ({ op: "campaignStatus" as const, campaignId: c.campaignId, status: "paused" as const })),
-    });
-  }
+  if (created.length) await logLaunch(b.id, created, activated, prog.warnings);
   return { done: true, ok: true, warnings: prog.warnings, progress, created };
+}
+
+async function logLaunch(businessId: string, created: { channel: Channel; campaignId: string; ads: number; errors: number }[], camps: Campaign[], warnings: string[]) {
+  const total = created.reduce((s, c) => s + c.ads, 0);
+  const weekly = camps.reduce((s, c) => s + c.weeklyBudget, 0);
+  await logChange({
+    businessId,
+    actor: "owner",
+    kind: "launch",
+    title: `Запустили рекламу: ${created.map((c) => CHANNEL_NAME[c.channel]).join(", ")}`,
+    reason: `Создали ${pl(total, "объявление", "объявления", "объявлений")} в ${pl(created.length, "канале", "каналах", "каналах")} с бюджетом около ${rub(weekly)} в неделю. Объявления проходят модерацию — обычно это занимает от пары часов до суток. Первые выводы робот сделает через 3 дня, когда накопятся показы.`,
+    details: { created, warnings },
+    undo: created.map((c) => ({ op: "campaignStatus" as const, campaignId: c.campaignId, status: "paused" as const })),
+  });
+}
+
+// ─── Добавление канала к работающей рекламе ─────────────────────────────
+
+/** Ход добавления канала (kv `addch:<businessId>`): тексты → картинки → создание → включение, по шагу за запрос */
+type AddChannelState = { channel: Channel; plan: LaunchPlan; launchId: string; startedAt: string; activation?: Record<string, number> };
+const ADD_KEY = (businessId: string) => `addch:${businessId}`;
+
+async function readAddState(businessId: string): Promise<AddChannelState | null> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, ADD_KEY(businessId)));
+  return (row?.value as AddChannelState | undefined) ?? null;
+}
+async function writeAddState(businessId: string, st: AddChannelState | null) {
+  const db = await getDb();
+  if (!st) {
+    await db.delete(schema.kv).where(eq(schema.kv.key, ADD_KEY(businessId)));
+    return;
+  }
+  await db.insert(schema.kv).values({ key: ADD_KEY(businessId), value: st }).onConflictDoUpdate({ target: schema.kv.key, set: { value: st, updatedAt: new Date() } });
+}
+
+/** Минимальный месячный бюджет, при котором к работающим каналам помещается ещё и этот */
+export function minMonthlyWith(channels: Channel[], add: Channel) {
+  for (let m = 1000; m <= MAX_MONTHLY; m += 100) if (!allocate(m, [...channels, add]).dropped.includes(add)) return m;
+  return null;
+}
+
+/** Каналы, которые можно добавить к работающей рекламе, и хватает ли на них бюджета */
+export async function addableChannels(b: Business, accounts: AdAccount[]) {
+  const db = await getDb();
+  const camps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused"])));
+  const liveChannels = [...new Set(camps.map((c) => c.channel as Channel))];
+  const pending = await readAddState(b.id);
+  return channelsFor(accounts)
+    .filter((x) => !liveChannels.includes(x.channel))
+    .map((x) => ({
+      channel: x.channel,
+      name: CHANNEL_NAME[x.channel],
+      fits: !allocate(b.monthlyBudget, [...liveChannels, x.channel]).dropped.includes(x.channel),
+      minMonthly: minMonthlyWith(liveChannels, x.channel),
+      inProgress: pending?.channel === x.channel,
+    }));
+}
+
+export type AddChannelStep = { done: boolean; ok: boolean; stage: "copy" | "images" | "publish" | "done"; warnings: string[]; campaignId?: string };
+
+/**
+ * Добавить канал к работающей рекламе (например, VK, который не помещался в бюджет до его увеличения).
+ * Многошаговый, как запуск: вызывать повторно, пока done=false. Вызывающий держит блокировку "launch".
+ * Тексты и картинки готовятся только для нового канала; бюджет делится между работающими каналами и новым
+ * (лимиты работающих уменьшаются до включения нового — так сумма не выходит за месячный бюджет).
+ */
+export async function addChannelStep(b: Business, accounts: AdAccount[], channel: Channel | null, opts: { deadline?: number } = {}): Promise<AddChannelStep> {
+  const db = await getDb();
+  const deadline = opts.deadline ?? Date.now() + PUBLISH_BUDGET_MS;
+  if (b.status !== "active" && b.status !== "paused") throw Object.assign(new Error("Добавить канал можно, когда реклама уже запущена"), { status: 409 });
+  let st = await readAddState(b.id);
+  if (st && channel && st.channel !== channel) throw Object.assign(new Error(`Уже добавляем канал «${CHANNEL_NAME[st.channel]}» — дождитесь окончания`), { status: 409 });
+
+  if (!st) {
+    if (!channel) throw Object.assign(new Error("Какой канал добавить?"), { status: 400 });
+    const avail = channelsFor(accounts).find((x) => x.channel === channel);
+    if (!avail) throw Object.assign(new Error(`Для канала «${CHANNEL_NAME[channel]}» подключите рекламный кабинет`), { status: 400 });
+    const camps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused", "ready"])));
+    if (camps.some((c) => c.channel === channel)) throw Object.assign(new Error(`Канал «${CHANNEL_NAME[channel]}» уже работает`), { status: 409 });
+    const liveChannels = [...new Set(camps.map((c) => c.channel as Channel))];
+    const { allocation, dropped } = allocate(b.monthlyBudget, [...liveChannels, channel]);
+    if (dropped.includes(channel)) {
+      const min = minMonthlyWith(liveChannels, channel);
+      throw Object.assign(new Error(`На канал «${CHANNEL_NAME[channel]}» не хватает бюджета${min ? `: нужно от ${rub(min)} в месяц` : ""}. Увеличьте бюджет и попробуйте снова.`), { status: 409 });
+    }
+    const want = { search: false, network: false, vk: false };
+    want[channel] = true;
+    const copy = await generateCopyPlan(b, want);
+    const weekly = allocation.find((a) => a.channel === channel)!.weekly;
+    const plan: LaunchPlan = {
+      createdAt: new Date().toISOString(),
+      stage: "copy",
+      channels: [channelFromCopy(b, copy, channel, avail.account, weekly)],
+      negatives: copy.negatives,
+      callouts: copy.callouts,
+      imageIdeas: copy.imageIdeas,
+      photoIds: [],
+      dropped: [],
+      warnings: [],
+    };
+    st = { channel, plan, launchId: uid("l_"), startedAt: new Date().toISOString() };
+    await writeAddState(b.id, st);
+    return { done: false, ok: true, stage: "copy", warnings: [] };
+  }
+
+  if (st.plan.stage === "copy") {
+    st.plan = await prepareImages(b, st.plan);
+    await writeAddState(b.id, st);
+    return { done: false, ok: true, stage: "images", warnings: st.plan.warnings };
+  }
+
+  // Лимит — по текущему бюджету: его могли поменять, пока готовились тексты и картинки
+  const ch = st.plan.channels[0];
+  const liveCamps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused"])));
+  const liveChannels = [...new Set(liveCamps.map((c) => c.channel as Channel))];
+  const { allocation, dropped } = allocate(b.monthlyBudget, [...liveChannels, ch.channel]);
+  const warnings: string[] = [...st.plan.warnings];
+  if (dropped.includes(ch.channel)) {
+    const stale = (await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), eq(schema.campaigns.channel, ch.channel), inArray(schema.campaigns.status, ["creating", "ready"]))))
+      .filter((c) => metaOf(c).launchId === st!.launchId);
+    const acc = accounts.find((a) => a.id === ch.accountId);
+    await cleanupCreating(stale, acc ? await clientFor(acc) : null, warnings);
+    await writeAddState(b.id, null);
+    throw Object.assign(new Error(`На канал «${CHANNEL_NAME[ch.channel]}» больше не хватает бюджета — бюджет уменьшили. Увеличьте его и попробуйте снова.`), { status: 409 });
+  }
+  ch.weekly = allocation.find((a) => a.channel === ch.channel)!.weekly;
+
+  const ready = (await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), eq(schema.campaigns.status, "ready")))).some((c) => metaOf(c).launchId === st!.launchId);
+  if (!ready) {
+    const account = accounts.find((a) => a.id === ch.accountId);
+    if (!account) {
+      await writeAddState(b.id, null);
+      throw Object.assign(new Error(`${CHANNEL_NAME[ch.channel]}: кабинет отключён`), { status: 400 });
+    }
+    let r: ChannelResult;
+    try {
+      r = await launchChannel(b, st.plan, ch, account, st.launchId, warnings, deadline);
+    } catch (e) {
+      await writeAddState(b.id, null);
+      throw Object.assign(new Error(`${CHANNEL_NAME[ch.channel]}: не удалось создать кампанию — ${errorText(e)}`), { status: 502 });
+    }
+    if (r.state === "skipped") {
+      await writeAddState(b.id, null);
+      return { done: true, ok: false, stage: "done", warnings };
+    }
+    st.plan.warnings = [...new Set(warnings)];
+    await writeAddState(b.id, st);
+    if (r.state === "pending" || deadline - Date.now() < 5_000) return { done: false, ok: true, stage: "publish", warnings: st.plan.warnings };
+  }
+
+  st.activation ??= {};
+  const { activated, retry } = await activateLaunch(b, st.launchId, warnings, { rebudgetLive: true, failures: st.activation });
+  st.plan.warnings = [...new Set(warnings)];
+  if (retry) {
+    await writeAddState(b.id, st);
+    return { done: false, ok: true, stage: "publish", warnings: st.plan.warnings };
+  }
+  await writeAddState(b.id, null);
+  const created = activated.map((c) => ({ channel: c.channel as Channel, campaignId: c.id, ads: metaOf(c).launchStats?.ads ?? 0, errors: metaOf(c).launchStats?.errors ?? 0 }));
+  if (created.length) await logLaunch(b.id, created, activated, st.plan.warnings);
+  return { done: true, ok: created.length > 0, stage: "done", warnings: st.plan.warnings, campaignId: created[0]?.campaignId };
+}
+
+/** Брошенный запуск: бизнес в «launching», а шагов давно не было (владелец закрыл вкладку) */
+export function launchStalled(b: Business, idleMs: number) {
+  const plan = b.launchPlan as LaunchPlan | null;
+  if (b.status !== "launching" || !plan?.launch) return false;
+  const last = new Date(plan.launch.lastStepAt ?? plan.launch.startedAt).getTime();
+  return Date.now() - last > idleMs;
 }
 
 export async function campaignsOf(businessId: string) {

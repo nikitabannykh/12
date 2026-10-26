@@ -10,10 +10,10 @@ import { PLATFORM_NAME } from "@/lib/platforms";
 import { ActionButton, CopyButton } from "@/components/client";
 import { BudgetEditor } from "@/components/BudgetEditor";
 import { NotifySettings } from "@/components/NotifySettings";
-import { getNotify, linkUrl, tgConfigured } from "@/lib/notify";
+import { getNotify, getUnlinked, tgConfigured } from "@/lib/notify";
 import { minMonthlyFor } from "@/lib/engine/budget";
 import { nicheById } from "@/lib/niches";
-import { appUrl, errorText, rub } from "@/lib/util";
+import { appUrl, pl, rub } from "@/lib/util";
 
 export default async function Settings() {
   const user = await requireUser();
@@ -24,16 +24,8 @@ export default async function Settings() {
   const landing = `${appUrl()}/p/${b.publicKey}`;
   const channels = channelsFor(accounts).map((c) => c.channel);
   const notify = await getNotify(b.id);
-  const notifyStatus = { configured: tgConfigured(), connected: Boolean(notify?.telegramChatId), name: notify?.telegramName ?? null, digest: notify ? notify.digest === 1 : true };
-  let tgLink: string | null = null;
-  let tgLinkError: string | null = null;
-  if (notifyStatus.configured && !notifyStatus.connected) {
-    try {
-      tgLink = await linkUrl(b.id);
-    } catch (e) {
-      tgLinkError = `Telegram не ответил: ${errorText(e)}. Обновите страницу чуть позже.`;
-    }
-  }
+  const connected = Boolean(notify?.telegramChatId);
+  const notifyStatus = { configured: tgConfigured(), connected, name: notify?.telegramName ?? null, digest: notify ? notify.digest === 1 : true, unlinked: connected ? null : await getUnlinked(b.id) };
 
   return (
     <div className="grid gap-6">
@@ -44,7 +36,7 @@ export default async function Settings() {
           <div>
             <h2 className="text-lg font-bold">{b.name}</h2>
             <p className="text-muted mt-1">{nicheById(b.niche).label} · {b.city}{b.address ? `, ${b.address}` : ""}</p>
-            <p className="text-sm text-muted mt-2">{b.services.length} услуг в описании{b.offer ? ` · предложение: ${b.offer}` : ""}</p>
+            <p className="text-sm text-muted mt-2">{b.services.length ? `${pl(b.services.length, "услуга", "услуги", "услуг")} в описании` : "Услуги не указаны"}{b.offer ? ` · предложение: ${b.offer}` : ""}</p>
           </div>
           <Link href="/app/start" className="btn btn-ghost btn-sm">Изменить описание</Link>
         </div>
@@ -52,7 +44,7 @@ export default async function Settings() {
 
       <section id="notify" className="card p-5 sm:p-7 scroll-mt-6">
         <h2 className="text-lg font-bold">Уведомления о заявках</h2>
-        <NotifySettings initial={notifyStatus} link={tgLink} linkError={tgLinkError} />
+        <NotifySettings initial={notifyStatus} />
       </section>
 
       <section id="budget" className="card p-5 sm:p-7 scroll-mt-6">

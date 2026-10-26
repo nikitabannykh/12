@@ -440,7 +440,7 @@ export function LaunchWizard(p: Props) {
               );
             })}
           </ul>
-        ) : phase === "publish" ? <p className="hint mt-2">Создаём кампании по очереди, это может занять пару минут. Не закрывайте страницу.</p> : null}
+        ) : phase === "publish" ? <p className="hint mt-2">Создаём кампании по очереди, это может занять пару минут. Показы включим все разом, когда создадим всё, — до этого деньги не тратятся. Если закроете страницу, робот доведёт запуск сам.</p> : null}
       </Step>
 
       <EditAdModal edit={edit} onClose={() => setEdit(null)} onSave={async (v) => { await patchPlan({ adId: edit!.ad.id, ...v }); setEdit(null); }} />

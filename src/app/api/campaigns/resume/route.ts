@@ -1,7 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
-import { act } from "@/lib/engine/ops";
+import { act, applyBudgetTrims, assertFitsBudget } from "@/lib/engine/ops";
 import { CHANNEL_NAME } from "@/lib/platforms";
 
 /** «Включить» с главной: владелец возвращает все каналы на паузе (или выбранные) */
@@ -18,6 +18,9 @@ export const POST = route(async ({ business, req }) => {
   const ready = paused.filter((c) => okAcc.has(c.accountId));
   if (!ready.length) return fail("Кабинет площадки отключён — подключите его заново в настройках, потом включите рекламу");
   const names = ready.map((c) => `«${CHANNEL_NAME[c.channel] ?? c.channel}»`).join(", ");
+  // Канал не должен вывести рекламу за бюджет месяца: иначе робот остановит его снова, а деньги уже уйдут
+  const trims = await assertFitsBudget(business.id, ready.map((c) => ({ campaignId: c.id, status: "active" as const })), "resume");
+  await applyBudgetTrims(business.id, trims, "Вы включаете рекламу");
   await act(
     {
       businessId: business.id, actor: "owner", kind: "resume",

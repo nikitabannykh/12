@@ -5,12 +5,18 @@ import { useRouter } from "next/navigation";
 import { Check, Loader2, Send } from "lucide-react";
 import { ActionButton, api, useToast } from "./client";
 
-type Status = { configured: boolean; connected: boolean; name: string | null; digest: boolean };
+type Unlinked = { reason: string; at: string; chat: string | null };
+type Status = { configured: boolean; connected: boolean; name: string | null; digest: boolean; unlinked?: Unlinked | null };
+
+const dateText = (iso: string) => new Date(iso).toLocaleString("ru-RU", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow" });
 
 /** Блок «Уведомления о заявках»: привязка Telegram, проверка, утренняя сводка */
-export function NotifySettings({ initial, link, linkError }: { initial: Status; link: string | null; linkError?: string | null }) {
+export function NotifySettings({ initial }: { initial: Status }) {
   const [s, setS] = useState(initial);
   const [waiting, setWaiting] = useState(false);
+  const [link, setLink] = useState<string | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
   const [digestBusy, setDigestBusy] = useState(false);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const toast = useToast();
@@ -19,7 +25,25 @@ export function NotifySettings({ initial, link, linkError }: { initial: Status; 
   useEffect(() => setS(initial), [initial]);
   useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
 
-  // После перехода в Telegram ждём, пока владелец нажмёт «Start», — до 5 минут
+  // Ссылка одноразовая и живёт 15 минут — получаем её по нажатию. Окно открываем сразу (иначе браузер заблокирует всплывающее окно)
+  const connect = async () => {
+    setLinkError(null);
+    setLinkBusy(true);
+    const w = window.open("", "_blank");
+    try {
+      const { url } = await api<{ url: string }>("POST", "/api/notify/link");
+      setLink(url);
+      if (w) w.location.href = url;
+      startWaiting();
+    } catch (e) {
+      w?.close();
+      setLinkError((e as Error).message);
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+
+  // После перехода в Telegram ждём, пока владелец нажмёт «Start» и «Подключить», — до 15 минут
   const startWaiting = () => {
     if (timer.current) clearInterval(timer.current);
     setWaiting(true);
@@ -38,7 +62,7 @@ export function NotifySettings({ initial, link, linkError }: { initial: Status; 
       } catch {
         /* попробуем ещё раз */
       }
-      if (Date.now() - started > 5 * 60e3) {
+      if (Date.now() - started > 15 * 60e3) {
         clearInterval(timer.current!);
         setWaiting(false);
       }
@@ -50,20 +74,24 @@ export function NotifySettings({ initial, link, linkError }: { initial: Status; 
   }
 
   if (!s.connected) {
+    const u = s.unlinked;
     return (
       <>
-        <p className="text-muted mt-1 leading-relaxed max-w-2xl">Каждая новая заявка придёт в Telegram сразу — с именем, телефоном и объявлением, из которого пришёл человек. Чем быстрее перезвонить, тем больше людей записывается.</p>
+        {u ? (
+          <p className="mt-2 rounded-xl bg-warn-soft text-ink px-4 py-3 text-sm leading-relaxed max-w-2xl" role="status">
+            <b>Уведомления отключены {dateText(u.at)}</b>{u.chat ? ` (были в чате ${u.chat})` : ""}: {u.reason}. Новые заявки по-прежнему видны в «Статистике», а в Telegram — после повторного подключения.
+          </p>
+        ) : null}
+        <p className="text-muted mt-2 leading-relaxed max-w-2xl">Каждая новая заявка придёт в Telegram сразу — с именем, телефоном и объявлением, из которого пришёл человек. Чем быстрее перезвонить, тем больше людей записывается.</p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          {link ? (
-            <a href={link} target="_blank" rel="noreferrer" className="btn btn-primary btn-sm" onClick={startWaiting}>
-              <Send size={14} /> Подключить Telegram
-            </a>
-          ) : (
-            <span className="text-sm text-bad">{linkError || "Не удалось получить ссылку на бота. Обновите страницу."}</span>
-          )}
-          {waiting ? <span className="text-sm text-muted inline-flex items-center gap-2"><Loader2 size={14} className="spin" /> Откройте бота и нажмите «Запустить» (Start)…</span> : null}
+          <button className="btn btn-primary btn-sm" onClick={connect} disabled={linkBusy}>
+            {linkBusy ? <Loader2 size={14} className="spin" /> : <Send size={14} />} {u ? "Подключить снова" : "Подключить Telegram"}
+          </button>
+          {link && waiting ? <a href={link} target="_blank" rel="noreferrer" className="text-sm font-semibold underline">Telegram не открылся? Нажмите сюда</a> : null}
         </div>
-        <p className="hint mt-3 max-w-2xl">Откроется чат с ботом. Нажмите «Запустить» — и эта страница сама увидит подключение. Ссылка действует час.</p>
+        {linkError ? <p className="text-sm text-bad mt-2" role="alert">{linkError}</p> : null}
+        {waiting ? <p className="text-sm text-muted mt-3 inline-flex items-center gap-2"><Loader2 size={14} className="spin shrink-0" /> В Telegram нажмите «Запустить» (Start), затем «Подключить»…</p> : null}
+        <p className="hint mt-3 max-w-2xl">Откроется чат с ботом. Он спросит, подключить ли уведомления для «вашего бизнеса», — нажмите «Подключить», и эта страница сама увидит подключение. Ссылка одноразовая и действует 15 минут: не пересылайте её никому.</p>
       </>
     );
   }
@@ -71,8 +99,9 @@ export function NotifySettings({ initial, link, linkError }: { initial: Status; 
   return (
     <>
       <div className="mt-2 flex flex-wrap items-center gap-3">
-        <span className="pill bg-good-soft text-good"><Check size={13} /> Заявки приходят в Telegram{s.name ? `: ${s.name}` : ""}</span>
+        <span className="pill bg-good-soft text-good whitespace-normal"><Check size={13} className="shrink-0" /> Заявки приходят в Telegram{s.name ? `: ${s.name}` : ""}</span>
       </div>
+      <p className="hint mt-2 max-w-2xl">Не узнаёте этот чат? Нажмите «Отключить» и подключите Telegram заново — старая ссылка уже не сработает.</p>
       <label className="mt-4 flex items-start gap-3 max-w-2xl cursor-pointer">
         <input
           type="checkbox"
@@ -100,7 +129,7 @@ export function NotifySettings({ initial, link, linkError }: { initial: Status; 
       </label>
       <div className="mt-4 flex flex-wrap gap-2">
         <ActionButton url="/api/notify/test" done="Проверочное сообщение отправлено — загляните в Telegram" refresh={false}>Отправить проверку</ActionButton>
-        <ActionButton method="DELETE" url="/api/notify" confirm="Отключить уведомления в Telegram? Заявки по-прежнему будут видны в «Статистике»." done="Уведомления отключены">Отключить</ActionButton>
+        <ActionButton method="DELETE" url="/api/notify" confirm="Отключить уведомления в Telegram? Заявки по-прежнему будут видны в «Статистике»." done="Уведомления отключены" onDone={() => setS((x) => ({ ...x, connected: false, name: null, unlinked: null }))}>Отключить</ActionButton>
       </div>
     </>
   );

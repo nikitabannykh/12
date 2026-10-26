@@ -13,7 +13,8 @@ import { probBetter, pct, times } from "./stats";
 import { rewriteAd, pickNegativeWords, type LIMITS } from "../ai/copy";
 import { ANGLES, nicheById } from "../niches";
 import { MIN_WEEKLY, weeklyFromMonthly } from "./budget";
-import { cutMeta, fitWeekly, monthWeekly, planLimits, reserveFor, restoreTarget, type BudgetMeta, type Plan, type PlanItem } from "./budget-plan";
+import { firstDays, learningLeft as learningLeftFor, LEARN_LOOKBACK_DAYS } from "./budget-learning";
+import { CATCH_UP, CATCH_UP_GAP, cutMeta, daysLeftInMonth, monthDays, monthKey, monthWeekly, planLimits, reserveFor, restoreTarget, spendableWeekly, type BudgetMeta, type Plan, type PlanItem } from "./budget-plan";
 import { budgetState, businessNow, liveCampaigns, patchBudgetMeta, pausedForBudget, type BudgetState } from "./budget-guard";
 import { addDays, errorText, isoDay, rub, uid, pl, num } from "../util";
 import { landingUrl } from "./launch";
@@ -109,7 +110,7 @@ async function load(b: Business): Promise<Ctx> {
   }
   // Решения владельца важнее: если он что-то включил, выключил или отменил — не спорим с ним две недели.
   // Время — по часам бизнеса (в демо — демо-часы), как и запись истории.
-  const history = await db.select().from(schema.changes).where(and(eq(schema.changes.businessId, b.id), gte(schema.changes.at, addDays(now, -30))));
+  const history = await db.select().from(schema.changes).where(and(eq(schema.changes.businessId, b.id), gte(schema.changes.at, addDays(now, -LEARN_LOOKBACK_DAYS))));
   const ownerChanges = history.filter((ch) => ch.actor === "owner" && ch.at.getTime() >= addDays(now, -14).getTime()).sort((x, y) => x.at.getTime() - y.at.getTime());
   const prot = new Set<string>();
   const ownerStatus = new Map<string, "active" | "paused">();
@@ -123,12 +124,7 @@ async function load(b: Business): Promise<Ctx> {
       if (op.op === "campaignStatus") ownerStatus.set(op.campaignId, op.status === "active" ? "paused" : "active");
     }
   }
-  const firstDay = new Map<string, string>();
-  for (const r of stats) {
-    if (r.impressions <= 0) continue;
-    const d = String(r.day);
-    if (!firstDay.has(r.campaignId) || d < firstDay.get(r.campaignId)!) firstDay.set(r.campaignId, d);
-  }
+  const firstDay = firstDays(stats.map((r) => ({ campaignId: r.campaignId, day: String(r.day), impressions: r.impressions })));
   const imageIds = [...new Set(ads.map((a) => a.imageId).filter(Boolean) as string[])];
   const imgRows = imageIds.length
     ? await db.select({ id: schema.images.id, layout: schema.images.layout, prompt: schema.images.prompt, width: schema.images.width, height: schema.images.height }).from(schema.images).where(inArray(schema.images.id, imageIds))
@@ -156,26 +152,8 @@ async function endExperiment(cx: Ctx, ex: Experiment, status: "won" | "lost" | "
 // ─── Период обучения ───────────────────────────────────────────────────
 // После запуска и после смены стратегии или бюджета площадка заново учится. В это время данные шумные,
 // и любое новое изменение сбрасывает обучение — поэтому ставки, бюджет и стратегию не трогаем.
-// Исключение — защита бюджета месяца: она важнее.
-const LEARN_DAYS = { vk: 7, directLaunch: 14, directStrategy: 14, budget: 7 };
-
-/** Сколько дней ещё учится кампания (0 — обучение закончилось) */
-function learningLeft(cx: Ctx, c: Campaign) {
-  const vk = c.channel === "vk";
-  const events: { at: number; days: number }[] = [];
-  const start = cx.firstDay.get(c.id);
-  events.push({ at: start ? new Date(start).getTime() : c.createdAt.getTime(), days: vk ? LEARN_DAYS.vk : LEARN_DAYS.directLaunch });
-  for (const ch of cx.history) {
-    if (ch.details?.guard) continue; // поправки защиты бюджета не считаем — иначе кампания училась бы вечно
-    for (const op of ch.undo ?? []) {
-      if (!("campaignId" in op) || op.campaignId !== c.id) continue;
-      if (op.op === "campaignStrategy") events.push({ at: ch.at.getTime(), days: vk ? LEARN_DAYS.vk : LEARN_DAYS.directStrategy });
-      if (op.op === "campaignBudget" || op.op === "bidCeiling") events.push({ at: ch.at.getTime(), days: vk ? LEARN_DAYS.vk : LEARN_DAYS.budget });
-    }
-  }
-  const left = Math.max(...events.map((e) => e.at + e.days * 864e5 - cx.now.getTime()));
-  return left > 0 ? Math.ceil(left / 864e5) : 0;
-}
+// Исключение — защита бюджета месяца: она важнее. Правило общее с кабинетом — budget-learning.ts.
+const learningLeft = (cx: Ctx, c: Campaign) => learningLeftFor(c, { now: cx.now, history: cx.history, firstDay: cx.firstDay });
 
 /** Кампании, которые сейчас учатся, — пишем в лог, чтобы было видно, почему робот их не трогает */
 function skipLearning(cx: Ctx, list: Campaign[], what: string) {
@@ -237,7 +215,15 @@ async function createVariant(cx: Ctx, base: Ad, reason: string, opts: { experime
     .sort((x, y) => ctr(y.s) - ctr(x.s))[0]?.a;
   const ch = camp.channel as keyof typeof LIMITS;
   const angle = opts.angle ?? chooseAngle(cx, camp.channel, group.id, [base.angle]);
-  const draft = await rewriteAd(cx.b, { channel: ch, angle, service: camp.channel === "search" ? group.name : undefined, base: { angle: base.angle, title: base.title, title2: base.title2, text: base.text }, tried, reason, winner: winner ? { angle: winner.angle, title: winner.title, title2: winner.title2, text: winner.text } : null });
+  const ask = (a: string | undefined) => rewriteAd(cx.b, { channel: ch, angle: a, service: camp.channel === "search" ? group.name : undefined, base: { angle: base.angle, title: base.title, title2: base.title2, text: base.text }, tried, reason, winner: winner ? { angle: winner.angle, title: winner.title, title2: winner.title2, text: winner.text } : null });
+  // Не повторяем объявление, которое уже было в группе и проиграло или выключено
+  const seen = (d: { title: string; text: string }) => peers.some((p) => p.title === d.title && p.text === d.text);
+  let draft = await ask(angle);
+  for (let i = 0; i < 3 && seen(draft); i++) {
+    const other = chooseAngle(cx, camp.channel, group.id, [base.angle, draft.angle]);
+    draft = await ask(other);
+  }
+  if (seen(draft)) return null;
 
   const [acc] = await db.select().from(schema.adAccounts).where(eq(schema.adAccounts.id, camp.accountId));
   const client = await clientFor(acc);
@@ -313,32 +299,66 @@ async function budgetGuard(cx: Ctx) {
   const budget = cx.b.monthlyBudget;
   const st = await budgetState(cx.b.id, budget, cx.now, cx.campaigns);
   const { newMonth, mark } = await monthTurn(cx, st.month);
-  // Сколько в неделю можно тратить, чтобы остатка точно хватило до конца месяца
-  const total = fitWeekly(st.remaining, st.daysLeft);
-  // Обычная раскладка бюджета (как при запуске и смене бюджета) — но не больше, чем помещается в остаток
-  const allocTotal = Math.min(weeklyFromMonthly(budget), monthWeekly(budget, cx.now), total);
+  // Жёсткая граница: больше этой суммы в неделю реклама могла бы выйти за остаток бюджета до следующей проверки
+  const cap = spendableWeekly(st.remaining, st.daysLeft, st.model);
+  // Обычный темп этого месяца (бюджет ровно на все его дни)
+  const normalTotal = monthWeekly(budget, cx.now);
+  // Площадки обычно тратят меньше лимита. Чтобы бюджет месяца не пропадал, лимиты держим «под остаток»,
+  // но не выше CATCH_UP × обычного темпа и никогда не выше жёсткой границы
+  // В месяц запуска «догоняем» только долю бюджета с дня запуска: запуск 26-го не повод потратить весь месячный бюджет за 5 дней
+  const launched = Math.min(...cx.campaigns.map((c) => new Date(c.createdAt).getTime()));
+  const launchMonth = Number.isFinite(launched) && monthKey(new Date(launched)) === st.month;
+  const planned = launchMonth ? (budget * daysLeftInMonth(new Date(launched))) / monthDays(cx.now) : budget;
+  const plannedCap = launchMonth ? spendableWeekly(planned - st.spent, st.daysLeft, st.model) : cap;
+  const target = Math.min(cap, plannedCap, Math.floor(normalTotal * CATCH_UP));
   const active = cx.campaigns.filter((c) => c.status === "active");
   // Включаем обратно только то, что остановил сам робот из-за бюджета. Паузу владельца не трогаем никогда.
   let resumable = cx.campaigns.filter((c) => pausedForBudget(c) && c.externalId && cx.ownerStatus.get(c.id) !== "paused");
-  // В начале месяца и при включении лимиты раскладываем заново от «обычных»; в середине месяца робот их только снижает.
+  // «Обычные» лимиты. В новом месяце считаем их заново от месячного бюджета с долями каналов (с учётом переносов
+  // между каналами), а не от прошлых лимитов — иначе любые поправки накапливались бы из месяца в месяц.
   // Лимит, который владелец недавно менял сам, не поднимаем и не перераспределяем.
+  const fixedOf = (c: Campaign) => cx.protected.has(c.id);
+  const normals = new Map<string, number>();
+  {
+    const all = [...active, ...resumable];
+    const free = all.filter((c) => !fixedOf(c));
+    const freeBase = Math.max(0, weeklyFromMonthly(budget) - all.filter(fixedOf).reduce((s, c) => s + c.weeklyBudget, 0));
+    const shareSum = free.reduce((s, c) => s + Math.max(restoreTarget(c), 1), 0);
+    for (const c of all) {
+      // Доля канала не ниже минимума площадки: переносы между каналами не должны «выключать» канал в новом месяце
+      const share = newMonth && shareSum ? Math.floor((Math.max(restoreTarget(c), 1) / shareSum) * freeBase) : restoreTarget(c);
+      normals.set(c.id, fixedOf(c) ? c.weeklyBudget : Math.max(share, MIN_WEEKLY[c.channel as Channel], 1));
+    }
+  }
   const item = (c: Campaign, restore: boolean): PlanItem => ({
     id: c.id, channel: c.channel as Channel,
-    want: restore && !cx.protected.has(c.id) ? restoreTarget(c) : c.weeklyBudget,
-    fixed: cx.protected.has(c.id),
+    want: restore && !fixedOf(c) ? normals.get(c.id)! : c.weeklyBudget,
+    fixed: fixedOf(c),
   });
   // Включаем с запасом 10 %, чтобы канал не включался и не выключался через день
   if (resumable.length) {
-    const trial = planLimits([...active, ...resumable].map((c) => item(c, true)), Math.floor(allocTotal * 0.9), true);
+    const trial = planLimits([...active, ...resumable].map((c) => item(c, true)), Math.floor(Math.min(cap, normalTotal) * 0.9), true);
     resumable = resumable.filter((c) => !trial.dropped.includes(c.id));
   }
   const pool = [...active, ...resumable];
   if (pool.length) {
     const items = pool.map((c) => item(c, newMonth || c.status !== "active"));
     const wantSum = items.reduce((s, i) => s + i.want, 0);
-    // В середине месяца снижаем с запасом 3 %, чтобы не дёргать лимиты каждый день; превышение бюджета не допускаем вовсе
-    let plan = newMonth ? planLimits(items, allocTotal, true) : planLimits(items, wantSum > total ? Math.floor(total * 0.97) : total);
-    if (!newMonth && wantSum > total && (plan.dropped.length || plan.short)) plan = planLimits(items, total);
+    let plan: Plan;
+    if (newMonth) {
+      // Новый месяц: обычная раскладка бюджета, как при запуске
+      plan = planLimits(items, Math.min(target, normalTotal), true);
+    } else if (wantSum > cap) {
+      // Не помещаемся в остаток — снижаем с запасом 3 %, чтобы не дёргать лимиты каждый день; превышение бюджета не допускаем вовсе
+      plan = planLimits(items, Math.floor(cap * 0.97));
+      if (plan.dropped.length || plan.short) plan = planLimits(items, cap);
+    } else if (wantSum < target * CATCH_UP_GAP) {
+      // Площадки тратят меньше лимита, и к концу месяца остался бы неизрасходованный бюджет — поднимаем лимиты под остаток
+      // С тем же запасом 3 % до жёсткой границы, что и при снижении, — иначе на следующий день лимиты пришлось бы снова снижать
+      plan = planLimits(items, Math.min(Math.floor(cap * 0.97), target), true);
+    } else {
+      plan = planLimits(items, wantSum);
+    }
     const keep = pool.filter((c) => !plan.dropped.includes(c.id));
     const reserve = reserveFor(sumWeekly(keep, plan), st.daysLeft, st.model);
 
@@ -348,16 +368,23 @@ async function budgetGuard(cx: Ctx) {
         await guardPause(
           cx, active, st,
           `За этот месяц потрачено ${rub(st.spent)} из ${rub(budget)}${left ? `, осталось ${rub(left)}` : ""}. ` +
-            (left ? `До следующей проверки реклама могла бы потратить ещё около ${rub(reserve)} — больше остатка, поэтому остановили её заранее. ` : "Бюджет месяца израсходован. ") +
+            (left ? `Площадки не принимают лимит меньше минимума, а с минимальным лимитом реклама до следующей проверки могла бы потратить около ${rub(reserve)} — больше остатка. Поэтому остановили её заранее. ` : "Бюджет месяца израсходован. ") +
             "1-го числа робот включит рекламу сам. Хотите продолжить раньше — увеличьте бюджет в настройках, и реклама включится сразу.",
           "Остановили рекламу до конца месяца",
         );
         cx.log.push("Бюджет месяца исчерпан — пауза");
       }
     } else {
-      await dropForBudget(cx, active.filter((c) => plan.dropped.includes(c.id)), keep, st, total);
-      await fitLimits(cx, keep.filter((c) => c.status === "active" || resumable.includes(c)), plan, st, newMonth);
+      await dropForBudget(cx, active.filter((c) => plan.dropped.includes(c.id)), keep, st, cap);
+      await fitLimits(cx, keep.filter((c) => c.status === "active" || resumable.includes(c)), plan, st, newMonth, normals);
       await resumeForBudget(cx, resumable.filter((c) => keep.includes(c)), st);
+      // В новом месяце запоминаем «обычные» лимиты и у кампаний, чей лимит не изменился
+      if (newMonth) {
+        for (const c of keep) {
+          const n = normals.get(c.id);
+          if (n !== undefined && restoreTarget(c) !== n && !fixedOf(c)) await syncCampaign(c, {}, cutMeta(c, c.weeklyBudget, n));
+        }
+      }
     }
   }
   if (mark) await markJob(cx, "budget_month", st.month);
@@ -377,26 +404,42 @@ async function dropForBudget(cx: Ctx, drop: Campaign[], keep: Campaign[], st: Bu
   cx.log.push(`Бюджет: отключены ${drop.map((c) => c.channel).join(", ")}`);
 }
 
-/** Поставить лимиты по плану: снизить, чтобы уложиться, или вернуть урезанные в начале месяца */
-async function fitLimits(cx: Ctx, list: Campaign[], plan: Plan, st: BudgetState, newMonth: boolean) {
+/** Поставить лимиты по плану: снизить, чтобы уложиться, поднять под остаток или вернуть обычные в начале месяца */
+async function fitLimits(cx: Ctx, list: Campaign[], plan: Plan, st: BudgetState, newMonth: boolean, normals: Map<string, number>) {
   const moves = list.map((c) => ({ c, next: plan.weekly.get(c.id)! })).filter(({ c, next }) => next !== undefined && next !== c.weeklyBudget);
   if (!moves.length) return;
   const down = moves.filter((m) => m.next < m.c.weeklyBudget), up = moves.filter((m) => m.next > m.c.weeklyBudget);
   const before = sumWeekly(list);
+  const after = sumWeekly(list, plan);
   const projected = st.spent + (before / 7) * st.daysLeft;
+  const normalSum = list.reduce((s, c) => s + (normals.get(c.id) ?? restoreTarget(c)), 0);
   const lines = moves.map((m) => `${CHANNEL_NAME[m.c.channel]}: ${rub(m.c.weeklyBudget)} → ${rub(m.next)}`).join("; ");
   const learning = moves.some((m) => learningLeft(cx, m.c)) ? " Кампании ещё учатся, но бюджет месяца важнее." : "";
-  const title = !up.length ? "Снизили недельные лимиты, чтобы уложиться в бюджет" : !down.length ? (newMonth ? "Вернули обычные недельные лимиты в новом месяце" : "Вернули недельные лимиты") : "Пересчитали недельные лимиты под бюджет месяца";
-  const why = !up.length
-    ? `С начала месяца потрачено ${rub(st.spent)} из ${rub(cx.b.monthlyBudget)}. При прежних лимитах (${rub(before)} в неделю) к концу месяца вышло бы около ${rub(projected)} — больше бюджета. Новые лимиты рассчитаны так, чтобы остатка ${rub(st.remaining)} точно хватило на ${pl(st.daysLeft, "день", "дня", "дней")}.`
-    : newMonth
-      ? `Начался новый месяц — бюджет ${rub(cx.b.monthlyBudget)} снова доступен целиком. Вернули лимиты, которые робот снижал, чтобы уложиться в бюджет, и подогнали их под число дней в месяце.`
-      : `Бюджета снова хватает — вернули лимиты, которые робот снижал раньше.`;
+  // Поднимаем, потому что площадки недотратили (а не возвращаем то, что робот снижал раньше)
+  const restoring = up.every((m) => (normals.get(m.c.id) ?? restoreTarget(m.c)) >= m.next) && before < normalSum;
+  const catchUp = !newMonth && !down.length && !restoring;
+  const title = newMonth
+    ? "Пересчитали недельные лимиты на новый месяц"
+    : !up.length
+      ? "Снизили недельные лимиты, чтобы уложиться в бюджет"
+      : catchUp
+        ? "Подняли недельные лимиты под остаток бюджета"
+        : !down.length
+          ? "Вернули недельные лимиты"
+          : "Пересчитали недельные лимиты под бюджет месяца";
+  const days = pl(st.daysLeft, "день", "дня", "дней");
+  const why = newMonth
+    ? `Начался новый месяц — бюджет ${rub(cx.b.monthlyBudget)} снова доступен целиком. Лимиты рассчитали заново от бюджета месяца с прежними долями каналов и подогнали под число дней в месяце.`
+    : !up.length
+      ? `С начала месяца потрачено ${rub(st.spent)} из ${rub(cx.b.monthlyBudget)}. При прежних лимитах (${rub(before)} в неделю) к концу месяца вышло бы около ${rub(projected)} — больше бюджета. Новые лимиты рассчитаны так, чтобы остатка ${rub(st.remaining)} точно хватило на ${days}.`
+      : catchUp
+        ? `Площадки тратят меньше недельного лимита: с начала месяца потрачено ${rub(st.spent)} из ${rub(cx.b.monthlyBudget)}, осталось ${rub(st.remaining)} на ${days}. Чтобы остаток не пропал, подняли лимиты под него — больше бюджета месяца реклама всё равно не потратит.${after > normalSum ? " 1-го числа лимиты вернутся к обычным." : ""}`
+        : `Бюджета снова хватает — вернули лимиты, которые робот снижал раньше.`;
   await act(
     { businessId: cx.b.id, actor: "robot", kind: "budget", title, reason: `${why} ${lines}.${learning}`, details: { guard: true, spent: Math.round(st.spent), projected: Math.round(projected) } },
     moves.map((m) => ({ op: "campaignBudget" as const, campaignId: m.c.id, weeklyBudget: m.next })),
   );
-  for (const m of moves) await syncCampaign(m.c, { weeklyBudget: m.next }, cutMeta(m.c, m.next));
+  for (const m of moves) await syncCampaign(m.c, { weeklyBudget: m.next }, cutMeta(m.c, m.next, normals.get(m.c.id) ?? restoreTarget(m.c)));
   cx.log.push(title);
 }
 
@@ -504,7 +547,7 @@ async function resolveExperiments(cx: Ctx) {
           ? `Гипотеза не подтвердилась: новый вариант даёт ${fmt(rate(sv))} ${metric} против ${fmt(rate(sc))}. Оставили прежний.`
           : `За ${MAX_TEST_DAYS} дней явного победителя нет (${fmt(rate(sv))} против ${fmt(rate(sc))} ${metric}). Оставили тот, что немного лучше.`;
     await act(
-      { businessId: cx.b.id, actor: "robot", kind: "test_end", title: `Тест завершён: ${status === "won" ? "новый вариант лучше" : status === "lost" ? "старый вариант лучше" : "ничья"}`, reason: `Проверяли: ${hyp}. ${result} Отключили ${adLabel(loser)}, работает ${adLabel(winner)}.`, details: { experimentId: ex.id, p, control: sc, variant: sv } },
+      { businessId: cx.b.id, actor: "robot", kind: "test_end", title: `Тест завершён: ${status === "won" ? "новый вариант лучше" : status === "lost" ? "старый вариант лучше" : "ничья"}`, reason: `Проверяли: ${hyp}. ${result} ${loser.title === winner.title && ex.kind === "creative" ? `Отключили вариант с ${loser.id === ex.variantId ? "новой" : "прежней"} картинкой, работает вариант с ${winner.id === ex.variantId ? "новой" : "прежней"}.` : `Отключили ${adLabel(loser)}, работает ${adLabel(winner)}.`}`, details: { experimentId: ex.id, p, control: sc, variant: sv } },
       [{ op: "adStatus", adId: loser.id, status: "paused" }],
     );
     await endExperiment(cx, ex, status, result);
@@ -814,7 +857,8 @@ async function rebalance(cx: Ctx) {
     return;
   }
   const minW = MIN_WEEKLY[worst.c.channel as Channel];
-  const move = Math.min(Math.floor(worst.c.weeklyBudget * 0.25), worst.c.weeklyBudget - minW);
+  // Ни текущий, ни «обычный» лимит (к нему робот вернёт канал 1-го числа) не опускаем ниже минимума площадки
+  const move = Math.min(Math.floor(worst.c.weeklyBudget * 0.25), worst.c.weeklyBudget - minW, restoreTarget(worst.c) - minW);
   if (move < 100) {
     await markJob(cx, "rebalance", "минимум");
     return;
@@ -961,7 +1005,7 @@ export async function applyMonthlyBudget(b: Business, monthly: number, opts: { a
   const normal = new Map(pool.map((c) => [c.id, Math.floor(restoreTarget(c) * k)]));
   const items = pool.map((c) => ({ id: c.id, channel: c.channel as Channel, want: normal.get(c.id)! }));
   // Раскладка, которая помещается в остаток этого месяца
-  const plan = planLimits(items, Math.min(weeklyFromMonthly(monthly), monthWeekly(monthly, now), fitWeekly(st.remaining, st.daysLeft)), true);
+  const plan = planLimits(items, Math.min(monthWeekly(monthly, now), spendableWeekly(st.remaining, st.daysLeft, st.model)), true);
   const keep = pool.filter((c) => !plan.dropped.includes(c.id));
   const stopAll = pool.length > 0 && (st.remaining <= 0 || st.remaining < reserveFor(sumWeekly(keep, plan), st.daysLeft, st.model));
   const toPause = stopAll ? active : active.filter((c) => plan.dropped.includes(c.id));

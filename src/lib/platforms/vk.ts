@@ -12,7 +12,26 @@ import { sleep } from "../util";
  * Маркировку VK Реклама делает сама для прямых рекламодателей: токен erid присваивается автоматически.
  */
 const BASE = () => process.env.VK_ADS_API_URL || "https://ads.vk.com/api";
+/** Минимальный дневной бюджет VK — 100 ₽ (в единицах кабинета, то есть без НДС) */
 export const VK_MIN_DAILY = 100;
+
+/**
+ * НДС. Бюджет владельца — реальные деньги с НДС (как и для Директа, см. yandex.ts). Финансовые показатели кабинета
+ * VK Рекламы — ставки, лимиты, остаток — указаны без НДС; расход, который VK отдаёт во внешние системы
+ * (выгрузка расходов в Метрику), тоже «без учёта НДС». Документация API (объект AdPlan: budget_limit_day —
+ * «Daily campaign budget») единиц не уточняет, поэтому ставка настраивается: VK_ADS_VAT (по умолчанию 0.22;
+ * 0 — если на реальном кабинете окажется, что лимиты и spent уже с НДС).
+ *  - дневной лимит: недельный бюджет с НДС / 7 / (1 + ставка);
+ *  - расход из статистики (base.spent): × (1 + ставка), чтобы сравнивать с бюджетом владельца.
+ */
+export const VK_VAT = (() => {
+  const v = Number(process.env.VK_ADS_VAT ?? 0.22);
+  return Number.isFinite(v) && v >= 0 && v < 1 ? v : 0.22;
+})();
+export const vkDailyNet = (weeklyGross: number) => Math.max(VK_MIN_DAILY, Math.floor(weeklyGross / 7 / (1 + VK_VAT)));
+/** Минимальный недельный бюджет VK с НДС: 100 ₽/день без НДС × 7 */
+export const VK_MIN_WEEKLY_GROSS = Math.ceil(VK_MIN_DAILY * (1 + VK_VAT)) * 7;
+const grossOf = (net: number) => Math.round(net * (1 + VK_VAT) * 100) / 100;
 
 type Tokens = { accessToken: string; refreshToken: string | null };
 
@@ -98,6 +117,8 @@ export class VkAds implements PlatformClient {
 
   private imageCache = new Map<string, number>();
 
+  private onImageUploaded?: LaunchHooks["onImageUploaded"];
+
   async uploadImage(img: NonNullable<AdSpec["image"]>): Promise<number> {
     if (img.cachedRef) return Number(img.cachedRef);
     const hit = this.imageCache.get(img.imageId);
@@ -107,6 +128,7 @@ export class VkAds implements PlatformClient {
     form.append("data", JSON.stringify({ width: img.width, height: img.height }));
     const j = await this.req("POST", "v2/content/static.json", { form });
     this.imageCache.set(img.imageId, Number(j.id));
+    await this.onImageUploaded?.(img.imageId, String(j.id)).catch(() => undefined);
     return Number(j.id);
   }
 
@@ -161,7 +183,17 @@ export class VkAds implements PlatformClient {
     return e instanceof PlatformError && e.httpStatus === 400;
   }
 
-  /** Наш план по точному имени (кроме удалённых) — проверка перед повтором, чтобы не создать дубль */
+  /** Имя плана на площадке: с меткой запуска, чтобы по имени находить только свой план (а не план прошлого запуска) */
+  static planName(spec: Pick<CampaignSpec, "name" | "tag">) {
+    const tag = spec.tag ? ` #${spec.tag}` : "";
+    return spec.name.slice(0, 120 - tag.length) + tag;
+  }
+
+  async findCampaignByName(name: string) {
+    return this.findPlanByName(name);
+  }
+
+  /** Наш план по точному имени (кроме удалённых) — проверка перед созданием и повтором, чтобы не создать дубль */
   private async findPlanByName(name: string): Promise<string | null> {
     for (let offset = 0; offset < 5000; offset += 250) {
       const j = await this.req("GET", "v2/ad_plans.json", { query: { fields: "id,name,status", limit: 250, offset } });
@@ -173,59 +205,69 @@ export class VkAds implements PlatformClient {
     return null;
   }
 
+  /**
+   * План создаётся заблокированным (status "blocked" — допустимое значение AdPlan.status наряду с active/deleted):
+   * показы включает activateCampaign в конце успешного запуска, поэтому прерванный запуск не тратит деньги.
+   * Перед созданием ищем план по имени с меткой запуска: если прошлая попытка создала его, но ответ потерялся
+   * (или функцию убили до сохранения ID), используем его вместо второго.
+   */
   async launchCampaign(spec: CampaignSpec, hooks?: LaunchHooks): Promise<LaunchResult> {
     const warnings: string[] = [];
-    const urlId = await this.createUrl(spec.siteUrl);
-    const packageId = await this.trafficPackageId();
-    const daily = Math.max(VK_MIN_DAILY, Math.round(spec.weeklyBudget / 7));
-    const name = spec.name.slice(0, 120);
+    this.onImageUploaded = hooks?.onImageUploaded;
+    const name = VkAds.planName(spec);
+    let planId: string | null = spec.resume?.campaignExt ?? (await this.findPlanByName(name));
+    let groupIdsFromResponse: string[] = [];
     const imageRefs: Record<string, string | undefined> = {};
 
-    const buildGroups = async (rich: boolean) => {
-      const groups = [];
-      for (const g of spec.groups) {
-        const banners = [];
-        for (const ad of g.ads) {
-          try {
-            const b = await this.banner(ad, urlId, rich);
-            imageRefs[ad.localId] = b.imageRef;
-            banners.push(b.banner);
-          } catch (e) {
-            if (rich) warnings.push(`Объявление «${ad.title}»: ${(e as Error).message}`);
-          }
-        }
-        const targetings: Record<string, unknown> = {
-          geo: { regions: g.regionIds.length ? g.regionIds : [188] },
-          age: { age_list: this.age(g.ageFrom, g.ageTo) },
-        };
-        if (g.sex && g.sex !== "any") targetings.sex = [g.sex];
-        // При бюджете на уровне кампании бюджет и дата старта групп должны ему соответствовать
-        groups.push({ name: g.name.slice(0, 120), package_id: packageId, targetings, budget_limit_day: daily, date_start: spec.startDate, banners });
-      }
-      return groups;
-    };
-    const planBody = (ad_groups: unknown[]) => ({
-      name, status: "active", objective: "traffic", autobidding_mode: "max_goals",
-      budget_limit_day: daily, date_start: spec.startDate, ad_object_type: "url", ad_object_id: urlId, ad_groups,
-    });
+    if (!planId) {
+      const urlId = await this.createUrl(spec.siteUrl);
+      const packageId = await this.trafficPackageId();
+      const daily = vkDailyNet(spec.weeklyBudget);
 
-    let planId: string | null = null;
-    let groupIdsFromResponse: string[] = [];
-    try {
-      const plan = await this.req("POST", "v2/ad_plans.json", { body: planBody(await buildGroups(true)) });
-      planId = String(plan.id);
-      groupIdsFromResponse = (plan.ad_groups ?? []).map((g: any) => String(g.id));
-    } catch (e) {
-      // Ответ мог потеряться, хотя план создан (таймаут, 5xx) — сначала ищем его по имени
-      planId = await this.findPlanByName(name).catch(() => null);
-      if (planId) warnings.push("VK ответил с ошибкой, но кампания создалась — используем её");
-      else if (VkAds.isValidation(e)) {
-        // 400: план не создан. Чаще всего VK не принимает необязательные «о компании» или логотип — повторяем без них
-        const plan = await this.req("POST", "v2/ad_plans.json", { body: planBody(await buildGroups(false)) });
+      const buildGroups = async (rich: boolean) => {
+        const groups = [];
+        for (const g of spec.groups) {
+          const banners = [];
+          for (const ad of g.ads) {
+            try {
+              const b = await this.banner(ad, urlId, rich);
+              imageRefs[ad.localId] = b.imageRef;
+              banners.push(b.banner);
+            } catch (e) {
+              if (rich) warnings.push(`Объявление «${ad.title}»: ${(e as Error).message}`);
+            }
+          }
+          const targetings: Record<string, unknown> = {
+            geo: { regions: g.regionIds.length ? g.regionIds : [188] },
+            age: { age_list: this.age(g.ageFrom, g.ageTo) },
+          };
+          if (g.sex && g.sex !== "any") targetings.sex = [g.sex];
+          // При бюджете на уровне кампании бюджет и дата старта групп должны ему соответствовать
+          groups.push({ name: g.name.slice(0, 120), package_id: packageId, targetings, budget_limit_day: daily, date_start: spec.startDate, banners });
+        }
+        return groups;
+      };
+      const planBody = (ad_groups: unknown[]) => ({
+        name, status: "blocked", objective: "traffic", autobidding_mode: "max_goals",
+        budget_limit_day: daily, date_start: spec.startDate, ad_object_type: "url", ad_object_id: urlId, ad_groups,
+      });
+
+      try {
+        const plan = await this.req("POST", "v2/ad_plans.json", { body: planBody(await buildGroups(true)) });
         planId = String(plan.id);
         groupIdsFromResponse = (plan.ad_groups ?? []).map((g: any) => String(g.id));
-        warnings.push(`Блок «о компании» и логотип VK не принял, объявления созданы без них: ${(e as Error).message}`);
-      } else throw e;
+      } catch (e) {
+        // Ответ мог потеряться, хотя план создан (таймаут, 5xx) — сначала ищем его по имени
+        planId = await this.findPlanByName(name).catch(() => null);
+        if (planId) warnings.push("VK ответил с ошибкой, но кампания создалась — используем её");
+        else if (VkAds.isValidation(e)) {
+          // 400: план не создан. Чаще всего VK не принимает необязательные «о компании» или логотип — повторяем без них
+          const plan = await this.req("POST", "v2/ad_plans.json", { body: planBody(await buildGroups(false)) });
+          planId = String(plan.id);
+          groupIdsFromResponse = (plan.ad_groups ?? []).map((g: any) => String(g.id));
+          warnings.push(`Блок «о компании» и логотип VK не принял, объявления созданы без них: ${(e as Error).message}`);
+        } else throw e;
+      }
     }
     await hooks?.onCampaignCreated?.(planId);
 
@@ -234,10 +276,11 @@ export class VkAds implements PlatformClient {
       const groupsRes = await this.req("GET", "v2/ad_groups.json", { query: { _ad_plan_id: planId, fields: "id,name", limit: 100 } });
       groupItems = (groupsRes.items ?? []).map((x: any) => ({ id: String(x.id), name: String(x.name) }));
     }
-    const out: LaunchResult = { campaignExt: planId, groups: [], warnings };
+    const out: LaunchResult = { campaignExt: planId, groups: [], warnings, complete: true };
     for (const [gi, g] of spec.groups.entries()) {
       const groupExt = groupIdsFromResponse[gi] ?? (groupItems.find((x) => x.name === g.name.slice(0, 120)) ?? groupItems[gi])?.id ?? "";
       let bannerItems: any[] = [];
+      const used = new Set<string>();
       if (groupExt) {
         const br = await this.req("GET", "v2/banners.json", { query: { _ad_group_id: groupExt, fields: "id,name", limit: 100 } });
         bannerItems = br.items ?? [];
@@ -246,12 +289,22 @@ export class VkAds implements PlatformClient {
         localId: g.localId,
         groupExt,
         ads: g.ads.map((ad, i) => {
-          const b = bannerItems.find((x) => x.name === ad.title.slice(0, 60)) ?? bannerItems[i];
+          // По имени среди ещё не сопоставленных (у двух объявлений группы заголовок может совпадать), иначе по порядку
+          const free = bannerItems.filter((x) => !used.has(String(x.id)));
+          const b = free.find((x) => x.name === ad.title.slice(0, 60)) ?? (bannerItems[i] && !used.has(String(bannerItems[i].id)) ? bannerItems[i] : free[0]);
+          if (b) used.add(String(b.id));
           return { localId: ad.localId, adExt: b ? String(b.id) : null, imageRef: imageRefs[ad.localId], error: b ? undefined : "VK не вернул объявление" };
         }),
       });
+      await hooks?.onGroupCreated?.(g.localId, groupExt);
+      await hooks?.onAdsCreated?.(g.localId, groupExt, out.groups[out.groups.length - 1].ads);
     }
     return out;
+  }
+
+  /** Разблокировать план после успешного запуска */
+  async activateCampaign(campaignExt: string) {
+    await this.setCampaignActive(campaignExt, true);
   }
 
   async removeCampaign(campaignExt: string) {
@@ -283,7 +336,7 @@ export class VkAds implements PlatformClient {
   }
 
   async setBudget(campaignExt: string, p: { channel: Channel; weeklyBudget: number; strategy: Strategy }) {
-    await this.req("POST", `v2/ad_plans/${campaignExt}.json`, { body: { budget_limit_day: Math.max(VK_MIN_DAILY, Math.round(p.weeklyBudget / 7)) } });
+    await this.req("POST", `v2/ad_plans/${campaignExt}.json`, { body: { budget_limit_day: vkDailyNet(p.weeklyBudget) } });
   }
 
   async setNegativeKeywords() {
@@ -347,7 +400,7 @@ export class VkAds implements PlatformClient {
             day: row.date,
             impressions: Number(base.shows) || 0,
             clicks: Number(base.clicks) || 0,
-            cost: Number(base.spent) || 0,
+            cost: grossOf(Number(base.spent) || 0), // VK отдаёт расход без НДС — приводим к деньгам владельца
             conversions: Number(base.goals) || 0,
           });
         }

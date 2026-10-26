@@ -1,16 +1,17 @@
 import { route, json, fail, needBusiness } from "@/lib/api";
-import { linkUrl, tgConfigured } from "@/lib/notify";
-import { errorText } from "@/lib/util";
+import { linkUrl, tgConfigured, tgErrorText } from "@/lib/notify";
+import { hit } from "@/lib/ratelimit";
 
-/** Ссылка на бота с подписанным кодом привязки (действует час) */
+/** Ссылка на бота с одноразовым кодом привязки (действует 15 минут, в боте нужно подтвердить подключение) */
 export const POST = route(async ({ business }) => {
   needBusiness(business);
-  if (!tgConfigured()) return fail("Telegram-уведомления не настроены на сервере: нет TELEGRAM_BOT_TOKEN");
+  if (!tgConfigured()) return fail("Telegram-уведомления не настроены на сервере: нет TELEGRAM_BOT_TOKEN", 503);
+  if (!(await hit(`notify-link:${business.id}`, 10, 600)).ok) return fail("Слишком много попыток подряд. Попробуйте через 10 минут.", 429);
   try {
     const url = await linkUrl(business.id);
     if (!url) return fail("Не удалось узнать имя бота. Проверьте TELEGRAM_BOT_TOKEN.", 502);
     return json({ url });
   } catch (e) {
-    return fail(`Telegram не ответил: ${errorText(e)}`, 502);
+    return fail(tgErrorText(e), 502);
   }
 });

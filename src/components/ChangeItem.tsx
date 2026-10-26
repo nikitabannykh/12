@@ -18,6 +18,15 @@ const KIND: Record<string, string> = {
   negatives: "Минус-слова", test_start: "A/B-тест", test_end: "Итог теста", strategy: "Стратегия", revert: "Отмена", profile: "Описание",
 };
 
+/**
+ * В тесте картинок у вариантов одинаковые заголовки, и итог читался как «Отключили «X», работает «X»».
+ * Для старых записей в истории переписываем фразу понятнее.
+ */
+function readable(c: Change): string | null {
+  if (!c.reason) return c.reason;
+  return c.reason.replace(/Отключили («[^»]*»), работает \1\./, "Заголовки у вариантов одинаковые — сравнивали только картинки. Вариант с проигравшей картинкой отключили, с выигравшей — оставили.");
+}
+
 export function ChangeItem({ c, compact = false }: { c: Change; compact?: boolean }) {
   const robot = c.actor === "robot";
   return (
@@ -30,7 +39,7 @@ export function ChangeItem({ c, compact = false }: { c: Change; compact?: boolea
           <span className="font-semibold leading-snug">{c.title}</span>
         </div>
         <div className="text-xs text-faint mt-0.5">{KIND[c.kind] ?? "Изменение"} · {when(c.at)} · {robot ? "робот" : "вы"}</div>
-        <p className={`text-[0.93rem] text-ink-2 mt-1.5 leading-relaxed ${compact ? "line-clamp-2" : ""}`}>{c.reason}</p>
+        <p className={`text-[0.93rem] text-ink-2 mt-1.5 leading-relaxed ${compact ? "line-clamp-2" : ""}`}>{readable(c)}</p>
         {!compact && c.undo?.length && !c.revertedAt ? (
           <div className="mt-2">
             <ActionButton url={`/api/changes/${c.id}/revert`} done="Отменили — всё как было" confirm="Вернуть как было до этого изменения?">Отменить</ActionButton>

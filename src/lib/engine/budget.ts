@@ -4,7 +4,9 @@ import type { Channel } from "../platforms/types";
 export const MIN_WEEKLY: Record<Channel, number> = {
   search: 370, // автостратегия Директа: 300 ₽ без НДС (лимит уходит в Директ за вычетом НДС)
   network: 370,
-  vk: 700, // дневной бюджет VK — от 100 ₽
+  // Дневной бюджет VK — от 100 ₽ без НДС. Лимит уходит в VK за вычетом НДС (÷1,22), а расход считаем с НДС,
+  // поэтому минимум — 100 × 1,22 = 122 ₽ в день, 854 ₽ в неделю
+  vk: 854,
 };
 
 export const WEEKS_IN_MONTH = 30.4 / 7;

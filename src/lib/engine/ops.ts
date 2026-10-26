@@ -3,11 +3,12 @@ import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { getDb, schema, type DB } from "../db";
 import type { Campaign, Change, UndoOp } from "../db/schema";
 import { clientFor } from "../platforms";
-import { rub, uid } from "../util";
+import { pl, rub, uid } from "../util";
 import type { PlatformClient } from "../platforms/types";
 import { businessNow, budgetState, liveCampaigns } from "./budget-guard";
-import { reserveFor } from "./budget-plan";
-import { weeklyFromMonthly } from "./budget";
+import { reserveFor, restoreTarget, spendableWeekly } from "./budget-plan";
+import { MIN_WEEKLY } from "./budget";
+import type { Channel } from "../platforms/types";
 
 /**
  * Любое изменение рекламы — это набор операций. Каждая операция, применяясь, возвращает обратную.
@@ -128,12 +129,30 @@ export async function applyOp(op: UndoOp, cx?: Ctx): Promise<UndoOp> {
   }
 }
 
-/** Применить набор операций; при ошибке — откатить уже применённые */
+/** JSON с отсортированными ключами — чтобы сравнивать операции независимо от порядка полей */
+const canon = (v: unknown): string =>
+  Array.isArray(v) ? `[${v.map(canon).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v as object).sort().map((k) => `${k}:${canon((v as Record<string, unknown>)[k])}`).join(",")}}` : JSON.stringify(v ?? null);
+
+/** Операция ничего не поменяла: обратная к ней совпадает с ней самой (или пустой набор минус-слов) */
+export const isNoop = (op: UndoOp, inverse: UndoOp) =>
+  // Группа: статусы объявлений внутри могли поменяться, даже если статус группы тот же
+  (op.op !== "groupStatus" && canon(op) === canon(inverse)) || ((inverse.op === "addNegatives" || inverse.op === "removeNegatives") && !inverse.words.length);
+
+/**
+ * Применить набор операций; при ошибке — откатить уже применённые.
+ * Возвращает обратные операции только для того, что действительно изменилось: «пустые» обратные операции
+ * в истории мешали бы отменять более ранние изменения тех же объектов.
+ */
 export async function applyOps(ops: UndoOp[], who: Who = "robot"): Promise<UndoOp[]> {
   const c = await ctx(who);
   const inverse: UndoOp[] = [];
+  const changed: UndoOp[] = [];
   try {
-    for (const op of ops) inverse.unshift(await applyOp(op, c));
+    for (const op of ops) {
+      const inv = await applyOp(op, c);
+      inverse.unshift(inv);
+      if (!isNoop(op, inv)) changed.unshift(inv);
+    }
   } catch (e) {
     for (const inv of inverse) {
       try {
@@ -144,7 +163,7 @@ export async function applyOps(ops: UndoOp[], who: Who = "robot"): Promise<UndoO
     }
     throw e;
   }
-  return inverse;
+  return changed;
 }
 
 export type ChangeInput = {
@@ -157,6 +176,8 @@ export type ChangeInput = {
   undo?: UndoOp[] | null;
   /** Какое изменение отменяет эта запись */
   revertOf?: string | null;
+  /** Время записи; по умолчанию — «сейчас» бизнеса (в демо — по демо-часам) */
+  at?: Date;
 };
 
 export async function logChange(ch: ChangeInput) {
@@ -166,7 +187,7 @@ export async function logChange(ch: ChangeInput) {
     id,
     businessId: ch.businessId,
     // В демо время идёт по демо-часам бизнеса — иначе история и «защита решений владельца» живут в другом времени, чем статистика
-    at: await businessNow(ch.businessId),
+    at: ch.at ?? (await businessNow(ch.businessId)),
     actor: ch.actor,
     kind: ch.kind,
     title: ch.title,
@@ -266,37 +287,105 @@ async function assertNoNewerChanges(ch: Change, all: Change[], onlyKeys?: string
       return inEffect(y) && (y.undo ?? []).some((op) => opKeys(op).some((k) => keys.has(k)));
     })
     .sort((a, b) => b.at.getTime() - a.at.getTime());
+  // Более позднее изменение, чьё действие на эти поля сейчас не видно (объект уже в состоянии «до» него —
+  // например, «пустая» отмена, которая ничего не поменяла), не мешает: отмена ничего его не перезапишет
+  for (let i = newer.length - 1; i >= 0; i--) {
+    const ops = (newer[i].undo ?? []).filter((op) => opKeys(op).some((k) => keys.has(k)));
+    let visible = false;
+    for (const op of ops) if (!(await alreadyThere(op))) { visible = true; break; }
+    if (!visible) newer.splice(i, 1);
+  }
   if (newer.length) {
     const y = newer[0];
     throw userError(`Сначала отмените более позднее изменение: «${y.title}» (${shortDate(y.at)}). Иначе отмена перезапишет то, что поменяли после.`, 409);
   }
 }
 
-/** Не даём отменой включить рекламу или поднять лимиты сверх бюджета месяца */
-async function assertFitsBudget(ch: Change) {
+export type BudgetChange = { campaignId: string; status?: "active" | "paused"; weekly?: number };
+
+/**
+ * Не даём включить рекламу или поднять лимиты сверх бюджета месяца — ни отменой, ни кнопкой «Включить»,
+ * ни правкой недельного лимита. Принимает итоговые статусы и лимиты кампаний; снижение и паузу не проверяет.
+ * action — что делает владелец, от этого зависит подсказка в тексте ошибки.
+ *
+ * Если робот поднимал лимиты других каналов выше обычных (чтобы потратить остаток), а с ними изменение не помещается,
+ * возвращает операции, которые вернут эти лимиты к обычным, — их нужно применить вместе с изменением владельца.
+ */
+export async function assertFitsBudget(businessId: string, changes: BudgetChange[], action: "revert" | "resume" | "limit" = "revert"): Promise<UndoOp[]> {
   const db = await getDb();
-  const [b] = await db.select().from(schema.businesses).where(eq(schema.businesses.id, ch.businessId));
-  if (!b || b.status !== "active") return;
+  const [b] = await db.select().from(schema.businesses).where(eq(schema.businesses.id, businessId));
+  if (!b || b.status !== "active") return [];
   const camps = await liveCampaigns(b.id);
-  const after = new Map(camps.map((c) => [c.id, { status: c.status, weekly: c.weeklyBudget }]));
+  const after = new Map(camps.map((c) => [c.id, { status: c.status, weekly: c.weeklyBudget, channel: c.channel, normal: restoreTarget(c) }]));
   let touches = false;
-  for (const op of ch.undo ?? []) {
-    const c = "campaignId" in op ? after.get(op.campaignId) : undefined;
+  for (const ch of changes) {
+    const c = after.get(ch.campaignId);
     if (!c) continue;
-    if (op.op === "campaignStatus" && op.status === "active" && c.status !== "active") { c.status = "active"; touches = true; }
-    if (op.op === "campaignBudget" && op.weeklyBudget > c.weekly) { c.weekly = op.weeklyBudget; touches = true; }
+    if (ch.status === "active" && c.status !== "active") { c.status = "active"; touches = true; }
+    if (ch.status === "paused") c.status = "paused";
+    if (typeof ch.weekly === "number") {
+      if (ch.weekly > c.weekly) touches = true;
+      c.weekly = ch.weekly;
+    }
   }
-  if (!touches) return;
-  const running = [...after.values()].filter((c) => c.status === "active");
-  const weekly = running.reduce((s, c) => s + c.weekly, 0);
-  if (weekly > weeklyFromMonthly(b.monthlyBudget) + 1) {
-    throw userError(`После отмены недельные лимиты составят ${rub(weekly)} — это больше, чем позволяет бюджет ${rub(b.monthlyBudget)} в месяц. Сначала увеличьте бюджет в настройках.`);
-  }
+  if (!touches) return [];
+  const running = [...after.entries()].filter(([, c]) => c.status === "active");
+  if (!running.length) return [];
   const now = await businessNow(b.id, camps);
   const st = await budgetState(b.id, b.monthlyBudget, now, camps);
-  if (st.remaining < reserveFor(weekly, st.daysLeft, st.model)) {
-    throw userError(`Бюджет этого месяца почти израсходован: потрачено ${rub(st.spent)} из ${rub(b.monthlyBudget)}. Если включить рекламу, она выйдет за бюджет, и робот снова её остановит. Увеличьте бюджет в настройках — тогда реклама включится сама.`);
+  const cap = spendableWeekly(st.remaining, st.daysLeft, st.model);
+  // Лимиты в пределах «безопасной» суммы — до следующей проверки реклама точно не выйдет за остаток
+  const fits = (w: number) => w <= cap + 1 && st.remaining >= reserveFor(w, st.daysLeft, st.model);
+  const touched = new Set(changes.map((c) => c.campaignId));
+  const trims = running.filter(([id, c]) => !touched.has(id) && c.normal < c.weekly);
+  const trimmed = running.reduce((s, [id, c]) => s + (!touched.has(id) && c.normal < c.weekly ? c.normal : c.weekly), 0);
+  if (fits(running.reduce((s, [, c]) => s + c.weekly, 0))) return [];
+  if (trims.length && fits(trimmed)) return trims.map(([id, c]) => ({ op: "campaignBudget" as const, campaignId: id, weeklyBudget: c.normal }));
+  const weekly = trimmed;
+  const days = pl(st.daysLeft, "день", "дня", "дней");
+  const head =
+    st.remaining <= 0
+      ? `Бюджет этого месяца израсходован: потрачено ${rub(st.spent)} из ${rub(b.monthlyBudget)}.`
+      : `В этом месяце потрачено ${rub(st.spent)} из ${rub(b.monthlyBudget)}, осталось ${rub(st.remaining)} на ${days}. Чтобы не выйти за бюджет, все каналы вместе могут тратить не больше ${rub(cap)} в неделю, а получилось бы ${rub(weekly)}.`;
+  let tip: string;
+  if (action === "limit" && changes.length === 1 && typeof changes[0].weekly === "number" && st.remaining > 0) {
+    const others = weekly - (after.get(changes[0].campaignId)?.weekly ?? 0);
+    const room = Math.floor(cap - others);
+    const c = after.get(changes[0].campaignId);
+    const min = c ? MIN_WEEKLY[c.channel as Channel] ?? 0 : 0;
+    tip = room >= min ? `Поставьте лимит не больше ${rub(room)} в неделю или увеличьте бюджет месяца в настройках.` : "Увеличьте бюджет месяца в настройках или снизьте лимиты других каналов.";
+  } else if (action === "resume") {
+    tip = "Увеличьте бюджет месяца в настройках — робот сам включит каналы, на которые хватает денег. Или подождите 1-го числа: реклама включится сама.";
+  } else {
+    tip = "Сначала увеличьте бюджет месяца в настройках — тогда реклама включится сама.";
   }
+  throw userError(`${head} ${tip}`, 409);
+}
+
+/**
+ * Вернуть к обычным лимиты, которые робот поднимал под остаток бюджета (см. assertFitsBudget).
+ * Отдельная запись от имени робота с пометкой защиты бюджета: это не решение владельца про эти каналы.
+ */
+export async function applyBudgetTrims(businessId: string, trims: UndoOp[], why: string) {
+  if (!trims.length) return;
+  await act(
+    {
+      businessId, actor: "robot", kind: "budget", title: "Вернули обычные недельные лимиты",
+      reason: `Робот поднимал лимиты под остаток бюджета месяца. ${why} — чтобы всё поместилось в бюджет, лимиты остальных каналов вернули к обычным.`,
+      details: { guard: true },
+    },
+    trims,
+  );
+}
+
+/** Какие итоговые статусы и лимиты даст отмена */
+function budgetChangesOf(undo: UndoOp[]): BudgetChange[] {
+  const out: BudgetChange[] = [];
+  for (const op of undo) {
+    if (op.op === "campaignStatus") out.push({ campaignId: op.campaignId, status: op.status });
+    if (op.op === "campaignBudget") out.push({ campaignId: op.campaignId, weekly: op.weeklyBudget });
+  }
+  return out;
 }
 
 /** Исходное изменение в цепочке «отмена отмены…» и что с ним делаем: undo — отменяем, redo — возвращаем */
@@ -345,9 +434,11 @@ export async function revertChange(businessId: string, changeId: string, actor: 
   const monthly = ch.undo.find((o) => o.op === "monthlyBudget");
   // Смену месячного бюджета отменяем не «старыми лимитами», а пересчётом лимитов под прежний бюджет
   if (monthly && monthly.op === "monthlyBudget") await assertNoNewerChanges(ch, all, opKeys(monthly));
-  else {
+  // Лимиты, поднятые роботом под остаток, возвращаем к обычным, если иначе отмена не помещается в бюджет
+  let trims: UndoOp[] = [];
+  if (!(monthly && monthly.op === "monthlyBudget")) {
     await assertNoNewerChanges(ch, all);
-    await assertFitsBudget(ch);
+    trims = await assertFitsBudget(businessId, budgetChangesOf(ch.undo), "revert");
   }
 
   // Захватываем изменение атомарно: две вкладки не отменят его дважды
@@ -361,6 +452,7 @@ export async function revertChange(businessId: string, changeId: string, actor: 
       const { applyMonthlyBudget } = await import("./optimizer");
       return await applyMonthlyBudget(b, monthly.monthlyBudget, { actor, revert: { of: ch.id, title } });
     }
+    await applyBudgetTrims(businessId, trims, "Вы отменили изменение");
     const inverse = await applyOps(ch.undo, actor);
     const { byId } = historyIndex(all);
     const { root, action } = rootOf(ch, byId);

@@ -3,8 +3,7 @@ import { and, eq, gte, inArray } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { Campaign } from "../db/schema";
 import { demoNow } from "../platforms/demo";
-import { isoDay, startOfMonth } from "../util";
-import { daysLeftInMonth, monthKey, spendModel, type BudgetMeta, type SpendModel } from "./budget-plan";
+import { daysLeftInMonth, monthKey, monthStartDay, spendModel, type BudgetMeta, type SpendModel } from "./budget-plan";
 
 /** Кампании бизнеса, которые ещё живы (не в архиве) */
 export async function liveCampaigns(businessId: string) {
@@ -16,7 +15,10 @@ export const isDemo = (campaigns: Pick<Campaign, "platform">[]) => campaigns.som
 
 /** «Сейчас» для бизнеса: в демо — по его демо-часам */
 export async function businessNow(businessId: string, campaigns?: Pick<Campaign, "platform">[]) {
-  const camps = campaigns ?? (await liveCampaigns(businessId));
+  if (campaigns?.length) return isDemo(campaigns) ? demoNow({ businessId }) : new Date();
+  // Все кампании, включая создающиеся при запуске и архивные: запись «Запуск» в демо тоже идёт по демо-часам
+  const db = await getDb();
+  const camps = await db.select({ platform: schema.campaigns.platform }).from(schema.campaigns).where(eq(schema.campaigns.businessId, businessId));
   return isDemo(camps) ? demoNow({ businessId }) : new Date();
 }
 
@@ -32,7 +34,7 @@ export async function budgetState(businessId: string, monthly: number, now: Date
   const rows = await db
     .select({ cost: schema.statsDaily.cost })
     .from(schema.statsDaily)
-    .where(and(eq(schema.statsDaily.businessId, businessId), gte(schema.statsDaily.day, isoDay(startOfMonth(now)))));
+    .where(and(eq(schema.statsDaily.businessId, businessId), gte(schema.statsDaily.day, monthStartDay(now))));
   const spent = rows.reduce((s, r) => s + r.cost, 0);
   return { spent, remaining: monthly - spent, daysLeft: daysLeftInMonth(now), model: spendModel(demo), month: monthKey(now), demo };
 }

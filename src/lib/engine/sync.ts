@@ -1,15 +1,20 @@
 import "server-only";
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, sql, ne } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { Business, Campaign } from "../db/schema";
 import { clientFor } from "../platforms";
 import { demoNow } from "../platforms/demo";
 import { addDays, errorText, isoDay, uid } from "../util";
 
-/** Забираем статистику и статусы модерации со всех площадок */
+/**
+ * Забираем статистику и статусы модерации со всех площадок.
+ * Кроме работающих кампаний берём и «error»/«creating»/«ready» с ID на площадке: такая кампания могла остаться
+ * включённой (не удалась уборка после прерванного запуска) — её расход должен попасть в stats_daily,
+ * иначе защита бюджета его не увидит.
+ */
 export async function syncBusiness(b: Business) {
   const db = await getDb();
-  const camps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused"])));
+  const camps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused", "error", "creating", "ready"])));
   const errors: string[] = [];
   const byAccount = new Map<string, Campaign[]>();
   for (const c of camps) if (c.externalId) byAccount.set(c.accountId, [...(byAccount.get(c.accountId) ?? []), c]);
@@ -36,7 +41,7 @@ export async function syncBusiness(b: Business) {
       const tracked = await db
         .select({ adExt: schema.leads.adExt, day: mskDay, n: sql<number>`count(*)::int` })
         .from(schema.leads)
-        .where(and(eq(schema.leads.businessId, b.id), gte(schema.leads.createdAt, new Date(from))))
+        .where(and(eq(schema.leads.businessId, b.id), ne(schema.leads.kind, "suspect"), gte(schema.leads.createdAt, new Date(from))))
         .groupBy(schema.leads.adExt, mskDay);
       const trackedMap = new Map(tracked.filter((t) => t.adExt).map((t) => [`${t.adExt}|${t.day}`, Number(t.n)]));
 

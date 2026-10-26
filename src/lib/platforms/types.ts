@@ -42,12 +42,29 @@ export type CampaignSpec = {
   negativeKeywords: string[];
   siteUrl: string;
   groups: GroupSpec[];
+  /**
+   * Метка запуска (короткая, латиница/цифры). Попадает в имя кампании на площадке, где по имени ищем
+   * кампанию, созданную прерванной попыткой этого же запуска (VK), — и не «усыновляем» чужие.
+   */
+  tag?: string;
+  /** Что уже создано прошлыми попытками этого запуска: продолжаем с места обрыва, а не создаём заново */
+  resume?: ResumeState | null;
+  /** Время (мс, epoch), после которого новые группы/объявления не начинаем: вернём complete=false и продолжим следующим вызовом */
+  deadline?: number;
+};
+
+export type ResumeState = {
+  campaignExt: string | null;
+  /** localId группы → её ID на площадке и уже созданные объявления (localId объявления → ID на площадке) */
+  groups: Record<string, { groupExt: string; ads: Record<string, string> }>;
 };
 
 export type LaunchResult = {
   campaignExt: string;
   groups: { localId: string; groupExt: string; ads: { localId: string; adExt: string | null; error?: string; imageRef?: string }[] }[];
   warnings: string[];
+  /** false — не успели до spec.deadline; созданное уже передано в хуки, следующий вызов продолжит */
+  complete?: boolean;
 };
 
 export type AdState = { status: "moderation" | "active" | "paused" | "rejected" | "archived"; note?: string };
@@ -71,12 +88,29 @@ export type AuctionRow = { groupExt: string; keywords: number; tiers: AuctionTie
 
 export type QueryRow = { campaignExt: string; query: string; impressions: number; clicks: number; cost: number };
 
-/** Колбэки запуска: ID кампании сохраняем в БД сразу, как площадка его вернула, — чтобы таймаут не оставил «сироту» */
-export type LaunchHooks = { onCampaignCreated?: (campaignExt: string) => Promise<void> };
+/**
+ * Колбэки запуска: ID кампании, групп и объявлений сохраняем в БД сразу, как площадка их вернула, —
+ * чтобы таймаут не оставил «сирот», а повтор продолжил с места обрыва.
+ */
+export type LaunchHooks = {
+  onCampaignCreated?: (campaignExt: string) => Promise<void>;
+  onGroupCreated?: (groupLocalId: string, groupExt: string) => Promise<void>;
+  onAdsCreated?: (groupLocalId: string, groupExt: string, ads: { localId: string; adExt: string | null; error?: string; imageRef?: string }[]) => Promise<void>;
+  /** Картинка загружена на площадку — запоминаем ссылку, чтобы повтор не грузил её снова */
+  onImageUploaded?: (imageId: string, ref: string) => Promise<void>;
+};
 
 export interface PlatformClient {
   platform: Platform;
+  /**
+   * Создаёт кампанию в состоянии, в котором она НЕ тратит деньги (Директ: объявления-черновики без модерации;
+   * VK: план «blocked»). Показы включает activateCampaign в конце успешного запуска.
+   */
   launchCampaign(spec: CampaignSpec, hooks?: LaunchHooks): Promise<LaunchResult>;
+  /** Включить созданную launchCampaign кампанию: отправить объявления на модерацию / разблокировать план */
+  activateCampaign(campaignExt: string, adExts: string[]): Promise<void>;
+  /** Найти кампанию по имени на площадке (для уборки, когда ID не успели сохранить) */
+  findCampaignByName?(name: string): Promise<string | null>;
   /** Удалить (или, если площадка не даёт, остановить) недосозданную кампанию — для возобновления прерванного запуска */
   removeCampaign?(campaignExt: string): Promise<void>;
   addAd(campaignExt: string, groupExt: string, ad: AdSpec, ctx: { channel: Channel }): Promise<{ adExt: string; imageRef?: string }>;

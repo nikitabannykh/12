@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { FlaskConical, Loader2, Pause, Pencil, Play } from "lucide-react";
+import { FlaskConical, Loader2, Pause, Pencil, Play, Plus } from "lucide-react";
 import { api, useToast } from "./client";
 import { EditAdModal } from "./LaunchWizard";
 import type { Channel } from "@/lib/platforms/types";
@@ -95,5 +95,50 @@ export function BudgetInline({ campaignId, weekly, min }: { campaignId: string; 
       <button className="btn btn-primary btn-sm" disabled={busy}>{busy ? <Loader2 size={14} className="spin" /> : null}Сохранить</button>
       <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditing(false)}>Отмена</button>
     </form>
+  );
+}
+
+/**
+ * «Добавить канал» — для подключённых, но ещё не запущенных каналов. Запуск делает POST /api/launch/channel;
+ * пока такого маршрута нет (404 без JSON-ошибки), честно говорим «скоро».
+ */
+export function AddChannelButton({ channel, name, weekly }: { channel: Channel; name: string; weekly: number }) {
+  const [busy, setBusy] = useState(false);
+  const [soon, setSoon] = useState(false);
+  const toast = useToast();
+  const router = useRouter();
+  if (soon) return <span className="pill bg-paper text-muted whitespace-normal rounded-lg">«{name}» — скоро: добавить канал здесь пока нельзя</span>;
+  return (
+    <button
+      className="btn btn-ghost btn-sm"
+      disabled={busy}
+      onClick={async () => {
+        if (!window.confirm(`Запустить канал «${name}»? Робот создаст кампанию с лимитом около ${new Intl.NumberFormat("ru-RU").format(weekly)} ₽ в неделю, лимиты других каналов пересчитаются в пределах месячного бюджета.`)) return;
+        setBusy(true);
+        try {
+          const call = () => fetch("/api/launch/channel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ channel }) });
+          let res = await call();
+          let data = await res.json().catch(() => null);
+          // Запуск может идти шагами (как в мастере): повторяем, пока сервер не скажет, что готово
+          for (let i = 0; res.ok && data?.done === false && i < 10; i++) {
+            res = await call();
+            data = await res.json().catch(() => null);
+          }
+          if (res.status === 404 && !data?.error) {
+            setSoon(true);
+            return;
+          }
+          if (!res.ok) throw new Error(data?.error || `Не получилось добавить канал (ошибка ${res.status})`);
+          toast(`Канал «${name}» добавлен — объявления ушли на модерацию`);
+          router.refresh();
+        } catch (e) {
+          toast((e as Error).message, "error");
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      {busy ? <Loader2 size={14} className="spin" /> : <Plus size={14} />} Добавить канал «{name}»
+    </button>
   );
 }
