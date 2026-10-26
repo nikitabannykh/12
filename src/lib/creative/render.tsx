@@ -5,6 +5,7 @@ import path from "path";
 import type { Business } from "../db/schema";
 import { nicheById } from "../niches";
 import { Illustration } from "./illustrations";
+import { withoutSuperlatives } from "../engine/extras";
 
 /**
  * Макеты рекламных картинок. Принцип: настоящее фото (владельца или реалистичная генерация YandexART)
@@ -45,6 +46,8 @@ export type RenderInput = {
   photo?: { data: Buffer; mime: string } | null;
   headline?: string;
   price?: string;
+  /** Номер сюжета иллюстрации (когда нет фото): разные объявления — разные картинки */
+  variant?: number;
 };
 
 const dataUri = (p: { data: Buffer; mime: string }) => `data:${p.mime};base64,${p.data.toString("base64")}`;
@@ -57,7 +60,9 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
   const u = W / 1080;
   const photo = inp.photo ? dataUri(inp.photo) : null;
   const svc = inp.business.services?.[0];
-  const headline = inp.headline || svc?.name || n.examples[0];
+  // Без услуг от владельца — нейтральное название ниши, а не пример вроде «Пилатес на реформерах»
+  const headline = inp.headline || svc?.name || (n.id === "other" ? inp.business.name : n.generic);
+  const variant = inp.variant ?? 0;
   const price = inp.price || svc?.price || "";
   const place = inp.business.address?.split(",")[0] || inp.business.city;
   const layout: Layout = inp.layout;
@@ -87,7 +92,7 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
                   : { right: wide ? 40 * u : 10 * u, top: wide ? (H - illoSize) / 2 : 20 * u }),
             }}
           >
-            <Illustration niche={inp.business.niche} palette={n.palette} size={illo === "center" ? illoSize * 1.15 : illo === "corner" ? 0.3 * Math.min(W, H) : illoSize} />
+            <Illustration niche={inp.business.niche} variant={variant} palette={n.palette} size={illo === "center" ? illoSize * 1.15 : illo === "corner" ? 0.3 * Math.min(W, H) : illoSize} />
           </div>
         )}
       </div>
@@ -146,13 +151,13 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
           {photo && wide ? <img src={photo} width={W * 0.4} height={H} style={{ position: "absolute", right: 0, top: 0, width: W * 0.4, height: H, objectFit: "cover" }} /> : null}
           {!photo ? (
             <div style={{ position: "absolute", right: 40 * u, top: 30 * u, display: "flex" }}>
-              <Illustration niche={inp.business.niche} palette={n.palette} size={(wide ? 0.42 : 0.3) * H} />
+              <Illustration niche={inp.business.niche} variant={variant} palette={n.palette} size={(wide ? 0.42 : 0.3) * H} />
             </div>
           ) : null}
           <div style={{ display: "flex", flexDirection: "column", padding: `${(wide ? 56 : 80) * u}px ${(wide ? 60 : 80) * u}px`, width: photo && wide ? W * 0.6 : W, height: H, justifyContent: "space-between" }}>
             <div style={{ display: "flex", flexDirection: "column" }}>
               <div style={{ fontSize: (wide ? 50 : 72) * u, fontWeight: 800, letterSpacing: -1.5 * u, display: "flex", lineHeight: 1 }}>{inp.business.name}</div>
-              <div style={{ fontSize: (wide ? 26 : 32) * u, fontWeight: 500, opacity: 0.65, marginTop: 12 * u, display: "flex" }}>{`Цены без сюрпризов · ${place}`}</div>
+              <div style={{ fontSize: (wide ? 26 : 32) * u, fontWeight: 500, opacity: 0.65, marginTop: 12 * u, display: "flex" }}>{`Цены · ${place}`}</div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: (wide ? 16 : 30) * u }}>
               {rows.map((r) => (
@@ -171,18 +176,17 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
     }
 
     case "review": {
-      const text = (inp.business.review || "").slice(0, wide ? 150 : 220);
+      const full = withoutSuperlatives(inp.business.review) || (inp.business.review ?? "");
+      const max = wide ? 150 : 220;
+      const text = full.length > max ? `${full.slice(0, max).replace(/\s+\S*$/, "")}...` : full;
       const color = photo ? "#fff" : ink;
       el = (
         <div style={{ width: W, height: H, display: "flex", position: "relative", fontFamily: "Onest", color }}>
           <Photo dim={0.62} illo="corner" />
           <div style={{ ...box, flexDirection: "column", justifyContent: "center", padding: `${80 * u}px ${90 * u}px` }}>
-            <div style={{ display: "flex", gap: 8 * u }}>
-              {[0, 1, 2, 3, 4].map((i) => (
-                <svg key={i} width={36 * u} height={36 * u} viewBox="0 0 24 24"><path fill={accent} d="M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7-6.2-3.8-6.2 3.8 1.6-7L2 9.2l7.1-.6z" /></svg>
-              ))}
-            </div>
-            <div style={{ fontSize: (wide ? 50 : text.length > 140 ? 54 : 64) * u, fontWeight: 700, lineHeight: 1.18, display: "flex", marginTop: 36 * u, letterSpacing: -0.5 * u }}>{`«${text}»`}</div>
+            {/* Без звёзд: рейтинга владелец не давал — только кавычка как знак цитаты */}
+            <div style={{ display: "flex", fontSize: 150 * u, lineHeight: 0.8, height: 80 * u, fontWeight: 800, color: photo ? "#fff" : accent }}>“</div>
+            <div style={{ fontSize: (wide ? 50 : text.length > 140 ? 54 : 64) * u, fontWeight: 700, lineHeight: 1.18, display: "flex", marginTop: 20 * u, letterSpacing: -0.5 * u }}>{`«${text}»`}</div>
             <div style={{ fontSize: 30 * u, fontWeight: 500, marginTop: 40 * u, opacity: 0.8, display: "flex" }}>{`Отзыв клиента · ${inp.business.name}, ${place}`}</div>
           </div>
         </div>
@@ -197,7 +201,7 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
         el = (
           <div style={{ width: W, height: H, display: "flex", flexDirection: "column", justifyContent: "space-between", background: accent, color: "#fff", fontFamily: "Onest", padding: `${(wide ? 60 : 90) * u}px`, position: "relative" }}>
             <div style={{ position: "absolute", right: -40 * u, bottom: -30 * u, display: "flex", opacity: 0.95 }}>
-              <Illustration niche={inp.business.niche} palette={{ ink, accent: "#FFFDF8", bg }} size={(wide ? 0.75 * H : 0.55 * W)} />
+              <Illustration niche={inp.business.niche} variant={variant} palette={{ ink, accent: "#FFFDF8", bg }} size={(wide ? 0.75 * H : 0.55 * W)} />
             </div>
             <div style={{ fontSize: (wide ? 30 : 36) * u, fontWeight: 700, opacity: 0.85, display: "flex" }}>{inp.business.offer ? "Для новых клиентов" : inp.business.name}</div>
             <div style={{ display: "flex", flexDirection: "column" }}>

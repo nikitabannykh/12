@@ -10,7 +10,7 @@ export type ExtrasBiz = Pick<Business, "name" | "niche" | "city" | "address" | "
 
 /** Уточнения из плана (их можно отредактировать в мастере) идут первыми, затем факты из анкеты */
 export function withPlanCallouts<T extends { callouts: string[] }>(x: T, planned: string[] | undefined): T {
-  const list = [...(planned ?? []), ...x.callouts].map((c) => c.trim()).filter((c) => c && c.length <= 25);
+  const list = [...(planned ?? []), ...x.callouts].map((c) => cleanText(c)).filter((c) => c && c.length <= 25);
   return { ...x, callouts: [...new Map(list.map((c) => [c.toLowerCase(), c])).values()].slice(0, 8) };
 }
 
@@ -36,7 +36,46 @@ export type AdExtras = {
   about: string; // VK: «о компании», до 115
 };
 
-const clean = (s: string) => s.replace(/\s+/g, " ").trim();
+// ─── Чистка текста для площадок (общая для сервера и предпросмотра в браузере) ───
+
+/** Эмодзи, пиктограммы, модификаторы и невидимые символы — Директ и VK такое отклоняют */
+const EMOJI_SRC = "[\\p{Extended_Pictographic}\\p{Regional_Indicator}\\u{1F3FB}-\\u{1F3FF}\\uFE0E\\uFE0F\\u200B-\\u200D\\u2060\\u20E3]";
+const EMOJI = new RegExp(EMOJI_SRC, "gu");
+const EMOJI_ONE = new RegExp(EMOJI_SRC, "u");
+/** Что допускает Директ в текстах: буквы, цифры, пробел и обычная пунктуация */
+const AD_CHAR = /[\p{L}\p{N}\s.,!?;:"'«»„“”()\[\]\-–—\/№%₽$€+&*#@’]/u;
+
+export const stripEmoji = (s: string) => s.replace(EMOJI, "");
+
+/** Символы, которые площадка не примет (для сообщений владельцу) */
+export function badChars(s: string): string[] {
+  const out = new Set<string>();
+  for (const ch of s) if (EMOJI_ONE.test(ch) || (!AD_CHAR.test(ch) && !SUBST[ch])) out.add(ch);
+  return [...out];
+}
+
+/** Похожие символы, которых нет в списке Директа, заменяем на допустимые */
+const SUBST: Record<string, string> = { "−": "-", "‐": "-", "‑": "-", "…": "...", "·": "—", "•": "—", "×": "x", "`": "'", "ʼ": "'" };
+
+/** Убираем эмодзи и неподдерживаемые символы, схлопываем пробелы */
+export function cleanText(s: string | null | undefined): string {
+  return [...stripEmoji(s ?? "").replace(/[−‐‑…·•×`ʼ]/g, (c) => SUBST[c] ?? c)].map((ch) => (AD_CHAR.test(ch) ? ch : " ")).join("").replace(/\s+/g, " ").replace(/\s+([.,!?;:])/g, "$1").trim();
+}
+
+const clean = (s: string) => cleanText(s);
+
+/** «лучший», «самый», «№1» — модерация Директа пропускает их только с документами. Граница слова с учётом кириллицы и кавычек. */
+export const SUPERLATIVE = /(?<![\p{L}\p{N}])(лучш[а-яё]*|№\s?1|номер\s+один|сам(ый|ая|ое|ые|ого|ой|ую|ых|ым)|первый\s+в\s+городе)(?![\p{L}\p{N}])/iu;
+export const hasSuperlative = (s: string | null | undefined) => SUPERLATIVE.test(s ?? "");
+
+/** Факт владельца без превосходных степеней: предложения с «лучший/самый» выкидываем целиком, а не калечим */
+export function withoutSuperlatives(s: string | null | undefined): string {
+  return clean(s ?? "")
+    .split(/(?<=[.!?])\s+/)
+    .filter((x) => x && !hasSuperlative(x))
+    .join(" ")
+    .trim();
+}
 const cut = (s: string, max: number) => {
   const t = clean(s);
   if (t.length <= max) return t;
@@ -56,27 +95,55 @@ export function parsePrice(s?: string | null): PriceExt | null {
   return { price, qualifier: from ? "FROM" : "NONE", label: `${from ? "от " : ""}${new Intl.NumberFormat("ru-RU").format(price)} ₽` };
 }
 
-/** Короткие факты не длиннее 25 символов: длинные преимущества сокращаем по смыслу, а не обрезаем на полуслове */
-function shortFacts(b: ExtrasBiz) {
+/**
+ * Уточнения — только факты из анкеты и правда о продукте (на странице записи есть онлайн-форма).
+ * Ничего не придумываем: «Без очереди», «Удобно добраться», «Стерильные инструменты» — только если это написал владелец.
+ * Короткие факты не длиннее 25 символов: длинные преимущества сокращаем по смыслу, а не обрезаем на полуслове.
+ */
+export function factCallouts(b: Pick<ExtrasBiz, "advantages" | "offer" | "whatsapp" | "telegram">) {
   const out: string[] = [];
   const add = (s?: string | null) => {
     if (!s) return;
     const t = clean(s).replace(/[.!]$/, "");
-    if (t.length <= 25 && !out.some((x) => x.toLowerCase() === t.toLowerCase())) out.push(t);
+    if (t && t.length <= 25 && !out.some((x) => x.toLowerCase() === t.toLowerCase())) out.push(t);
   };
-  for (const a of b.advantages ?? []) {
+  for (const a0 of b.advantages ?? []) {
+    const a = withoutSuperlatives(a0);
+    if (!a) continue;
     add(a);
     // «Покрытие держится 3–4 недели» → «Держится 3–4 недели»
-    if (clean(a).length > 25) add(a.replace(/^[А-ЯЁA-Z][а-яёa-z]+\s+/, "").replace(/^./, (c) => c.toUpperCase()));
+    if (clean(a).length > 25) add(clean(a).replace(/^[А-ЯЁA-Z][а-яёa-z]+\s+/, "").replace(/^./, (c) => c.toUpperCase()));
   }
-  if (b.offer) add(b.offer);
-  add("Онлайн-запись 24/7");
-  if (b.whatsapp || b.telegram) add(`Запись в ${b.whatsapp ? "WhatsApp" : "Telegram"}`);
-  if (b.address) add("Удобно добраться");
-  const n = nicheById(b.niche);
-  if (/стерил/i.test((b.advantages ?? []).join(" ")) === false && ["nails", "brows", "cosmetology", "barber", "hair"].includes(n.id)) add("Стерильные инструменты");
-  add("Без очереди");
+  if (b.offer) add(withoutSuperlatives(b.offer));
+  add("Онлайн-запись");
+  if (b.whatsapp && b.telegram) add("Запись в WhatsApp и Telegram");
+  else if (b.whatsapp || b.telegram) add(`Запись в ${b.whatsapp ? "WhatsApp" : "Telegram"}`);
   return out.slice(0, 8);
+}
+
+/** Директ: суммарная длина заголовков быстрых ссылок 1–4 — не больше 66 символов, 5–8 — тоже не больше 66 */
+export const SITELINK_LIMITS = { title: 30, description: 60, groupTotal: 66 } as const;
+
+/**
+ * Подбираем быстрые ссылки так, чтобы набор прошёл проверку Директа: ссылки берём по приоритету,
+ * пропуская те, что не влезают в лимит четвёрки. Вторая четвёрка — только если первая заполнена целиком,
+ * иначе её ссылки встанут на места 1–4 и превысят лимит.
+ */
+export function fitSitelinks(list: Sitelink[]): Sitelink[] {
+  const L = SITELINK_LIMITS;
+  const ok = list
+    .map((s) => ({ ...s, title: clean(s.title), description: s.description ? cut(s.description, L.description) : undefined }))
+    .filter((s) => s.title && s.title.length <= L.title);
+  const a: Sitelink[] = [], b: Sitelink[] = [];
+  let la = 0, lb = 0;
+  const seen = new Set<string>();
+  for (const s of ok) {
+    const key = s.title.toLowerCase();
+    if (seen.has(key)) continue;
+    if (a.length < 4 && la + s.title.length <= L.groupTotal) { a.push(s); la += s.title.length; seen.add(key); }
+    else if (b.length < 4 && lb + s.title.length <= L.groupTotal) { b.push(s); lb += s.title.length; seen.add(key); }
+  }
+  return a.length === 4 ? [...a, ...b] : a;
 }
 
 function splitAddress(addr?: string | null) {
@@ -127,39 +194,54 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
     .join(", ");
   const { street, house } = splitAddress(b.address);
   const hours = parseHours(b.hours);
-  const sitelinks: Sitelink[] = [
-    { title: "Цены на услуги", href: withAnchor(o.href, "services"), description: priceList ? cut(cap(priceList), 60) : "Все услуги и цены на одной странице" },
-    { title: "Записаться онлайн", href: withAnchor(o.href, "form"), description: "Выберите удобное время — займёт минуту" },
-    b.review
-      ? { title: "Отзывы клиентов", href: withAnchor(o.href, "reviews"), description: clean(b.review).length <= 56 ? `«${clean(b.review)}»` : `«${cut(b.review, 54)}…»` }
-      : { title: "Почему мы", href: withAnchor(o.href, "about"), description: cut((b.advantages ?? []).join(". ") || b.description || nicheById(b.niche).proof, 60) },
-    { title: "Как добраться", href: withAnchor(o.href, "contacts"), description: cut([b.address, hours.text].filter(Boolean).join(" · ") || b.city, 60) },
+  const hasPrices = services.some((s) => s.price);
+  const named = services.filter((s) => clean(s.name));
+  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter(Boolean);
+  const review = withoutSuperlatives(b.review);
+  // Только ссылки, за которыми есть содержимое: без цен нет «Цен», без адреса — «Как добраться»
+  const cand: (Sitelink | null)[] = [
+    hasPrices
+      ? { title: "Цены на услуги", href: withAnchor(o.href, "services"), description: priceList ? cap(priceList) : undefined }
+      : named.length
+        ? { title: "Услуги", href: withAnchor(o.href, "services"), description: cap(named.map((s) => clean(s.name).toLowerCase()).join(", ")) }
+        : null,
+    { title: "Записаться онлайн", href: withAnchor(o.href, "form"), description: "Выберите удобное время в форме записи" },
+    review ? { title: "Отзыв клиента", href: withAnchor(o.href, "reviews"), description: review.length <= 58 ? `«${review}»` : `«${cut(review, 54)}...»` } : null,
+    adv.length || withoutSuperlatives(b.description)
+      ? { title: "Почему мы", href: withAnchor(o.href, "about"), description: adv.join(". ") || withoutSuperlatives(b.description) }
+      : null,
+    b.address ? { title: "Как добраться", href: withAnchor(o.href, "contacts"), description: [b.address, b.hours ? hours.text : null].filter(Boolean).join(". ") } : null,
+    !b.address && b.hours ? { title: "Часы работы", href: withAnchor(o.href, "contacts"), description: hours.text } : null,
   ];
-
-  // Директ принимает до 8 быстрых ссылок: добавляем другие услуги с ценой — каждая ведёт к своей строке прайса
+  // Директ принимает до 8 быстрых ссылок: добавляем другие услуги — каждая ведёт к своей строке прайса
   services.forEach((sv, i) => {
-    if (sitelinks.length >= 8 || sv.name === o.service || sv.name.length > 30) return;
-    sitelinks.push({ title: sv.name, href: withAnchor(o.href, `s${i + 1}`), description: cut([sv.price, sv.note, "запись онлайн"].filter(Boolean).join(" · "), 60) });
+    if (sv.name === o.service) return;
+    cand.push({ title: sv.name, href: withAnchor(o.href, `s${i + 1}`), description: [sv.price, sv.note, "запись онлайн"].filter(Boolean).join(", ") });
   });
+  const sitelinks = fitSitelinks(cand.filter((x): x is Sitelink => !!x));
 
+  // Отображаемая ссылка: до 20 символов, буквы, цифры и дефис
   const displayPath = (o.service || services[0]?.name || "")
     .toLowerCase()
-    .replace(/[^а-яёa-z0-9\s-]/gi, "")
+    .replace(/[^а-яёa-z0-9\s-]/gi, " ")
     .trim()
     .split(/\s+/)
-    .reduce((acc, w) => ((acc ? `${acc}-${w}` : w).length <= 20 ? (acc ? `${acc}-${w}` : w) : acc), "");
+    .map((w) => w.replace(/^-+|-+$/g, ""))
+    .filter(Boolean)
+    .reduce((acc, w) => (acc.done ? acc : (acc.s ? `${acc.s}-${w}` : w).length <= 20 ? { s: acc.s ? `${acc.s}-${w}` : w, done: false } : { ...acc, done: true }), { s: "", done: false })
+    .s.replace(/(-(и|в|во|на|для|с|со|по|от|до|к|у|из|или|а|о|за))+$/, "");
 
   const phone = parsePhone(b.phone);
   const vcard: VCard | null =
-    phone || b.address
+    // Директ требует часы работы в визитке — без часов от владельца визитку не создаём, а не выдумываем «10–21»
+    (phone || b.address) && clean(b.hours ?? "")
       ? { company: cut(b.name, 255), city: b.city, street, house, phone, phoneText: b.phone ?? null, hoursText: hours.text, workTime: hours.workTime }
       : null;
 
-  const adv = b.advantages ?? [];
   const longParts = [
     o.text,
     ...adv.slice(0, 3),
-    b.offer ? `${cap(b.offer)}.` : null,
+    b.offer ? `${cap(withoutSuperlatives(b.offer))}.` : null,
     b.address ? `Ждём вас: ${b.city}, ${b.address}.` : null,
     "Запишитесь онлайн — это займёт минуту.",
   ];
@@ -169,9 +251,9 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
   let longText = "";
   for (const p of longParts) {
     if (!p) continue;
-    for (const raw of p.split(/(?<=[.!?…])\s+/)) {
+    for (const raw of clean(p).split(/(?<=[.!?…])\s+/)) {
       const t = raw.trim();
-      if (!t || seen.has(norm(t))) continue;
+      if (!t || seen.has(norm(t)) || hasSuperlative(t)) continue;
       const sentence = /[.!?…»]$/.test(t) ? t : `${t}.`;
       const next = longText ? `${longText} ${sentence}` : sentence;
       if (next.length > 220) continue;
@@ -181,10 +263,10 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
   }
 
   const n = nicheById(b.niche);
-  const about = cut(`${b.name} — ${n.label.toLowerCase()} в городе ${b.city}${b.address ? `, ${b.address}` : ""}.`, 115);
+  const about = cut(`${clean(b.name)} — ${n.label.toLowerCase()} в городе ${b.city}${b.address ? `, ${b.address}` : ""}.`, 115);
 
   return {
-    callouts: shortFacts(b),
+    callouts: factCallouts(b),
     sitelinks,
     displayPath: displayPath || null,
     price: o.channel === "vk" ? null : priceLabel,

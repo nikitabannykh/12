@@ -15,7 +15,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <ToastProvider>
       <UrlNotice />
       <div className="md:grid md:grid-cols-[240px_1fr] min-h-dvh">
-        <aside className="hidden md:flex flex-col gap-8 border-r border-line bg-card px-4 py-5 sticky top-0 h-dvh">
+        {/* Белый фон и граница — на всю высоту колонки, а меню внутри прилипает к верху экрана */}
+        <aside className="hidden md:block border-r border-line bg-card">
+          <div className="flex flex-col gap-8 px-4 py-5 sticky top-0 h-dvh overflow-y-auto">
           <Link href="/app" className="px-2"><Logo size={26} /></Link>
           <Nav launched={launched} variant="side" />
           <div className="mt-auto px-2 text-sm">
@@ -24,6 +26,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <form action="/api/auth/logout" method="post" className="mt-2">
               <button className="text-muted hover:text-ink underline underline-offset-2">Выйти</button>
             </form>
+          </div>
           </div>
         </aside>
         <div className="min-w-0">

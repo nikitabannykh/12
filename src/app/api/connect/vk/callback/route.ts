@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { and, eq } from "drizzle-orm";
 import { appUrl, errorText, uid } from "@/lib/util";
 import { getUser } from "@/lib/auth";
+import { safeBack, withQuery } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { VkAds, vkToken } from "@/lib/platforms/vk";
@@ -11,13 +12,18 @@ export async function GET(req: NextRequest) {
   const user = await getUser();
   if (!user) return NextResponse.redirect(`${appUrl()}/login`);
   const jar = await cookies();
-  const saved = JSON.parse(jar.get("pz_vk_state")?.value || "{}");
+  let saved: { state?: string; back?: string } = {};
+  try {
+    saved = JSON.parse(jar.get("pz_vk_state")?.value || "{}");
+  } catch {
+    /* испорченная cookie — как будто её нет */
+  }
   jar.delete("pz_vk_state");
-  const back = saved.back || "/app/settings";
-  const go = (q: string) => NextResponse.redirect(`${appUrl()}${back}${back.includes("?") ? "&" : "?"}${q}`);
+  const back = safeBack(saved.back);
+  const go = (q: string) => NextResponse.redirect(`${appUrl()}${withQuery(back, q)}`);
 
   const code = req.nextUrl.searchParams.get("code");
-  if (!code || req.nextUrl.searchParams.get("state") !== saved.state) return go(`error=${encodeURIComponent("Подключение VK не завершено — попробуйте ещё раз")}`);
+  if (!code || !saved.state || req.nextUrl.searchParams.get("state") !== saved.state) return go(`error=${encodeURIComponent("Подключение VK не завершено — попробуйте ещё раз")}`);
   try {
     const t = await vkToken({ grant_type: "authorization_code", code });
     let login = req.nextUrl.searchParams.get("user_id") ? `vk-${req.nextUrl.searchParams.get("user_id")}` : "VK Реклама";

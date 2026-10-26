@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { and, eq } from "drizzle-orm";
 import { appUrl, errorText, uid } from "@/lib/util";
 import { getUser } from "@/lib/auth";
+import { safeBack, withQuery } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { YandexDirect, yandexExchange, yandexLogin } from "@/lib/platforms/yandex";
@@ -11,15 +12,20 @@ export async function GET(req: NextRequest) {
   const user = await getUser();
   if (!user) return NextResponse.redirect(`${appUrl()}/login`);
   const jar = await cookies();
-  const saved = JSON.parse(jar.get("pz_ya_state")?.value || "{}");
+  let saved: { state?: string; back?: string } = {};
+  try {
+    saved = JSON.parse(jar.get("pz_ya_state")?.value || "{}");
+  } catch {
+    /* испорченная cookie — как будто её нет */
+  }
   jar.delete("pz_ya_state");
-  const back = saved.back || "/app/settings";
-  const go = (q: string) => NextResponse.redirect(`${appUrl()}${back}${back.includes("?") ? "&" : "?"}${q}`);
+  const back = safeBack(saved.back);
+  const go = (q: string) => NextResponse.redirect(`${appUrl()}${withQuery(back, q)}`);
 
   const err = req.nextUrl.searchParams.get("error");
-  if (err) return go(`error=${encodeURIComponent(err === "access_denied" ? "Вы отменили доступ к Яндексу" : err)}`);
+  if (err) return go(`error=${encodeURIComponent(err === "access_denied" ? "Вы отменили доступ к Яндексу" : `Яндекс не выдал доступ (${err.replace(/[^a-z_]/gi, "").slice(0, 40)}). Попробуйте ещё раз.`)}`);
   const code = req.nextUrl.searchParams.get("code");
-  if (!code || req.nextUrl.searchParams.get("state") !== saved.state) return go(`error=${encodeURIComponent("Сессия подключения устарела — попробуйте ещё раз")}`);
+  if (!code || !saved.state || req.nextUrl.searchParams.get("state") !== saved.state) return go(`error=${encodeURIComponent("Сессия подключения устарела — попробуйте ещё раз")}`);
 
   try {
     const t = await yandexExchange(code);

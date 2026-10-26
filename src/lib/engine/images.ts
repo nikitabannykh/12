@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import { uid } from "../util";
 import { imageSize } from "../creative/imagesize";
@@ -62,8 +62,18 @@ export async function generatePhotos(b: Business, ideas: string[], count: number
   return { ids, errors };
 }
 
-export async function makeCreative(b: Business, p: { layout: Layout; photoId?: string | null; width: number; height: number; headline?: string; price?: string }) {
+/**
+ * variant — сюжет иллюстрации для картинок без фото. Если не передан, берём следующий по счёту
+ * для этого бизнеса: так объявления в группе и между группами получают разные картинки.
+ */
+export async function makeCreative(b: Business, p: { layout: Layout; photoId?: string | null; width: number; height: number; headline?: string; price?: string; variant?: number }) {
   const photo = p.photoId ? await getImage(p.photoId) : null;
+  let variant = p.variant;
+  if (variant === undefined && !photo) {
+    const db = await getDb();
+    const [row] = await db.select({ n: count() }).from(schema.images).where(and(eq(schema.images.businessId, b.id), eq(schema.images.kind, "creative")));
+    variant = Number(row?.n ?? 0);
+  }
   const png = await renderCreative({
     layout: p.layout,
     width: p.width,
@@ -72,6 +82,7 @@ export async function makeCreative(b: Business, p: { layout: Layout; photoId?: s
     photo: photo ? { data: photo.data, mime: photo.mime } : null,
     headline: p.headline,
     price: p.price,
+    variant,
   });
   return saveImage(b.id, "creative", png, { layout: p.layout, prompt: p.photoId ?? undefined });
 }

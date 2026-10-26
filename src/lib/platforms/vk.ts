@@ -1,11 +1,13 @@
 import "server-only";
-import type { AdSpec, AdState, CampaignSpec, Channel, LaunchResult, PlatformClient, StatRow, Strategy } from "./types";
+import type { AdSpec, AdState, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, StatRow, Strategy } from "./types";
 import { PlatformError } from "./types";
 import { sleep } from "../util";
 
 /**
  * Клиент API VK Рекламы (ads.vk.com, API v2).
- * Структура: кампания (ad_plan) → группы объявлений (в API v2 — campaigns) → объявления (banners).
+ * Структура: кампания (ad_plan) → группы объявлений (ad_groups) → объявления (banners).
+ * Создание: POST v2/ad_plans.json с ключом `ad_groups` (в каждой группе — `banners`), ответ {"id", "ad_groups":[{"id"}]};
+ * объявление в существующую группу — POST v2/ad_groups/{id}/banners.json (документация «Quick start» и «Add banners»).
  * Деньги — в валюте кабинета (рубли), бюджет VK задаётся на день.
  * Маркировку VK Реклама делает сама для прямых рекламодателей: токен erid присваивается автоматически.
  */
@@ -56,7 +58,9 @@ export class VkAds implements PlatformClient {
     if (!res.ok || json.error) {
       const e = json.error ?? json;
       const fields = e.fields ? ` — поля: ${JSON.stringify(e.fields).slice(0, 400)}` : "";
-      throw new PlatformError("vk", `VK Реклама: ${e.message || e.code || res.status}${fields}`, json);
+      const err = new PlatformError("vk", `VK Реклама: ${e.message || e.code || res.status}${fields}`, json);
+      err.httpStatus = res.status;
+      throw err;
     }
     return json as T;
   }
@@ -92,24 +96,34 @@ export class VkAds implements PlatformClient {
     return Number(j.id);
   }
 
+  private imageCache = new Map<string, number>();
+
   async uploadImage(img: NonNullable<AdSpec["image"]>): Promise<number> {
     if (img.cachedRef) return Number(img.cachedRef);
+    const hit = this.imageCache.get(img.imageId);
+    if (hit) return hit;
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(img.data)], { type: img.mime }), `pz-${img.imageId}.${img.mime.includes("png") ? "png" : "jpg"}`);
     form.append("data", JSON.stringify({ width: img.width, height: img.height }));
     const j = await this.req("POST", "v2/content/static.json", { form });
+    this.imageCache.set(img.imageId, Number(j.id));
     return Number(j.id);
   }
 
+  /**
+   * Слот картинки в баннере. В документации («Quick start», «Add banners») встречаются image_1080x607 (16:9) и
+   * квадратный 600x600; слота image_1080x1080 там нет. Квадрат 1080×1080 VK принимает в слот 600x600 (пропорция та же).
+   * TODO: точный набор слотов задаётся форматом баннера пакета (package.banner_format_id) — читать его, когда
+   * получим доступ к API и сверим ответ на реальном кабинете.
+   */
   private contentKey(img: NonNullable<AdSpec["image"]>) {
     const r = img.width / img.height;
-    if (Math.abs(r - 1) < 0.05) return "image_1080x1080";
-    if (r > 1.5) return "image_1080x607";
-    return "image_600x600";
+    return r > 1.3 ? "image_1080x607" : "image_600x600";
   }
 
   /** rich=false — только обязательные поля (если VK не принял «о компании» или логотип) */
   private async banner(ad: AdSpec, urlId: number, rich = true) {
+    if (!ad.title.trim() || !ad.text.trim()) throw new PlatformError("vk", "У объявления пустой заголовок или текст");
     const x = ad.extras;
     const textblocks: Record<string, { text: string; title?: string }> = {
       title_40_vkads: { text: ad.title.slice(0, 40) },
@@ -142,65 +156,87 @@ export class VkAds implements PlatformClient {
     return list;
   }
 
-  async launchCampaign(spec: CampaignSpec): Promise<LaunchResult> {
-    try {
-      return await this.launchOnce(spec, true);
-    } catch (e) {
-      const r = await this.launchOnce(spec, false);
-      r.warnings.push(`Блок «о компании» и логотип VK не принял, объявления созданы без них: ${(e as Error).message}`);
-      return r;
-    }
+  /** Ошибка валидации (400 с перечнем полей): запрос отклонён целиком, на площадке ничего не создано */
+  private static isValidation(e: unknown) {
+    return e instanceof PlatformError && e.httpStatus === 400;
   }
 
-  private async launchOnce(spec: CampaignSpec, rich: boolean): Promise<LaunchResult> {
+  /** Наш план по точному имени (кроме удалённых) — проверка перед повтором, чтобы не создать дубль */
+  private async findPlanByName(name: string): Promise<string | null> {
+    for (let offset = 0; offset < 5000; offset += 250) {
+      const j = await this.req("GET", "v2/ad_plans.json", { query: { fields: "id,name,status", limit: 250, offset } });
+      const items: any[] = j.items ?? [];
+      const hit = items.filter((p) => p.name === name && p.status !== "deleted").sort((p, q) => Number(q.id) - Number(p.id))[0];
+      if (hit) return String(hit.id);
+      if (items.length < 250) break;
+    }
+    return null;
+  }
+
+  async launchCampaign(spec: CampaignSpec, hooks?: LaunchHooks): Promise<LaunchResult> {
     const warnings: string[] = [];
     const urlId = await this.createUrl(spec.siteUrl);
     const packageId = await this.trafficPackageId();
     const daily = Math.max(VK_MIN_DAILY, Math.round(spec.weeklyBudget / 7));
-
-    const groupsBody = [];
+    const name = spec.name.slice(0, 120);
     const imageRefs: Record<string, string | undefined> = {};
-    for (const g of spec.groups) {
-      const banners = [];
-      for (const ad of g.ads) {
-        try {
-          const b = await this.banner(ad, urlId, rich);
-          imageRefs[ad.localId] = b.imageRef;
-          banners.push(b.banner);
-        } catch (e) {
-          warnings.push(`Объявление «${ad.title}»: ${(e as Error).message}`);
+
+    const buildGroups = async (rich: boolean) => {
+      const groups = [];
+      for (const g of spec.groups) {
+        const banners = [];
+        for (const ad of g.ads) {
+          try {
+            const b = await this.banner(ad, urlId, rich);
+            imageRefs[ad.localId] = b.imageRef;
+            banners.push(b.banner);
+          } catch (e) {
+            if (rich) warnings.push(`Объявление «${ad.title}»: ${(e as Error).message}`);
+          }
         }
+        const targetings: Record<string, unknown> = {
+          geo: { regions: g.regionIds.length ? g.regionIds : [188] },
+          age: { age_list: this.age(g.ageFrom, g.ageTo) },
+        };
+        if (g.sex && g.sex !== "any") targetings.sex = [g.sex];
+        // При бюджете на уровне кампании бюджет и дата старта групп должны ему соответствовать
+        groups.push({ name: g.name.slice(0, 120), package_id: packageId, targetings, budget_limit_day: daily, date_start: spec.startDate, banners });
       }
-      const targetings: Record<string, unknown> = {
-        geo: { regions: g.regionIds.length ? g.regionIds : [188] },
-        age: { age_list: this.age(g.ageFrom, g.ageTo) },
-      };
-      if (g.sex && g.sex !== "any") targetings.sex = [g.sex];
-      groupsBody.push({ name: g.name.slice(0, 120), package_id: packageId, targetings, banners });
-    }
-
-    const plan = await this.req("POST", "v2/ad_plans.json", {
-      body: {
-        name: spec.name.slice(0, 120),
-        status: "active",
-        objective: "traffic",
-        autobidding_mode: "max_goals",
-        budget_limit_day: daily,
-        date_start: spec.startDate,
-        ad_object_type: "url",
-        ad_object_id: urlId,
-        campaigns: groupsBody,
-      },
+      return groups;
+    };
+    const planBody = (ad_groups: unknown[]) => ({
+      name, status: "active", objective: "traffic", autobidding_mode: "max_goals",
+      budget_limit_day: daily, date_start: spec.startDate, ad_object_type: "url", ad_object_id: urlId, ad_groups,
     });
-    const planId = String(plan.id);
 
-    // Узнаём id созданных групп и объявлений, сопоставляем по порядку
-    const groupsRes = await this.req("GET", "v2/ad_groups.json", { query: { _ad_plan_id: planId, fields: "id,name", limit: 100 } });
-    const groupItems: any[] = groupsRes.items ?? [];
+    let planId: string | null = null;
+    let groupIdsFromResponse: string[] = [];
+    try {
+      const plan = await this.req("POST", "v2/ad_plans.json", { body: planBody(await buildGroups(true)) });
+      planId = String(plan.id);
+      groupIdsFromResponse = (plan.ad_groups ?? []).map((g: any) => String(g.id));
+    } catch (e) {
+      // Ответ мог потеряться, хотя план создан (таймаут, 5xx) — сначала ищем его по имени
+      planId = await this.findPlanByName(name).catch(() => null);
+      if (planId) warnings.push("VK ответил с ошибкой, но кампания создалась — используем её");
+      else if (VkAds.isValidation(e)) {
+        // 400: план не создан. Чаще всего VK не принимает необязательные «о компании» или логотип — повторяем без них
+        const plan = await this.req("POST", "v2/ad_plans.json", { body: planBody(await buildGroups(false)) });
+        planId = String(plan.id);
+        groupIdsFromResponse = (plan.ad_groups ?? []).map((g: any) => String(g.id));
+        warnings.push(`Блок «о компании» и логотип VK не принял, объявления созданы без них: ${(e as Error).message}`);
+      } else throw e;
+    }
+    await hooks?.onCampaignCreated?.(planId);
+
+    let groupItems: { id: string; name: string }[] = [];
+    if (groupIdsFromResponse.length !== spec.groups.length) {
+      const groupsRes = await this.req("GET", "v2/ad_groups.json", { query: { _ad_plan_id: planId, fields: "id,name", limit: 100 } });
+      groupItems = (groupsRes.items ?? []).map((x: any) => ({ id: String(x.id), name: String(x.name) }));
+    }
     const out: LaunchResult = { campaignExt: planId, groups: [], warnings };
     for (const [gi, g] of spec.groups.entries()) {
-      const grp = groupItems.find((x) => x.name === g.name.slice(0, 120)) ?? groupItems[gi];
-      const groupExt = grp ? String(grp.id) : "";
+      const groupExt = groupIdsFromResponse[gi] ?? (groupItems.find((x) => x.name === g.name.slice(0, 120)) ?? groupItems[gi])?.id ?? "";
       let bannerItems: any[] = [];
       if (groupExt) {
         const br = await this.req("GET", "v2/banners.json", { query: { _ad_group_id: groupExt, fields: "id,name", limit: 100 } });
@@ -218,15 +254,22 @@ export class VkAds implements PlatformClient {
     return out;
   }
 
+  async removeCampaign(campaignExt: string) {
+    await this.req("POST", `v2/ad_plans/${campaignExt}.json`, { body: { status: "deleted" } });
+  }
+
   async addAd(_campaignExt: string, groupExt: string, ad: AdSpec, _ctx: { channel: Channel }) {
     const urlId = await this.createUrl(ad.href);
+    const path = `v2/ad_groups/${groupExt}/banners.json`;
     let b = await this.banner(ad, urlId);
     let j;
     try {
-      j = await this.req("POST", "v2/banners.json", { body: { ...b.banner, ad_group_id: Number(groupExt) } });
-    } catch {
+      j = await this.req("POST", path, { body: b.banner });
+    } catch (e) {
+      // Повтор без «о компании» и логотипа — только если VK отклонил запрос валидацией (значит, баннер не создан)
+      if (!VkAds.isValidation(e) || (!ad.extras?.about && !ad.logo)) throw e;
       b = await this.banner(ad, urlId, false);
-      j = await this.req("POST", "v2/banners.json", { body: { ...b.banner, ad_group_id: Number(groupExt) } });
+      j = await this.req("POST", path, { body: b.banner });
     }
     return { adExt: String(j.id), imageRef: b.imageRef };
   }
@@ -247,10 +290,16 @@ export class VkAds implements PlatformClient {
     // У VK Рекламы нет минус-слов: аудитория задаётся интересами и демографией
   }
 
+  /** Секция textblocks при обновлении заменяется целиком — поэтому берём текущие блоки и меняем только тексты */
   async updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string }) {
-    await this.req("POST", `v2/banners/${adExt}.json`, {
-      body: { textblocks: { title_40_vkads: { text: t.title.slice(0, 40) }, text_90: { text: t.text.slice(0, 90) } } },
-    });
+    if (!t.title.trim() || !t.text.trim()) throw new PlatformError("vk", "У объявления пустой заголовок или текст");
+    const cur = await this.req("GET", `v2/banners/${adExt}.json`, { query: { fields: "id,textblocks" } }).catch(() => ({} as any));
+    const textblocks: Record<string, any> = { ...(cur.textblocks ?? {}) };
+    textblocks.title_40_vkads = { ...(textblocks.title_40_vkads ?? {}), text: t.title.slice(0, 40) };
+    textblocks.text_90 = { ...(textblocks.text_90 ?? {}), text: t.text.slice(0, 90) };
+    if (textblocks.text_220 || !cur.textblocks) textblocks.text_220 = { ...(textblocks.text_220 ?? {}), text: [t.text, t.title2].filter(Boolean).join(". ").slice(0, 220) };
+    if (!textblocks.cta_sites_full) textblocks.cta_sites_full = { text: "signUp" };
+    await this.req("POST", `v2/banners/${adExt}.json`, { body: { textblocks } });
   }
 
   async getAdStates(adExts: string[]): Promise<Record<string, AdState>> {

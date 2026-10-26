@@ -211,4 +211,20 @@ CREATE TABLE IF NOT EXISTS kv (
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS hours text;
 ALTER TABLE stats_daily ADD COLUMN IF NOT EXISTS tv_weighted real NOT NULL DEFAULT 0;
 ALTER TABLE stats_daily ADD COLUMN IF NOT EXISTS pos_weighted real NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS rate_limits (
+  key text PRIMARY KEY,
+  count integer NOT NULL DEFAULT 0,
+  reset_at timestamptz NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notify_settings (
+  business_id text PRIMARY KEY,
+  telegram_chat_id text,
+  telegram_name text,
+  linked_at timestamptz,
+  digest integer NOT NULL DEFAULT 1,
+  last_digest_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS leads_business_contact ON leads(business_id, contact);
 `;

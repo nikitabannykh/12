@@ -74,7 +74,7 @@ export function BusinessForm({ initial, niches, next, aiOn }: { initial: Busines
           </div>
           <div>
             <label className="label" htmlFor="city">Город</label>
-            <input id="city" className="field" value={f.city} onChange={(e) => set("city", e.target.value)} placeholder="Казань" required />
+            <input id="city" className="field" value={f.city} onChange={(e) => set("city", e.target.value)} placeholder="Казань" required minLength={2} maxLength={60} />
           </div>
         </div>
         <div>
@@ -87,13 +87,13 @@ export function BusinessForm({ initial, niches, next, aiOn }: { initial: Busines
         </div>
         <div>
           <label className="label" htmlFor="address">Адрес</label>
-          <input id="address" className="field" value={f.address} onChange={(e) => set("address", e.target.value)} placeholder="ул. Баумана, 15 — у метро «Кремлёвская»" />
+          <input id="address" className="field" value={f.address} onChange={(e) => set("address", e.target.value)} placeholder="ул. Баумана, 15 — у метро «Кремлёвская»" maxLength={200} />
           <p className="hint mt-1.5">Ориентир вроде метро или ТЦ помогает: «рядом с домом» — частая причина выбрать салон.</p>
         </div>
         <div>
           <label className="label" htmlFor="hours">Часы работы</label>
-          <input id="hours" className="field" value={f.hours} onChange={(e) => set("hours", e.target.value)} placeholder="Ежедневно 10:00–21:00" />
-          <p className="hint mt-1.5">Покажем под объявлением вместе с адресом и телефоном.</p>
+          <input id="hours" className="field" value={f.hours} onChange={(e) => set("hours", e.target.value)} placeholder="Ежедневно 10:00–21:00" maxLength={80} />
+          <p className="hint mt-1.5">Покажем под объявлением вместе с адресом и телефоном. Не указаны часы — визитку в Директе не создаём, чтобы не показывать неверное время.</p>
         </div>
       </section>
 
@@ -102,7 +102,7 @@ export function BusinessForm({ initial, niches, next, aiOn }: { initial: Busines
         <div>
           <label className="label" htmlFor="site">Сайт</label>
           <div className="flex gap-2">
-            <input id="site" className="field" value={f.siteUrl} onChange={(e) => set("siteUrl", e.target.value)} placeholder="lak-studio.ru или страница в Taplink" />
+            <input id="site" className="field" value={f.siteUrl} onChange={(e) => set("siteUrl", e.target.value)} placeholder="lak-studio.ru или страница в Taplink" maxLength={300} />
             {aiOn ? (
               <button type="button" className="btn btn-ghost shrink-0" onClick={importSite} disabled={importing}>
                 {importing ? <Loader2 size={16} className="spin" /> : <Wand2 size={16} />}
@@ -115,15 +115,15 @@ export function BusinessForm({ initial, niches, next, aiOn }: { initial: Busines
         <div className="grid sm:grid-cols-3 gap-4">
           <div>
             <label className="label" htmlFor="phone">Телефон</label>
-            <input id="phone" className="field" value={f.phone} onChange={(e) => set("phone", e.target.value)} placeholder="+7 900 000-00-00" inputMode="tel" />
+            <input id="phone" className="field" value={f.phone} onChange={(e) => set("phone", e.target.value)} placeholder="+7 900 000-00-00" inputMode="tel" maxLength={40} />
           </div>
           <div>
             <label className="label" htmlFor="wa">WhatsApp</label>
-            <input id="wa" className="field" value={f.whatsapp} onChange={(e) => set("whatsapp", e.target.value)} placeholder="+7 900 000-00-00" />
+            <input id="wa" className="field" value={f.whatsapp} onChange={(e) => set("whatsapp", e.target.value)} placeholder="+7 900 000-00-00" maxLength={60} />
           </div>
           <div>
             <label className="label" htmlFor="tg">Telegram</label>
-            <input id="tg" className="field" value={f.telegram} onChange={(e) => set("telegram", e.target.value)} placeholder="@lak_studio" />
+            <input id="tg" className="field" value={f.telegram} onChange={(e) => set("telegram", e.target.value)} placeholder="@lak_studio" maxLength={60} />
           </div>
         </div>
       </section>
@@ -136,8 +136,8 @@ export function BusinessForm({ initial, niches, next, aiOn }: { initial: Busines
         <div className="grid gap-2">
           {f.services.map((s, i) => (
             <div key={i} className="grid grid-cols-[1fr_8.5rem_auto] gap-2">
-              <input className="field" aria-label="Услуга" value={s.name} placeholder={niche?.examples[i % (niche?.examples.length || 1)] ?? "Услуга"} onChange={(e) => set("services", f.services.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} />
-              <input className="field" aria-label="Цена" value={s.price ?? ""} placeholder="1 900 ₽" onChange={(e) => set("services", f.services.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))} />
+              <input className="field" aria-label="Услуга" maxLength={80} value={s.name} placeholder={niche?.examples[i % (niche?.examples.length || 1)] ?? "Услуга"} onChange={(e) => set("services", f.services.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} />
+              <input className="field" aria-label="Цена" maxLength={40} value={s.price ?? ""} placeholder="1 900 ₽" onChange={(e) => set("services", f.services.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))} />
               <button type="button" className="btn btn-ghost px-3" aria-label="Удалить услугу" onClick={() => set("services", f.services.filter((_, j) => j !== i))} disabled={f.services.length === 1}>
                 <Trash2 size={16} />
               </button>
@@ -158,6 +158,7 @@ export function BusinessForm({ initial, niches, next, aiOn }: { initial: Busines
         </div>
         <div>
           <label className="label" htmlFor="adv">Преимущества — каждое с новой строки</label>
+          <p className="hint mb-1.5">До 8 пунктов, каждый до 100 символов. Короткие (до 25 символов) покажем отдельными строками под объявлением. Без «лучший» и «самый» — модерация их не пропускает.</p>
           <textarea id="adv" className="field" rows={4} value={f.advantages.join("\n")} onChange={(e) => set("advantages", e.target.value.split("\n").slice(0, 8))} placeholder={"Покрытие держится 3–4 недели\nСтерилизация в сухожаре, крафт-пакеты при вас\nПарковка у входа"} />
         </div>
         <div className="grid sm:grid-cols-2 gap-4">

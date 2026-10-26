@@ -46,8 +46,8 @@ export function AdActions({ ad, channel, canTest }: { ad: { id: string; title: s
         onClose={() => setEdit(false)}
         onSave={async (v) => {
           try {
-            await api("PATCH", `/api/ads/${ad.id}`, v);
-            toast("Текст отправлен на модерацию");
+            const res = await api<{ unchanged?: boolean }>("PATCH", `/api/ads/${ad.id}`, v);
+            toast(res.unchanged ? "Текст не изменился" : "Сохранили. Площадка проверит новый текст — пока идёт старый");
             setEdit(false);
             router.refresh();
           } catch (e) {

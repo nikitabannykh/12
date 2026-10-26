@@ -1,7 +1,7 @@
 import "server-only";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { createHash } from "crypto";
-import type { AuctionRow, AdSpec, AdState, CampaignSpec, Channel, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy } from "./types";
+import type { AuctionRow, AdSpec, AdState, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy } from "./types";
 import { getDb, schema } from "../db";
 import { addDays, isoDay, uid } from "../util";
 
@@ -31,7 +31,13 @@ const tierPrice = (group: string, m: number) => Math.round(22 * m * groupComp(gr
 type State = { campaigns: Record<string, DemoCampaign>; ads: Record<string, DemoAd>; seq: number };
 
 const KEY = (accountId: string) => `demo:${accountId}`;
+/** Старые общие часы демо — остаются только как запасной вариант, когда кабинет определить нельзя */
 export const DEMO_CLOCK = "demo:clock";
+const CLOCK_KEY = (accountId: string) => `demo:clock:${accountId}`;
+/** Дальше этого демо-время не мотаем: статистика за 30 дней и месяц бюджета должны оставаться осмысленными */
+export const DEMO_MAX_SHIFT_DAYS = 180;
+
+export type DemoScope = { businessId?: string; accountId?: string };
 
 /** Детерминированный генератор (mulberry32): одинаковые данные при каждой синхронизации */
 function rng(seed: string) {
@@ -44,19 +50,69 @@ function rng(seed: string) {
   };
 }
 
-export async function demoNow(): Promise<Date> {
+/** Демо-кабинет бизнеса: по его кампаниям, а если их ещё нет — по кабинетам владельца */
+async function demoAccountOf(scope?: DemoScope): Promise<string | null> {
+  if (scope?.accountId) return scope.accountId;
+  if (!scope?.businessId) return null;
   const db = await getDb();
-  const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, DEMO_CLOCK));
-  const offset = Number((row?.value as any)?.offsetDays ?? 0);
-  return addDays(new Date(), offset);
+  const [c] = await db
+    .select({ accountId: schema.campaigns.accountId })
+    .from(schema.campaigns)
+    .where(and(eq(schema.campaigns.businessId, scope.businessId), eq(schema.campaigns.platform, "demo")))
+    .limit(1);
+  if (c) return c.accountId;
+  const [b] = await db.select({ userId: schema.businesses.userId }).from(schema.businesses).where(eq(schema.businesses.id, scope.businessId));
+  if (!b) return null;
+  const [a] = await db
+    .select({ id: schema.adAccounts.id })
+    .from(schema.adAccounts)
+    .where(and(eq(schema.adAccounts.userId, b.userId), eq(schema.adAccounts.platform, "demo")))
+    .limit(1);
+  return a?.id ?? null;
 }
 
-export async function shiftDemoClock(days: number) {
+async function readOffset(key: string): Promise<number | null> {
   const db = await getDb();
-  const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, DEMO_CLOCK));
-  const offset = Number((row?.value as any)?.offsetDays ?? 0) + days;
-  if (row) await db.update(schema.kv).set({ value: { offsetDays: offset }, updatedAt: new Date() }).where(eq(schema.kv.key, DEMO_CLOCK));
-  else await db.insert(schema.kv).values({ key: DEMO_CLOCK, value: { offsetDays: offset } });
+  const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, key));
+  if (!row) return null;
+  const n = Number((row.value as any)?.offsetDays ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+async function offsetFor(accountId: string | null): Promise<number> {
+  if (!accountId) return (await readOffset(DEMO_CLOCK)) ?? 0;
+  const own = await readOffset(CLOCK_KEY(accountId));
+  if (own !== null) return own;
+  // Переход со старых общих часов: кабинет, чьи кампании уже «живут» в будущем, продолжает с общего смещения,
+  // иначе его статистика пропала бы. Новые кабинеты стартуют с реального «сегодня».
+  const db = await getDb();
+  const [st] = await db.select().from(schema.kv).where(eq(schema.kv.key, KEY(accountId)));
+  const created = Object.values(((st?.value as State | undefined)?.campaigns ?? {})).map((c) => c.created);
+  // Демо-кампании «стартуют» за 12 дней до запуска: дата позже реального «сегодня − 12» значит, что их создали по сдвинутым часам
+  const realLaunchFloor = isoDay(addDays(new Date(), -12));
+  if (created.some((d) => d > realLaunchFloor)) return Math.min(DEMO_MAX_SHIFT_DAYS, (await readOffset(DEMO_CLOCK)) ?? 0);
+  return 0;
+}
+
+/**
+ * «Сейчас» демо-кабинета. У каждого демо-кабинета свои часы (kv `demo:clock:<accountId>`),
+ * чтобы перемотка у одного посетителя не сдвигала время другим. Без scope — старые общие часы.
+ */
+export async function demoNow(scope?: DemoScope): Promise<Date> {
+  const accountId = await demoAccountOf(scope);
+  return addDays(new Date(), await offsetFor(accountId));
+}
+
+/** Промотать демо-время кабинета вперёд. Возвращает итоговое смещение в днях (не больше DEMO_MAX_SHIFT_DAYS). */
+export async function shiftDemoClock(days: number, scope?: DemoScope) {
+  const db = await getDb();
+  const accountId = await demoAccountOf(scope);
+  const key = accountId ? CLOCK_KEY(accountId) : DEMO_CLOCK;
+  const offset = Math.max(0, Math.min(DEMO_MAX_SHIFT_DAYS, (await offsetFor(accountId)) + days));
+  await db
+    .insert(schema.kv)
+    .values({ key, value: { offsetDays: offset } })
+    .onConflictDoUpdate({ target: schema.kv.key, set: { value: { offsetDays: offset }, updatedAt: new Date() } });
   return offset;
 }
 
@@ -65,6 +121,11 @@ const BAD_WORDS = ["бесплатно", "вакансии", "обучение",
 export class DemoPlatform implements PlatformClient {
   platform = "demo" as const;
   constructor(private accountId: string) {}
+
+  /** Часы этого демо-кабинета */
+  private now() {
+    return demoNow({ accountId: this.accountId });
+  }
 
   private async load(): Promise<State> {
     const db = await getDb();
@@ -103,12 +164,15 @@ export class DemoPlatform implements PlatformClient {
     return id;
   }
 
-  async launchCampaign(spec: CampaignSpec): Promise<LaunchResult> {
+  async launchCampaign(spec: CampaignSpec, hooks?: LaunchHooks): Promise<LaunchResult> {
+    // Закрепляем часы кабинета (до первой перемотки ключа ещё нет)
+    await shiftDemoClock(0, { accountId: this.accountId });
     const s = await this.load();
-    const now = await demoNow();
+    const now = await this.now();
     // Демо-кампании «стартуют» 12 дней назад, чтобы сразу была статистика
     const day = isoDay(addDays(now, -12));
     const campaignExt = this.id(s);
+    await hooks?.onCampaignCreated?.(campaignExt);
     s.campaigns[campaignExt] = { channel: spec.channel, budgets: [{ from: day, weekly: spec.weeklyBudget }], intervals: [{ from: day, to: null }], negatives: [...spec.negativeKeywords], created: day };
     const out: LaunchResult = { campaignExt, groups: [], warnings: [] };
     for (const g of spec.groups) {
@@ -123,9 +187,16 @@ export class DemoPlatform implements PlatformClient {
     return out;
   }
 
+  async removeCampaign(campaignExt: string) {
+    const s = await this.load();
+    delete s.campaigns[campaignExt];
+    for (const [id, a] of Object.entries(s.ads)) if (a.campaign === campaignExt) delete s.ads[id];
+    await this.save(s);
+  }
+
   async addAd(campaignExt: string, groupExt: string, ad: AdSpec) {
     const s = await this.load();
-    const day = isoDay(await demoNow());
+    const day = isoDay(await this.now());
     // Новые варианты робот пишет с учётом статистики — в среднем они чуть сильнее
     const peers = Object.values(s.ads).filter((a) => a.group === groupExt);
     const avg = peers.length ? peers.reduce((x, a) => x + a.quality, 0) / peers.length : 1;
@@ -138,13 +209,13 @@ export class DemoPlatform implements PlatformClient {
   async setCampaignActive(campaignExt: string, active: boolean) {
     const s = await this.load();
     const c = s.campaigns[campaignExt];
-    if (c) this.setActive(c.intervals, active, isoDay(await demoNow()));
+    if (c) this.setActive(c.intervals, active, isoDay(await this.now()));
     await this.save(s);
   }
 
   async setAdsActive(adExts: string[], active: boolean) {
     const s = await this.load();
-    const day = isoDay(await demoNow());
+    const day = isoDay(await this.now());
     for (const id of adExts) {
       const a = s.ads[id];
       if (!a || a.status === "rejected" || a.status === "archived") continue;
@@ -157,7 +228,7 @@ export class DemoPlatform implements PlatformClient {
   async setBudget(campaignExt: string, p: { weeklyBudget: number; strategy: Strategy; bidCeiling?: number | null }) {
     const s = await this.load();
     const c = s.campaigns[campaignExt];
-    const day = isoDay(await demoNow());
+    const day = isoDay(await this.now());
     if (c) {
       c.budgets.push({ from: day, weekly: p.weeklyBudget });
       if (p.bidCeiling !== undefined) (c.ceilings ??= []).push({ from: day, value: p.bidCeiling });
@@ -181,7 +252,7 @@ export class DemoPlatform implements PlatformClient {
       if (a.status === "rejected") {
         a.status = "active";
         a.note = undefined;
-        this.setActive(a.intervals, true, isoDay(await demoNow()));
+        this.setActive(a.intervals, true, isoDay(await this.now()));
       }
     }
     await this.save(s);
@@ -199,7 +270,7 @@ export class DemoPlatform implements PlatformClient {
 
   async getStats(campaignExts: string[], from: string, to: string): Promise<StatRow[]> {
     const s = await this.load();
-    const now = isoDay(await demoNow());
+    const now = isoDay(await this.now());
     const end = to < now ? to : now;
     const out: StatRow[] = [];
     const activeOn = (iv: Interval[], d: string) => iv.some((i) => i.from <= d && (i.to === null || d < i.to));

@@ -13,4 +13,4 @@ jobs:
     steps:
       - name: Run optimizer
         run: |
-          curl -fsS --max-time 70 "${{ secrets.APP_URL }}/api/cron/run?key=${{ secrets.CRON_SECRET }}" | head -c 2000
+          curl -fsS --max-time 70 -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" "${{ secrets.APP_URL }}/api/cron/run" | head -c 2000

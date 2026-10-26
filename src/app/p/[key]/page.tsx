@@ -6,6 +6,8 @@ import { getDb, schema } from "@/lib/db";
 import { listPhotos } from "@/lib/engine/images";
 import { nicheById } from "@/lib/niches";
 import { LeadForm } from "@/components/LeadForm";
+import { sign } from "@/lib/crypto";
+import { signFirstTouch } from "@/lib/ratelimit";
 
 export const dynamic = "force-dynamic";
 
@@ -24,9 +26,15 @@ export async function generateMetadata({ params }: { params: Promise<{ key: stri
 const digits = (s: string) => s.replace(/[^\d+]/g, "");
 
 /** Страница записи — для тех, у кого нет сайта. Сюда ведут объявления, здесь же считаются обращения. */
-export default async function Landing({ params }: { params: Promise<{ key: string }> }) {
+export default async function Landing({ params, searchParams }: { params: Promise<{ key: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const b = await load((await params).key);
   if (!b) notFound();
+  const sp = await searchParams;
+  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+  // Метка времени открытия страницы (защита от ботов: слишком быстрые заявки отклоняются)
+  const ts = sign({ k: b.publicKey, t: Date.now(), exp: Date.now() + 7 * 864e5 });
+  // Пришли по рекламе — подписываем utm-метки сразу на сервере (трекер сделает то же самое, но позже)
+  const ft = one(sp.utm_source) ? signFirstTouch(b.publicKey, { source: one(sp.utm_source), campaign: one(sp.utm_campaign), ad: one(sp.utm_content) }) : null;
   const n = nicheById(b.niche);
   const photos = (await listPhotos(b.id)).slice(0, 6);
   const { bg, ink, accent } = n.palette;
@@ -59,7 +67,7 @@ export default async function Landing({ params }: { params: Promise<{ key: strin
             </div>
           </div>
           <div id="form" style={{ background: accent }} className="rounded-3xl p-1.5 scroll-mt-6">
-            <LeadForm publicKey={b.publicKey} services={b.services.map((s) => s.name)} accent={accent} />
+            <LeadForm publicKey={b.publicKey} services={b.services.map((s) => s.name)} accent={accent} ts={ts} ft={ft} counterId={b.counterId ?? null} privacyUrl={`/privacy?b=${encodeURIComponent(b.publicKey)}`} />
           </div>
         </div>
 
@@ -104,7 +112,10 @@ export default async function Landing({ params }: { params: Promise<{ key: strin
           </section>
         ) : null}
 
-        <footer className="mt-16 text-sm opacity-60">{b.name}{b.address ? `, ${b.address}` : `, ${b.city}`}</footer>
+        <footer className="mt-16 text-sm opacity-60 flex flex-wrap gap-x-4 gap-y-1">
+          <span>{b.name}{b.address ? `, ${b.address}` : `, ${b.city}`}</span>
+          <a href={`/privacy?b=${encodeURIComponent(b.publicKey)}`} className="underline">Политика обработки данных</a>
+        </footer>
       </main>
     </div>
   );

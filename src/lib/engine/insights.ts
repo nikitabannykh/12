@@ -35,9 +35,18 @@ export type AdScore = {
 const pct = (x: number) => `${(x * 100).toFixed(x < 0.01 ? 2 : 1).replace(".", ",")}%`;
 const rub = (n: number) => `${new Intl.NumberFormat("ru-RU").format(Math.round(n))} ₽`;
 
+/** Сколько кликов (или обращений) нужно у лидера, чтобы вообще говорить «лучшее» */
+export const MIN_LEADER = { clicks: 10, conversions: 3, prob: 0.8 } as const;
+
+const plConv = (n: number) => `${n} ${n % 10 === 1 && n % 100 !== 11 ? "обращение" : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? "обращения" : "обращений"}`;
+const capFirst = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+
 /**
  * Сравнение объявлений внутри группы (одна аудитория).
  * Если обращений хватает — главная метрика «цена обращения», иначе «кликабельность».
+ * «Лучшее» и «Слабое» ставим только при достаточных данных: у сравниваемых объявлений есть порог показов,
+ * у лидера — клики (или обращения), а вероятность, что он действительно лучше второго, не ниже 80 %.
+ * При нуле показов и нуле кликов ни лидера, ни полосок нет.
  */
 export function scoreGroup(rows: { id: string; s: S; live: boolean }[], channel: string): AdScore[] {
   const min = MIN_IMPR[channel] ?? 500;
@@ -53,6 +62,15 @@ export function scoreGroup(rows: { id: string; s: S; live: boolean }[], channel:
   const sorted = [...ready].sort((a, b) => value(b.s) - value(a.s));
   const best = sorted[0];
   const bestV = best ? value(best.s) : 0;
+  // Вероятность, что A лучше B по решающей метрике
+  const pBetter = (a: S, b: S) =>
+    byConv ? probBetter(a.conversions, Math.max(a.clicks, a.conversions), b.conversions, Math.max(b.clicks, b.conversions), 1500) : probBetter(a.clicks, a.impressions, b.clicks, b.impressions, 1500);
+  const enough = (s: S) => s.impressions >= min && (byConv ? s.conversions >= MIN_LEADER.conversions : s.clicks >= MIN_LEADER.clicks);
+  const second = sorted[1];
+  const pLead = best && second && bestV > 0 && enough(best.s) ? pBetter(best.s, second.s) : 0;
+  const hasLeader = pLead >= MIN_LEADER.prob;
+  const noSignal = bestV <= 0; // ни кликов, ни обращений — сравнивать нечего
+
   return rows.map((r) => {
     if (!r.live) return { id: r.id, rank: null, verdict: "off", why: "Не показывается", rel: 0, s: r.s };
     const idx = sorted.findIndex((x) => x.id === r.id);
@@ -60,23 +78,30 @@ export function scoreGroup(rows: { id: string; s: S; live: boolean }[], channel:
       const left = Math.max(0, Math.ceil(min / 3 - r.s.impressions));
       return { id: r.id, rank: null, verdict: "learning", why: `Нужно ещё ≈ ${new Intl.NumberFormat("ru-RU").format(left)} показов, чтобы сравнить`, rel: 0, s: r.s };
     }
+    if (noSignal) {
+      return { id: r.id, rank: null, verdict: "learning", why: r.s.clicks ? "Пока мало данных для сравнения" : "Кликов пока нет — сравним, когда появятся", rel: 0, s: r.s };
+    }
     const v = value(r.s);
     const rel = bestV ? v / bestV : 0;
     const metricText = byConv
       ? r.s.conversions ? `обращение по ${rub(r.s.cost / r.s.conversions)}` : `${rub(r.s.cost)} без обращений`
-      : `кликают ${pct(ctrOf(r.s))} увидевших${totalConv ? `, ${r.s.conversions ? `${r.s.conversions} ${r.s.conversions === 1 ? "обращение" : r.s.conversions < 5 ? "обращения" : "обращений"}` : "обращений пока нет"}` : ""}`;
-    if (sorted.length < 2) return { id: r.id, rank: 1, verdict: "average", why: `Пока не с кем сравнить: ${metricText}`, rel: 1, s: r.s };
+      : `кликают ${pct(ctrOf(r.s))} увидевших${totalConv ? `, ${r.s.conversions ? plConv(r.s.conversions) : "обращений пока нет"}` : ""}`;
+    if (sorted.length < 2) return { id: r.id, rank: null, verdict: "average", why: `Пока не с кем сравнить: ${metricText}`, rel: 1, s: r.s };
     if (idx === 0) {
-      const second = value(sorted[1].s);
-      const lift = second ? Math.round((v / second - 1) * 100) : 0;
-      return { id: r.id, rank: 1, verdict: "leader", why: `${metricText[0].toUpperCase()}${metricText.slice(1)}${lift > 3 ? ` — на ${lift}% лучше следующего` : ""}`, rel: 1, s: r.s };
+      if (!hasLeader) {
+        return enough(r.s)
+          ? { id: r.id, rank: 1, verdict: "good", why: `${capFirst(metricText)} — впереди, но разница пока может быть случайной`, rel: 1, s: r.s }
+          : { id: r.id, rank: 1, verdict: "average", why: `${capFirst(metricText)} — данных пока мало, чтобы назвать лучшее`, rel: 1, s: r.s };
+      }
+      const secondV = value(second.s);
+      const lift = secondV ? Math.round((v / secondV - 1) * 100) : 0;
+      return { id: r.id, rank: 1, verdict: "leader", why: `${capFirst(metricText)}${lift > 3 && pLead >= 0.9 ? ` — на ${lift}% лучше следующего` : ""}`, rel: 1, s: r.s };
     }
-    const pWorse = byConv
-      ? probBetter(best.s.conversions, best.s.clicks, r.s.conversions, r.s.clicks, 1500)
-      : probBetter(best.s.clicks, best.s.impressions, r.s.clicks, r.s.impressions, 1500);
-    const verdict: Verdict = pWorse >= 0.9 && rel < 0.75 ? "weak" : rel >= 0.85 ? "good" : "average";
+    // «Слабое» — только при уверенном отставании и достаточных показах у самого объявления
+    const pWorse = r.s.impressions >= min ? pBetter(best.s, r.s) : 0;
+    const verdict: Verdict = pWorse >= 0.9 && rel < 0.75 && enough(best.s) ? "weak" : rel >= 0.85 ? "good" : "average";
     const gap = rel ? Math.round((1 / rel - 1) * 100) : 100;
-    const why = verdict === "weak" ? `${metricText[0].toUpperCase()}${metricText.slice(1)} — хуже лучшего на ${gap}%` : `${metricText[0].toUpperCase()}${metricText.slice(1)}`;
+    const why = verdict === "weak" ? `${capFirst(metricText)} — хуже лучшего на ${gap}%` : capFirst(metricText);
     return { id: r.id, rank: idx + 1, verdict, why, rel, s: r.s };
   });
 }

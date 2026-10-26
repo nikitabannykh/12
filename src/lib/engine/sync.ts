@@ -19,7 +19,7 @@ export async function syncBusiness(b: Business) {
     if (!acc) continue;
     try {
       const client = await clientFor(acc);
-      const now = acc.platform === "demo" ? await demoNow() : new Date();
+      const now = acc.platform === "demo" ? await demoNow({ accountId: acc.id }) : new Date();
       const to = isoDay(now);
       const from = isoDay(addDays(now, -29));
       const ads = await db.select().from(schema.ads).where(inArray(schema.ads.campaignId, list.map((c) => c.id)));
@@ -30,12 +30,14 @@ export async function syncBusiness(b: Business) {
       const goalIds = Object.values(b.goalIds ?? {}).length ? [b.goalIds.lead].filter(Boolean) as number[] : [];
       const rows = await client.getStats(list.map((c) => c.externalId!), from, to, goalIds);
 
-      // Обращения с нашего счётчика по объявлениям (utm_content = ID объявления на площадке)
+      // Обращения с нашего счётчика по объявлениям (utm_content = ID объявления на площадке).
+      // День — московский, как в статистике площадок
+      const mskDay = sql<string>`to_char(${schema.leads.createdAt} AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD')`;
       const tracked = await db
-        .select({ adExt: schema.leads.adExt, day: sql<string>`to_char(${schema.leads.createdAt}, 'YYYY-MM-DD')`, n: sql<number>`count(*)::int` })
+        .select({ adExt: schema.leads.adExt, day: mskDay, n: sql<number>`count(*)::int` })
         .from(schema.leads)
         .where(and(eq(schema.leads.businessId, b.id), gte(schema.leads.createdAt, new Date(from))))
-        .groupBy(schema.leads.adExt, sql`to_char(${schema.leads.createdAt}, 'YYYY-MM-DD')`);
+        .groupBy(schema.leads.adExt, mskDay);
       const trackedMap = new Map(tracked.filter((t) => t.adExt).map((t) => [`${t.adExt}|${t.day}`, Number(t.n)]));
 
       const agg = new Map<string, { campaignId: string; adId: string; day: string; impressions: number; clicks: number; cost: number; conversions: number; tvWeighted: number; posWeighted: number }>();
@@ -91,12 +93,11 @@ export async function syncBusiness(b: Business) {
         for (const a of live) {
           const s = states[a.externalId!];
           if (!s) continue;
-          let next = a.status;
-          if (s.status === "rejected") next = "rejected";
-          else if (s.status === "archived") next = "archived";
-          else if (s.status === "moderation") next = a.status === "paused" ? "paused" : "moderation";
-          else if (s.status === "active" && a.status !== "paused") next = "active";
-          else if (s.status === "paused" && a.status === "active") next = "paused";
+          // Площадка — источник правды: «paused» она отдаёт только для объявлений, остановленных вручную или роботом
+          // (Директ: State SUSPENDED, VK: blocked). Если остановленное у нас объявление площадка показывает как активное,
+          // значит его включили в кабинете — переводим в active, иначе оно навсегда выпадает из оптимизации.
+          let next = s.status as string;
+          if (s.status === "moderation" && a.status === "paused") next = "paused";
           if (next !== a.status || (s.note ?? null) !== a.statusNote) {
             await db.update(schema.ads).set({ status: next, statusNote: s.note ?? null }).where(eq(schema.ads.id, a.id));
           }

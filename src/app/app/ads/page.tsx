@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
 import { and, eq, inArray } from "drizzle-orm";
-import { FlaskConical, Trophy, Lightbulb, Image as ImageIcon, Eye, ChevronDown } from "lucide-react";
+import { FlaskConical, Trophy, Lightbulb, Image as ImageIcon, Eye, ChevronDown, GraduationCap } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { getBusinessForUser, landingUrl } from "@/lib/engine/launch";
-import { adStats, reportNow } from "@/lib/engine/report";
+import { adStats, reportNow, report, campaignStates, LEARNING_DAYS } from "@/lib/engine/report";
 import { getDb, schema } from "@/lib/db";
 import { LiveToggle } from "@/components/client";
 import { AdActions, BudgetInline } from "@/components/AdsControls";
@@ -16,7 +16,7 @@ import { ANGLES } from "@/lib/niches";
 import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
 import { adExtras, withPlanCallouts } from "@/lib/engine/extras";
 import { placeName, scoreGroup, liftBy, addS, zeroS, ctrOf, VERDICT, type S, type AdScore } from "@/lib/engine/insights";
-import { addDays, hostOf, isoDay, num, rub } from "@/lib/util";
+import { addDays, hostOf, isoDay, num, pl, plural, rub } from "@/lib/util";
 import type { Channel } from "@/lib/platforms/types";
 
 const STATUS: Record<string, { text: string; cls: string }> = {
@@ -30,7 +30,16 @@ const liftText = (index: number) => {
   const d = Math.round((index - 1) * 100);
   return d >= 0 ? `+${d}%` : `${d}%`;
 };
-const SHORT: Record<string, string> = { search: "Поиск", network: "Сайты (РСЯ)", vk: "ВКонтакте" };
+const SHORT: Record<string, string> = { search: "Поиск", network: "Сайты и приложения", vk: "ВКонтакте" };
+const DAYS = 14;
+/** Оценка без данных не должна выглядеть как «Лучшее» */
+function shown(sc: AdScore): AdScore {
+  if (sc.verdict === "off" || sc.verdict === "learning") return sc;
+  if (!sc.s.impressions || ((sc.verdict === "leader" || sc.verdict === "good") && !sc.s.clicks && !sc.s.conversions)) {
+    return { ...sc, rank: null, verdict: "learning", rel: 0, why: sc.s.impressions ? `${pl(sc.s.impressions, "показ", "показа", "показов")}, кликов пока нет — копим данные` : "Показов пока не было — копим данные" };
+  }
+  return sc;
+}
 
 export default async function AdsPage() {
   const user = await requireUser();
@@ -47,7 +56,8 @@ export default async function AdsPage() {
   const imgs = imgIds.length ? await db.select({ id: schema.images.id, layout: schema.images.layout }).from(schema.images).where(inArray(schema.images.id, imgIds)) : [];
   const layoutOf = new Map(imgs.map((i) => [i.id, i.layout as Layout | null]));
   const now = await reportNow(b);
-  const stats = await adStats(b.id, isoDay(addDays(now, -13)));
+  const stats = await adStats(b.id, isoDay(addDays(now, -(DAYS - 1))));
+  const [rr, states] = await Promise.all([report(b, DAYS), campaignStates(b, camps, now)]);
   const st = (id: string): S => stats.get(id) ?? zeroS();
   const landing = landingUrl(b);
   const host = hostOf(landing);
@@ -64,7 +74,7 @@ export default async function AdsPage() {
   const scores = new Map<string, AdScore>();
   for (const g of groups) {
     const rows = visible.filter((a) => a.adGroupId === g.id).map((a) => ({ id: a.id, s: st(a.id), live: a.status === "active" && g.status === "active" }));
-    for (const sc of scoreGroup(rows, chOf.get(g.campaignId) ?? "search")) scores.set(sc.id, sc);
+    for (const sc of scoreGroup(rows, chOf.get(g.campaignId) ?? "search")) scores.set(sc.id, shown(sc));
   }
 
   // ─── Место в выдаче (поиск) ───
@@ -79,7 +89,11 @@ export default async function AdsPage() {
   // ─── Каналы ───
   const chRows = camps.map((c) => {
     const s = ads.filter((a) => a.campaignId === c.id).reduce((acc, a) => addS(acc, st(a.id)), zeroS());
-    return { c, ch: c.channel as Channel, s, cpl: s.conversions ? s.cost / s.conversions : null };
+    // Итоги канала — как в «Статистике» за те же дни: с заявками, которых нет в статистике площадки
+    const t = camps.filter((x) => x.channel === c.channel).length === 1 ? rr.byChannel[c.channel] : undefined;
+    const tot = t ? { ...s, cost: t.cost, clicks: t.clicks, impressions: t.impressions, conversions: t.leads } : s;
+    const clients = t ? t.clients : null;
+    return { c, ch: c.channel as Channel, s: tot, cpl: tot.conversions ? tot.cost / tot.conversions : null, clients, estimated: t?.clientsEstimated ?? true, cac: clients ? tot.cost / clients : null };
   });
   const totalConv = chRows.reduce((x, r) => x + r.s.conversions, 0);
   const withLeads = chRows.filter((r) => r.cpl !== null && r.s.conversions >= 2).sort((a, b) => a.cpl! - b.cpl!);
@@ -103,7 +117,7 @@ export default async function AdsPage() {
     <div className="grid grid-cols-1 gap-6">
       <div>
         <h1 className="text-3xl font-extrabold tracking-tight">Реклама</h1>
-        <p className="text-muted mt-1 max-w-2xl">Что приносит клиентов, а что нет. Цифры за последние 14 дней. Можно менять всё вручную: робот учтёт ваши решения.</p>
+        <p className="text-muted mt-1 max-w-2xl">Что приносит клиентов, а что нет. Цифры за последние {DAYS} дней — так у сравнений больше данных. Можно менять всё вручную: робот учтёт ваши решения.</p>
       </div>
 
       {/* ─── Главное ─── */}
@@ -114,7 +128,7 @@ export default async function AdsPage() {
             {bestCh ? (
               <>
                 <b>{SHORT[bestCh.ch]}</b>
-                <span className="text-muted"> — обращение по {rub(bestCh.cpl!)}{withLeads[1] ? `, это в ${(withLeads[1].cpl! / bestCh.cpl!).toFixed(1).replace(".", ",")} раза дешевле, чем ${SHORT[withLeads[1].ch]}` : ""}</span>
+                <span className="text-muted"> — обращение по {rub(bestCh.cpl!)}{withLeads[1] && withLeads[1].cpl! / bestCh.cpl! >= 1.1 ? `, это в ${(withLeads[1].cpl! / bestCh.cpl!).toFixed(1).replace(".", ",")} раза дешевле, чем ${SHORT[withLeads[1].ch]}` : ""}</span>
               </>
             ) : <span className="text-muted">Пока мало обращений, чтобы сравнить каналы</span>}
           </Tile>
@@ -155,31 +169,34 @@ export default async function AdsPage() {
         <section className="card p-5 sm:p-7">
           <h2 className="text-lg font-bold">Каналы рядом</h2>
           <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-sm min-w-[520px]">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-faint">
-                  <th className="font-medium py-2 px-1">Канал</th>
+                  <th className="font-medium py-2 pr-2">Канал</th>
                   <th className="font-medium py-2 px-1 text-right">Потрачено</th>
                   <th className="font-medium py-2 px-1 text-right">Обращения</th>
-                  <th className="font-medium py-2 px-1 text-right">Цена обращения</th>
-                  <th className="font-medium py-2 px-1 w-[28%]">Доля обращений</th>
+                  <th className="font-medium py-2 px-1 text-right hidden sm:table-cell">Цена обращения</th>
+                  <th className="font-medium py-2 pl-1 text-right">Клиент</th>
+                  <th className="font-medium py-2 pl-3 w-[24%] hidden md:table-cell">Доля обращений</th>
                 </tr>
               </thead>
               <tbody>
                 {chRows.map((r) => {
                   const share = totalConv ? r.s.conversions / totalConv : 0;
-                  const best = bestCh && r.c.id === bestCh.c.id;
-                  const costly = bestCh && r.cpl !== null && r.cpl > bestCh.cpl! * 1.6;
+                  const best = bestCh && r.c.id === bestCh.c.id && withLeads.length > 1;
+                  const ratio = bestCh && r.cpl !== null && !best ? r.cpl / bestCh.cpl! : 0;
+                  const st8 = states.get(r.c.id);
                   return (
-                    <tr key={r.c.id} className="border-t border-line">
-                      <td className="py-2.5 px-1 font-semibold">
-                        {SHORT[r.ch]}
-                        {r.c.status !== "active" ? <span className="pill bg-paper text-muted ml-2">пауза</span> : best ? <span className="pill bg-good text-white ml-2">дешевле всех</span> : costly ? <span className="pill bg-warn-soft text-warn ml-2">дорого</span> : null}
+                    <tr key={r.c.id} className="border-t border-line align-top">
+                      <td className="py-2.5 pr-2 font-semibold">
+                        <div>{SHORT[r.ch]}</div>
+                        {st8?.stopped ? <span className="pill bg-paper text-muted mt-1">пауза</span> : best ? <span className="pill bg-good text-white mt-1 whitespace-normal">дешевле всех</span> : ratio >= 1.6 ? <span className="pill bg-warn-soft text-warn mt-1 whitespace-normal">в {ratio.toFixed(1).replace(".", ",")} раза дороже</span> : null}
                       </td>
-                      <td className="py-2.5 px-1 text-right tabular-nums">{rub(r.s.cost)}</td>
+                      <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap">{rub(r.s.cost)}</td>
                       <td className="py-2.5 px-1 text-right tabular-nums">{num(r.s.conversions)}</td>
-                      <td className="py-2.5 px-1 text-right tabular-nums font-semibold">{r.cpl !== null ? rub(r.cpl) : "—"}</td>
-                      <td className="py-2.5 px-1">
+                      <td className="py-2.5 px-1 text-right tabular-nums hidden sm:table-cell">{r.cpl !== null ? rub(r.cpl) : "—"}</td>
+                      <td className="py-2.5 pl-1 text-right tabular-nums font-semibold whitespace-nowrap">{r.cac !== null ? `${r.estimated ? "≈ " : ""}${rub(r.cac)}` : "—"}</td>
+                      <td className="py-2.5 pl-3 hidden md:table-cell">
                         <div className="flex items-center gap-2">
                           <div className="h-2 flex-1 rounded-full bg-paper overflow-hidden"><div className={`h-full rounded-full ${best ? "bg-good" : "bg-ink-2"}`} style={{ width: `${Math.round(share * 100)}%` }} /></div>
                           <span className="tabular-nums text-muted w-9 text-right">{Math.round(share * 100)}%</span>
@@ -191,7 +208,7 @@ export default async function AdsPage() {
               </tbody>
             </table>
           </div>
-          <p className="hint mt-3">Раз в неделю робот переносит до четверти бюджета из дорогого канала в тот, где обращение дешевле.</p>
+          <p className="hint mt-3">«Клиент» — сколько стоил один клиент из этого канала{chRows.some((r) => r.estimated) ? " (≈ — оценка, пока вы не отметили клиентов за неделю в «Статистике»)" : ""}. Раз в неделю робот переносит до четверти бюджета из дорогого канала в тот, где обращение дешевле.</p>
         </section>
       ) : null}
 
@@ -211,7 +228,7 @@ export default async function AdsPage() {
               return (
                 <li key={e.id} className="text-[0.95rem] leading-relaxed">
                   <div>Проверяем, {e.hypothesis.replace(/\.$/, "")}</div>
-                  <div className="mt-1.5 grid sm:grid-cols-2 gap-2 text-sm">
+                  <div className="mt-1.5 grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
                     <Duel label="Было" title={c?.title} s={sc} ahead={lead === "old"} />
                     <Duel label={e.kind === "creative" ? "Новая картинка" : "Новый вариант"} title={v?.title} s={sv} ahead={lead === "new"} />
                   </div>
@@ -221,7 +238,7 @@ export default async function AdsPage() {
           </ul>
           {running.length > 3 ? (
             <details className="mt-3 group/more">
-              <summary className="cursor-pointer text-sm font-semibold text-ink-2 list-none">Ещё {running.length - 3} {running.length - 3 === 1 ? "проверка" : running.length - 3 < 5 ? "проверки" : "проверок"} <ChevronDown size={14} className="inline transition group-open/more:rotate-180" /></summary>
+              <summary className="cursor-pointer text-sm font-semibold text-ink-2 list-none">Ещё {pl(running.length - 3, "проверка", "проверки", "проверок")} <ChevronDown size={14} className="inline transition group-open/more:rotate-180" /></summary>
               <ul className="mt-3 grid gap-4">
                 {running.slice(3).map((e) => {
                   const v = ads.find((a) => a.id === e.variantId);
@@ -232,7 +249,7 @@ export default async function AdsPage() {
                   return (
                     <li key={e.id} className="text-[0.95rem] leading-relaxed">
                       <div>Проверяем, {e.hypothesis.replace(/\.$/, "")}</div>
-                      <div className="mt-1.5 grid sm:grid-cols-2 gap-2 text-sm">
+                      <div className="mt-1.5 grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
                         <Duel label="Было" title={c?.title} s={sc} ahead={lead === "old"} />
                         <Duel label={e.kind === "creative" ? "Новая картинка" : "Новый вариант"} title={v?.title} s={sv} ahead={lead === "new"} />
                       </div>
@@ -256,38 +273,43 @@ export default async function AdsPage() {
             <div className="p-5 sm:p-7 border-b border-line">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
                     <h2 className="text-xl font-bold">{CHANNEL_NAME[ch]}</h2>
-                    <span className={`pill ${camp.status === "active" ? "bg-good-soft text-good" : "bg-paper text-muted"}`}>{camp.status === "active" ? "Идёт" : "На паузе"}</span>
+                    <CampaignPill s={states.get(camp.id)} ch={ch} />
                   </div>
                   <p className="text-sm text-muted mt-1">{CHANNEL_HINT[ch]}. {PLATFORM_NAME[camp.platform]}.</p>
                 </div>
-                <label className="flex items-center gap-2 text-sm font-semibold">
+                <label className="flex items-center gap-2 text-sm font-semibold shrink-0">
                   {camp.status === "active" ? "Включён" : "Выключен"}
                   <LiveToggle url={`/api/campaigns/${camp.id}`} on={camp.status === "active"} label={`Канал ${CHANNEL_NAME[ch]}`} confirmOff="Остановить показы в этом канале? Настройки и статистика сохранятся." />
                 </label>
               </div>
+              {(states.get(camp.id)?.learningLeft ?? 0) > 0 ? (
+                <p className="mt-3 text-sm text-ink-2 rounded-xl bg-info-soft px-4 py-3 leading-relaxed">
+                  После запуска или крупных изменений площадка заново подбирает аудиторию — в это время цифры скачут, и это нормально. Робот не меняет стратегию, бюджет и цену клика ещё {pl(states.get(camp.id)!.learningLeft, "день", "дня", "дней")}, чтобы не сбить обучение.
+                </p>
+              ) : null}
               <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
                 <div><div className="text-muted">Лимит</div><BudgetInline campaignId={camp.id} weekly={camp.weeklyBudget} min={MIN_WEEKLY[ch]} /></div>
                 <div><div className="text-muted">Как тратится</div><div className="font-semibold">{camp.strategy === "conversions" ? "Ищем тех, кто чаще записывается" : "Ищем больше переходов за бюджет"}</div></div>
                 <div><div className="text-muted">Потрачено</div><div className="font-semibold">{rub(row.s.cost)}</div></div>
-                <div><div className="text-muted">Обращения</div><div className="font-semibold">{num(row.s.conversions)}{row.cpl !== null ? ` · по ${rub(row.cpl)}` : ""}</div></div>
+                <div><div className="text-muted">Обращения</div><div className="font-semibold">{num(row.s.conversions)}{row.cpl !== null ? ` · по ${rub(row.cpl)}` : ""}</div>{row.cac !== null ? <div className="text-xs text-muted">клиент {row.estimated ? "≈ " : ""}{rub(row.cac)}</div> : null}</div>
               </div>
               {camp.negativeKeywords?.length && ch !== "vk" ? (
                 <details className="mt-3 text-sm">
-                  <summary className="cursor-pointer text-ink-2 font-medium">Не показываем по {camp.negativeKeywords.length} нецелевым словам</summary>
+                  <summary className="cursor-pointer text-ink-2 font-medium">Не показываем по {num(camp.negativeKeywords.length)} {plural(camp.negativeKeywords.length, "нецелевому слову", "нецелевым словам", "нецелевым словам")}</summary>
                   <p className="text-muted mt-1.5 leading-relaxed">{camp.negativeKeywords.join(", ")}</p>
                 </details>
               ) : null}
               {ch === "search" ? (() => {
                 const tv = tvOf(ads.filter((a) => a.campaignId === camp.id).map((a) => a.id));
                 const ceiling = ceilingOf(camp);
-                if (tv === null) return <p className="hint mt-3">Место в выдаче появится после первых показов.</p>;
+                if (tv === null) return <p className="hint mt-3">Место среди объявлений появится после первых показов.</p>;
                 return (
                   <div className="mt-4 rounded-xl bg-paper p-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-                    <div><span className="text-muted">Где вы в выдаче: </span><b>{placeName(tv)}</b> <span className="text-faint">(объём трафика {Math.round(tv)} из 100)</span></div>
+                    <div><span className="text-muted">Место среди объявлений: </span><b>{placeName(tv)}</b> <span className="text-faint">(видят {Math.round(tv)}% из возможных)</span></div>
                     <div><span className="text-muted">Цена клика: </span><b>{row.s.clicks ? rub(row.s.cost / row.s.clicks) : "—"}</b></div>
-                    <div><span className="text-muted">Предел ставки: </span><b>{ceiling ? rub(ceiling) : "нет — Директ решает сам"}</b></div>
+                    <div><span className="text-muted">Максимальная цена клика: </span><b>{ceiling ? rub(ceiling) : "нет — Директ решает сам"}</b></div>
                   </div>
                 );
               })() : null}
@@ -303,13 +325,13 @@ export default async function AdsPage() {
                 const gTv = ch === "search" ? tvOf(ads.filter((a) => a.adGroupId === g.id).map((a) => a.id)) : null;
                 return (
                   <div key={g.id} className={`p-5 sm:p-7 border-b border-line last:border-b-0 ${g.status !== "active" ? "bg-paper/60" : ""}`}>
-                    <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className={`grid items-start gap-3 ${cg.length > 1 ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-1"}`}>
                       <div className="min-w-0">
-                        <div className="font-bold">{ch === "search" ? "Услуга" : "Аудитория"}: {g.name}</div>
+                        <div className="font-bold break-words">{ch === "search" ? "Услуга" : "Аудитория"}: {g.name}</div>
                         <div className="text-sm text-muted">
-                          {g.audience ? `${g.audience} · ` : ""}{rub(gs.cost)}, {num(gs.conversions)} {gs.conversions === 1 ? "обращение" : gs.conversions >= 2 && gs.conversions <= 4 ? "обращения" : "обращений"}{gs.conversions ? ` по ${rub(gs.cost / gs.conversions)}` : ""}
+                          {g.audience ? `${g.audience} · ` : ""}{rub(gs.cost)}, {pl(gs.conversions, "обращение", "обращения", "обращений")}{gs.conversions ? ` по ${rub(gs.cost / gs.conversions)}` : ""}
                         </div>
-                        {g.keywords?.length && ch === "search" ? <div className="text-sm text-faint mt-1 line-clamp-1">Запросы: {g.keywords.join(", ")}</div> : null}
+                        {g.keywords?.length && ch === "search" ? <div className="text-sm text-faint mt-1 line-clamp-2 sm:line-clamp-1 break-words">Запросы: {g.keywords.join(", ")}</div> : null}
                         {ch === "search" && gTv !== null ? (
                           <div className="mt-1.5 flex flex-wrap gap-1.5">
                             <span className="pill bg-mark-soft text-ink">≈ {placeName(gTv)}</span>
@@ -318,7 +340,7 @@ export default async function AdsPage() {
                         ) : null}
                       </div>
                       {cg.length > 1 ? (
-                        <label className="flex items-center gap-2 text-sm font-semibold">
+                        <label className="flex items-center gap-2 text-sm font-semibold justify-self-end">
                           <LiveToggle url={`/api/groups/${g.id}`} on={g.status === "active"} label={`${ch === "search" ? "Услуга" : "Аудитория"} ${g.name}`} />
                         </label>
                       ) : null}
@@ -326,8 +348,8 @@ export default async function AdsPage() {
 
                     {ch === "search" && gTv !== null && gAds[0] ? (
                       <details className="mt-3 group/serp">
-                        <summary className="cursor-pointer list-none text-sm font-semibold text-ink-2 inline-flex items-center gap-1.5"><Eye size={15} /> Как это выглядит в выдаче и сколько стоит каждое место <ChevronDown size={14} className="transition group-open/serp:rotate-180" /></summary>
-                        <div className="mt-3 grid lg:grid-cols-[1fr_20rem] gap-4 items-start">
+                        <summary className="cursor-pointer list-none text-sm font-semibold text-ink-2 inline-flex items-start gap-1.5"><Eye size={15} className="shrink-0 mt-0.5" /> <span>Как это выглядит в выдаче и сколько стоит каждое место</span> <ChevronDown size={14} className="shrink-0 mt-0.5 transition group-open/serp:rotate-180" /></summary>
+                        <div className="mt-3 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_20rem] gap-4 items-start">
                           <SerpScheme
                             query={g.keywords?.[0] ?? g.name.toLowerCase()}
                             tv={gTv}
@@ -366,7 +388,7 @@ export default async function AdsPage() {
                                   <div className="flex flex-wrap items-center gap-1.5 mt-1">
                                     {special ? <span className={`pill ${special.cls}`}>{special.text}</span> : <span className={`pill ${V.cls}`}>{V.label}</span>}
                                     {inTest ? <span className="pill bg-mark-soft text-ink">Проверяется</span> : null}
-                                    <span className="pill bg-paper text-muted">Идея: {ANGLES[ad.angle]?.name ?? ad.angle}</span>
+                                    <span className="pill bg-paper text-muted max-w-full truncate">Идея: {ANGLES[ad.angle]?.name ?? ad.angle}</span>
                                     {layout && ch !== "search" ? <span className="pill bg-paper text-muted">Картинка: {LAYOUT_NAME[layout] ?? layout}</span> : null}
                                     {ch === "search" && tvOf([ad.id]) !== null ? <span className="pill bg-paper text-muted">Место: {placeName(tvOf([ad.id])!).replace(" над результатами", "")}</span> : null}
                                   </div>
@@ -390,15 +412,15 @@ export default async function AdsPage() {
                                   </div>
                                 </div>
                               </summary>
-                              <div className="px-3 pb-4 sm:px-4 sm:pl-[3.75rem] grid gap-3">
-                                <div className={ch === "search" ? "max-w-xl" : "max-w-sm"}>
+                              <div className="px-3 pb-4 sm:px-4 sm:pl-[3.75rem] grid grid-cols-1 gap-3 min-w-0">
+                                <div className={`min-w-0 ${ch === "search" ? "max-w-xl" : "max-w-sm"}`}>
                                   {ch === "search" ? (
                                     <SearchAdPreview title={ad.title} title2={ad.title2} text={ad.text} host={host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={withPlanCallouts(adExtras(b, { channel: ch, href: landing, service: g.name, text: ad.text }), planCallouts)} />
                                   ) : (
                                     <ImageAdPreview channel={ch === "vk" ? "vk" : "network"} title={ad.title} text={ad.text} host={ch === "vk" ? b.name : host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={adExtras(b, { channel: ch, href: landing, text: ad.text })} logo={logoId ? `/api/images/${logoId}` : null} />
                                   )}
                                 </div>
-                                <div className="text-xs text-muted">{num(s.impressions)} показов · потрачено {rub(s.cost)}{s.conversions ? ` · обращение по ${rub(s.cost / s.conversions)}` : ""}</div>
+                                <div className="text-xs text-muted">{pl(s.impressions, "показ", "показа", "показов")} · потрачено {rub(s.cost)}{s.conversions ? ` · обращение по ${rub(s.cost / s.conversions)}` : ""}</div>
                                 <AdActions ad={{ id: ad.id, title: ad.title, title2: ad.title2, text: ad.text, status: ad.status }} channel={ch} canTest={!inTest && camp.status === "active"} />
                               </div>
                             </details>
@@ -406,7 +428,7 @@ export default async function AdsPage() {
                         );
                       })}
                     </ol>
-                    {hidden ? <p className="hint mt-3">Ещё {hidden} — заменены более удачными вариантами или не приняты площадкой. Вся история — в «Истории».</p> : null}
+                    {hidden ? <p className="hint mt-3">Ещё {pl(hidden, "объявление", "объявления", "объявлений")} — {hidden === 1 ? "заменено более удачным вариантом или не принято" : "заменены более удачными вариантами или не приняты"} площадкой. Подробности — в «Истории».</p> : null}
                   </div>
                 );
               })}
@@ -434,10 +456,24 @@ function Tile({ icon, label, children }: { icon: React.ReactNode; label: string;
 
 function Duel({ label, title, s, ahead }: { label: string; title?: string; s: S; ahead: boolean }) {
   return (
-    <div className={`rounded-lg p-3 ${ahead ? "bg-good-soft" : "bg-paper"}`}>
+    <div className={`min-w-0 rounded-lg p-3 ${ahead ? "bg-good-soft" : "bg-paper"}`}>
       <div className="text-xs text-faint flex justify-between"><span>{label}</span>{ahead ? <span className="text-good font-semibold">пока впереди</span> : null}</div>
       <div className="font-medium truncate">«{title ?? "—"}»</div>
-      <div className="text-xs text-muted mt-0.5">{s.impressions ? `${num(s.clicks)} кликов из ${num(s.impressions)} показов · ${pct(ctrOf(s))}` : "копим показы"}</div>
+      <div className="text-xs text-muted mt-0.5">{s.impressions ? `${pl(s.clicks, "клик", "клика", "кликов")} из ${pl(s.impressions, "показа", "показов", "показов")} · ${pct(ctrOf(s))}` : "копим показы"}</div>
     </div>
   );
+}
+
+function CampaignPill({ s, ch }: { s?: { stopped: string | null; learningLeft: number }; ch: string }) {
+  if (s?.stopped === "guard") return <span className="pill bg-bad-soft text-bad">Стоит: кончился бюджет месяца</span>;
+  if (s?.stopped === "error") return <span className="pill bg-bad-soft text-bad">Ошибка площадки</span>;
+  if (s?.stopped === "robot") return <span className="pill bg-paper text-muted">На паузе — остановил робот</span>;
+  if (s?.stopped) return <span className="pill bg-paper text-muted">На паузе — вы остановили</span>;
+  if (s && s.learningLeft > 0)
+    return (
+      <span className="pill bg-info-soft text-ink-2" title={`Обучение после запуска длится до ${LEARNING_DAYS[ch] ?? 14} дней, после изменения бюджета — до 7`}>
+        <GraduationCap size={13} /> обучается — не трогаем {pl(s.learningLeft, "день", "дня", "дней")}
+      </span>
+    );
+  return <span className="pill bg-good-soft text-good">Идёт</span>;
 }

@@ -1,20 +1,56 @@
 import "server-only";
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 
-function secret() {
-  // Если APP_SECRET не задан — выводим его из строки подключения к базе (она и так секретная).
-  // Удобно для деплоя в один клик: Vercel + Neon сами подставляют DATABASE_URL.
-  const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
-  const s = process.env.APP_SECRET || (dbUrl ? createHash("sha256").update("pz-secret:" + dbUrl).digest("hex") : undefined);
-  if (!s || s.length < 16) {
-    // Временный режим на Vercel без базы: только демо, данные всё равно не сохраняются
-    if (process.env.VERCEL && process.env.VERCEL_PROJECT_ID) return createHash("sha256").update("pz-tmp:" + process.env.VERCEL_PROJECT_ID).digest("hex");
-    if (process.env.NODE_ENV === "production" && !process.env.ALLOW_INSECURE_SECRET) {
-      throw new Error("APP_SECRET не задан: укажите случайную строку из 32+ символов в переменных окружения");
-    }
-    return "dev-secret-change-me-dev-secret-change-me";
+/**
+ * Откуда берётся секрет для сессий, подписей и шифрования токенов:
+ *  1. APP_SECRET (≥16 символов) — основной и рекомендуемый вариант.
+ *  2. sha256 от DATABASE_URL / POSTGRES_URL — строка подключения к базе секретна сама по себе;
+ *     на этом сейчас работает прод на Vercel + Neon, поэтому вариант сохранён: старые сессии и токены не ломаются.
+ *  3. Без того и другого — только локально или в демо. В production (VERCEL_ENV=production или
+ *     NODE_ENV=production не на localhost) без ALLOW_INSECURE сервис отказывается работать:
+ *     производные от VERCEL_PROJECT_ID и прочих несекретных значений больше не используются.
+ */
+function isProduction() {
+  if (process.env.VERCEL_ENV === "production") return true;
+  if (process.env.NODE_ENV !== "production") return false;
+  // `next start` на своём компьютере — это не прод
+  const url = process.env.APP_URL || "";
+  const local = !process.env.VERCEL && (!url || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(url));
+  return !local;
+}
+
+const insecureAllowed = () => Boolean(process.env.ALLOW_INSECURE || process.env.ALLOW_INSECURE_SECRET);
+
+type SecretResult = { secret: string; error: null } | { secret: null; error: string };
+
+function resolveSecret(): SecretResult {
+  const app = process.env.APP_SECRET?.trim();
+  if (app && app.length >= 16) return { secret: app, error: null };
+  const dbUrl = (process.env.DATABASE_URL || process.env.POSTGRES_URL)?.trim();
+  // (как и раньше: короткий APP_SECRET при наличии базы игнорируется — чтобы не сломать действующие сессии)
+  if (dbUrl) return { secret: createHash("sha256").update("pz-secret:" + dbUrl).digest("hex"), error: null };
+  if (isProduction() && !insecureAllowed()) {
+    return {
+      secret: null,
+      error: app
+        ? "APP_SECRET слишком короткий: нужна случайная строка из 32+ символов."
+        : "Не задан APP_SECRET. Добавьте в переменные окружения случайную строку из 32+ символов (например, `openssl rand -hex 32`) и перезапустите сервис.",
+    };
   }
-  return s;
+  // Локальный запуск или явно разрешённый небезопасный режим (ALLOW_INSECURE) — только для демо
+  if (process.env.VERCEL && process.env.VERCEL_PROJECT_ID) return { secret: createHash("sha256").update("pz-tmp:" + process.env.VERCEL_PROJECT_ID).digest("hex"), error: null };
+  return { secret: "dev-secret-change-me-dev-secret-change-me", error: null };
+}
+
+/** Текст ошибки настройки секрета (для страницы входа) или null, если всё в порядке */
+export function secretError(): string | null {
+  return resolveSecret().error;
+}
+
+function secret() {
+  const r = resolveSecret();
+  if (r.error !== null) throw Object.assign(new Error(r.error), { code: "PZ_SECRET" });
+  return r.secret;
 }
 
 const key = () => createHash("sha256").update("enc:" + secret()).digest();
@@ -42,7 +78,7 @@ export function sign(payload: object): string {
 }
 
 export function verify<T>(token: string | undefined | null): T | null {
-  if (!token) return null;
+  if (!token || typeof token !== "string") return null;
   const [body, mac] = token.split(".");
   if (!body || !mac) return null;
   const expected = createHmac("sha256", secret()).update(body).digest();
@@ -55,4 +91,19 @@ export function verify<T>(token: string | undefined | null): T | null {
   } catch {
     return null;
   }
+}
+
+/** Короткий HMAC для мест, где длина ограничена (например, параметр start в Telegram) */
+export function mac(data: string, len = 16): string {
+  return createHmac("sha256", secret()).update("mac:" + data).digest("base64url").slice(0, len);
+}
+
+export function macEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
+/** Необратимый отпечаток (IP и т. п.) — чтобы не хранить исходное значение */
+export function fingerprint(value: string): string {
+  return mac("fp:" + value, 22);
 }

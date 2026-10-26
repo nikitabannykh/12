@@ -4,6 +4,8 @@ import { getDb, schema } from "../db";
 import { CITY_REGIONS } from "../niches";
 import { YandexDirect } from "../platforms/yandex";
 import { VkAds } from "../platforms/vk";
+import type { Business } from "../db/schema";
+import type { PlatformClient } from "../platforms/types";
 
 const norm = (s: string) => s.toLowerCase().replace(/ё/g, "е").replace(/^г\.?\s*/, "").trim();
 
@@ -42,4 +44,33 @@ export async function vkRegionIds(city: string, client: VkAds): Promise<number[]
   const exact = list.filter((r) => norm(r.name) === n);
   const pick = exact.find((r) => r.type === "city") ?? exact[0];
   return pick ? [pick.id] : null;
+}
+
+/**
+ * Регионы показа для площадки.
+ * 1) Явный выбор в бизнесе (`businesses.region_ids.yandex / .vk`) — например, районы города, если их задали в настройках.
+ * 2) Иначе — город целиком.
+ *
+ * TODO(гео «рядом с салоном»): для больших городов показ на весь город тратит бюджет на тех, кому далеко ехать.
+ *  - Директ: у групп ЕПК в API есть только RegionIds (справочник GeoRegions); радиуса или точки на карте в adgroups/campaigns
+ *    API v5/v501 нет. Гиперлокальный таргетинг доступен через геосегменты Яндекс Аудиторий (круг вокруг адреса) →
+ *    условие подбора аудитории (RetargetingLists) → AudienceTargets в группе. Это отдельный OAuth-доступ к Аудиториям
+ *    и минимальный размер сегмента — делаем после проверки на реальном кабинете.
+ *  - VK Реклама: радиус вокруг точки в таргетингах API не сверен с документацией — не отправляем, пока не проверим.
+ */
+export async function regionIdsFor(b: Business, platform: string, client: PlatformClient): Promise<number[]> {
+  const own = (b.regionIds ?? {}) as { yandex?: number[]; vk?: number[] };
+  if (platform === "yandex") {
+    if (own.yandex?.length) return own.yandex;
+    const r = await yandexRegionIds(b.city, client as YandexDirect);
+    if (!r) throw new Error(`не нашли город «${b.city}» в справочнике Яндекса — уточните название в настройках бизнеса`);
+    return r;
+  }
+  if (platform === "vk") {
+    if (own.vk?.length) return own.vk;
+    const r = await vkRegionIds(b.city, client as VkAds);
+    if (!r) throw new Error(`не нашли город «${b.city}» в справочнике VK — уточните название в настройках бизнеса`);
+    return r;
+  }
+  return [213]; // демо
 }

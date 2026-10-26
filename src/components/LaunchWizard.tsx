@@ -7,7 +7,7 @@ import { api, Modal, Toggle, useToast } from "./client";
 import { SearchAdPreview, ImageAdPreview } from "./AdPreview";
 import { adExtras, withPlanCallouts, type ExtrasBiz } from "@/lib/engine/extras";
 import { allocate, forecast, minMonthlyFor } from "@/lib/engine/budget";
-import type { LaunchPlan, PlanAd } from "@/lib/engine/launch";
+import type { LaunchPlan, PlanAd, PublishStep } from "@/lib/engine/launch";
 import type { Channel } from "@/lib/platforms/types";
 
 const CH: Record<Channel, { name: string; hint: string }> = {
@@ -17,6 +17,25 @@ const CH: Record<Channel, { name: string; hint: string }> = {
 };
 const PLATFORM: Record<string, string> = { yandex: "Яндекс Директ", vk: "VK Реклама", demo: "Демо-кабинет" };
 const rub = (n: number) => new Intl.NumberFormat("ru-RU").format(Math.round(n)) + " ₽";
+function plural(n: number, one: string, few: string, many: string) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b > 1 && b < 5) return few;
+  if (b === 1) return one;
+  return many;
+}
+/** Объявление уйдёт на площадку: включено и с непустыми заголовком и текстом (как publishable на сервере) */
+const publishable = (a: PlanAd) => a.enabled && Boolean(a.title?.trim()) && Boolean(a.text?.trim());
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+type Progress = PublishStep["progress"];
+
+function progressOf(plan: LaunchPlan | null): Progress | null {
+  const l = plan?.launch;
+  if (!plan || !l) return null;
+  const wanted = plan.channels.filter((c) => c.enabled && c.groups.some((g) => g.ads.some(publishable)));
+  const channels = wanted.map((c) => ({ channel: c.channel, state: l.done.includes(c.channel) ? ("done" as const) : l.failed.includes(c.channel) ? ("failed" as const) : ("pending" as const) }));
+  return { total: channels.length, finished: channels.filter((c) => c.state !== "pending").length, channels };
+}
 
 type Props = {
   business: { name: string; niche: string; monthlyBudget: number; siteUrl: string | null };
@@ -77,6 +96,7 @@ export function LaunchWizard(p: Props) {
   const [phase, setPhase] = useState<null | "copy" | "images" | "publish">(null);
   const [uploading, setUploading] = useState(false);
   const [edit, setEdit] = useState<{ ad: PlanAd; channel: Channel } | null>(null);
+  const [progress, setProgress] = useState<Progress | null>(() => progressOf(p.plan));
   const fileRef = useRef<HTMLInputElement>(null);
 
   const real = p.accounts.filter((a) => a.platform !== "demo");
@@ -87,7 +107,9 @@ export function LaunchWizard(p: Props) {
     if (usable.some((a) => a.platform === "vk" || a.platform === "demo")) out.push("vk");
     return out;
   }, [usable]);
-  const alloc = allocate(budget, channels.length ? channels : ["search"]);
+  // Если в плане канал выключен, его доля уходит оставшимся — показываем ту же раскладку, что получит запуск
+  const planChannels = plan?.channels.filter((c) => c.enabled).map((c) => c.channel) ?? [];
+  const alloc = allocate(budget, planChannels.length && budget === savedBudget ? planChannels : channels.length ? channels : ["search"]);
   const fc = forecast(budget, p.business.niche);
   const minBudget = minMonthlyFor(channels.length ? channels : ["search"]);
   const hasAccounts = usable.length > 0;
@@ -127,17 +149,54 @@ export function LaunchWizard(p: Props) {
     }
   }
 
+  /**
+   * Запуск идёт по одному каналу за запрос (лимит времени функции на сервере). Повторяем, пока сервер не ответит done.
+   * Запуск возобновляемый: обрыв сети, таймаут или «занято» (вторая вкладка, двойной клик) не создают дублей — просто ждём и продолжаем.
+   */
   async function launch() {
+    if (phase === "publish") return;
     setPhase("publish");
+    const deadline = Date.now() + 8 * 60_000;
+    let retries = 0;
     try {
-      const r = await api<{ warnings: string[] }>("POST", "/api/launch/publish");
-      if (r.warnings?.length) toast(`Запустили. Обратите внимание:\n${r.warnings.slice(0, 3).join("\n")}`);
-      else toast("Реклама запущена и отправлена на модерацию");
-      router.push("/app");
-      router.refresh();
+      for (;;) {
+        let status = 0;
+        let data: Partial<PublishStep> & { error?: string; already?: boolean } = {};
+        try {
+          const res = await fetch("/api/launch/publish", { method: "POST" });
+          status = res.status;
+          data = await res.json().catch(() => ({}));
+        } catch {
+          status = 0; // сеть
+        }
+        if (status === 200) {
+          retries = 0;
+          if (data.progress) setProgress(data.progress);
+          if (!data.done) continue;
+          const w = data.warnings ?? [];
+          if (w.length) toast(`Запустили. Обратите внимание:\n${w.slice(0, 3).join("\n")}`);
+          else toast("Реклама запущена и отправлена на модерацию");
+          router.push("/app");
+          router.refresh();
+          return;
+        }
+        if (status === 409 || status === 0 || status >= 500) {
+          if (++retries > 10 || Date.now() > deadline) throw new Error(data.error || "Сервер долго не отвечает. Обновите страницу и нажмите «Продолжить запуск» — уже созданные кампании не задублируются.");
+          await sleep(status === 409 ? 4000 : 2500);
+          continue;
+        }
+        throw new Error(data.error || `Ошибка ${status}`);
+      }
     } catch (e) {
       toast((e as Error).message, "error");
       setPhase(null);
+      try {
+        const r = await api<{ plan: LaunchPlan | null }>("GET", "/api/launch/plan");
+        setPlan(r.plan);
+        setProgress(progressOf(r.plan));
+      } catch {
+        /* оставим как есть */
+      }
     }
   }
 
@@ -160,7 +219,9 @@ export function LaunchWizard(p: Props) {
   }
 
   const ready = plan?.stage === "ready";
-  const enabledAds = plan?.channels.filter((c) => c.enabled).flatMap((c) => c.groups.flatMap((g) => g.ads.filter((a) => a.enabled))).length ?? 0;
+  const enabledAds = plan?.channels.filter((c) => c.enabled).flatMap((c) => c.groups.flatMap((g) => g.ads.filter(publishable))).length ?? 0;
+  const enabledChannels = plan?.channels.filter((c) => c.enabled && c.groups.some((g) => g.ads.some(publishable))).length ?? 0;
+  const resuming = Boolean(plan?.launch);
 
   return (
     <div className="grid gap-5">
@@ -350,16 +411,36 @@ export function LaunchWizard(p: Props) {
       {/* 5. Запуск */}
       <Step n={5} title="Запуск" done={false} active={ready}>
         <ul className="grid gap-2 text-[0.95rem]">
-          <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> {enabledAds} объявлений в {plan?.channels.filter((c) => c.enabled).length ?? 0} каналах уйдут на модерацию — обычно это занимает несколько часов.</li>
+          <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> {enabledAds} {plural(enabledAds, "объявление", "объявления", "объявлений")} в {enabledChannels} {plural(enabledChannels, "канале", "каналах", "каналах")} {enabledAds === 1 ? "уйдёт" : "уйдут"} на модерацию — обычно это занимает несколько часов.</li>
           <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> Первые 3 дня робот только наблюдает и копит статистику. Потом начнёт отключать слабое и тестировать новое.</li>
           <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" />
             {p.business.siteUrl ? <span>Чтобы считать обращения, вставьте код счётчика на сайт — он появится в «Настройках» сразу после запуска.</span> : <span>Объявления будут вести на вашу страницу записи — обращения с неё считаются автоматически.</span>}
           </li>
         </ul>
+        {resuming && phase !== "publish" ? (
+          <div className="mt-4 rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2" role="status">
+            <TriangleAlert size={16} className="shrink-0 mt-0.5" />
+            <div>Запуск прервался на середине. Нажмите «Продолжить запуск» — уже созданные кампании не задублируются, недосозданные пересоздадим.</div>
+          </div>
+        ) : null}
         <button className="btn btn-mark h-12 px-7 mt-5 text-base" onClick={launch} disabled={!ready || phase === "publish" || !enabledAds}>
           {phase === "publish" ? <Loader2 size={18} className="spin" /> : null}
-          {phase === "publish" ? "Создаём кампании…" : "Запустить рекламу"}
+          {phase === "publish" ? "Создаём кампании…" : resuming ? "Продолжить запуск" : "Запустить рекламу"}
         </button>
+        {progress && (phase === "publish" || resuming) ? (
+          <ul className="mt-4 grid gap-1.5 text-sm" aria-live="polite">
+            {progress.channels.map((c, i) => {
+              const current = phase === "publish" && c.state === "pending" && progress.channels.findIndex((x) => x.state === "pending") === i;
+              return (
+                <li key={c.channel} className="flex items-center gap-2">
+                  {c.state === "done" ? <Check size={16} className="text-good" /> : c.state === "failed" ? <TriangleAlert size={16} className="text-bad" /> : current ? <Loader2 size={16} className="spin" /> : <span className="w-4 h-4 rounded-full border border-line-2 inline-block" />}
+                  <span className={c.state === "pending" && !current ? "text-muted" : ""}>{CH[c.channel].name}</span>
+                  <span className="text-muted">{c.state === "done" ? "— создана" : c.state === "failed" ? "— не получилось" : current ? "— создаём…" : "— в очереди"}</span>
+                </li>
+              );
+            })}
+          </ul>
+        ) : phase === "publish" ? <p className="hint mt-2">Создаём кампании по очереди, это может занять пару минут. Не закрывайте страницу.</p> : null}
       </Step>
 
       <EditAdModal edit={edit} onClose={() => setEdit(null)} onSave={async (v) => { await patchPlan({ adId: edit!.ad.id, ...v }); setEdit(null); }} />

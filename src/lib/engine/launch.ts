@@ -1,22 +1,22 @@
 import "server-only";
 import { and, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "../db";
-import type { AdAccount, Business } from "../db/schema";
+import type { AdAccount, Business, Campaign } from "../db/schema";
 import { allocate } from "./budget";
 import { generateCopyPlan, type CopyPlan } from "../ai/copy";
 import { generatePhotos, listPhotos, makeCreative, getImage, ensureLogo } from "./images";
 import { adExtras, withPlanCallouts } from "./extras";
 import { availableLayouts, type Layout } from "../creative/render";
-import type { Channel, CampaignSpec } from "../platforms/types";
+import type { Channel, CampaignSpec, PlatformClient } from "../platforms/types";
 import { clientFor, CHANNEL_NAME } from "../platforms";
 import { YandexDirect } from "../platforms/yandex";
 import { VkAds } from "../platforms/vk";
 import { ensureCounter, ensureGoals } from "../platforms/metrica";
 import { decrypt } from "../crypto";
-import { yandexRegionIds, vkRegionIds } from "./regions";
+import { regionIdsFor } from "./regions";
 import { logChange } from "./ops";
 import { nicheById } from "../niches";
-import { appUrl, errorText, isoDay, pl, rub, uid } from "../util";
+import { appUrl, errorText, pl, rub, uid } from "../util";
 
 export type PlanAd = { id: string; angle: string; title: string; title2?: string | null; text: string; imageId?: string | null; layout?: Layout | null; enabled: boolean };
 export type PlanGroup = { id: string; name: string; audience: string; keywords: string[]; autotargeting: boolean; ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; ads: PlanAd[] };
@@ -31,7 +31,33 @@ export type LaunchPlan = {
   photoIds: string[];
   dropped: Channel[];
   warnings: string[];
+  /** Ход запуска: запуск идёт по одному каналу за запрос и возобновляется после обрыва */
+  launch?: LaunchProgress;
 };
+export type LaunchProgress = { id: string; startedAt: string; warnings: string[]; done: Channel[]; failed: Channel[] };
+
+/** Сегодняшняя дата по Москве (YYYY-MM-DD): кампании Директа и VK живут в московском времени, а сервер — в UTC */
+export function moscowDay(d: Date = new Date()) {
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Moscow" }).format(d);
+}
+
+/** Объявление можно публиковать: включено и с непустыми заголовком и текстом */
+export const publishable = (a: PlanAd) => a.enabled && Boolean(a.title?.trim()) && Boolean(a.text?.trim());
+
+/**
+ * Делит бюджет между включёнными каналами плана: доля выключенного владельцем канала
+ * переходит оставшимся (по тем же весам, что и при подготовке плана).
+ */
+export function rebalancePlan(plan: LaunchPlan, monthly: number): LaunchPlan {
+  const on = plan.channels.filter((c) => c.enabled).map((c) => c.channel);
+  if (!on.length) return plan;
+  const { allocation } = allocate(monthly, on);
+  for (const ch of plan.channels) {
+    const a = allocation.find((x) => x.channel === ch.channel);
+    if (ch.enabled && a) ch.weekly = a.weekly;
+  }
+  return plan;
+}
 
 export async function getBusinessForUser(userId: string, businessId?: string) {
   const db = await getDb();
@@ -206,177 +232,253 @@ async function setupMetrica(b: Business, account: AdAccount, warnings: string[])
   }
 }
 
-/** Шаг 3: создаём кампании на площадках */
-export async function publish(b: Business, plan: LaunchPlan, accounts: AdAccount[]) {
+/** Недосозданная кампания прошлого (прерванного) запуска: убираем с площадки и из БД, чтобы создать заново без дублей */
+async function cleanupCreating(stale: Campaign[], client: PlatformClient | null, warnings: string[]) {
   const db = await getDb();
-  const warnings: string[] = [];
-  const created: { channel: Channel; campaignId: string; ads: number; errors: number }[] = [];
+  for (const c of stale) {
+    if (c.externalId && client?.removeCampaign) {
+      try {
+        await client.removeCampaign(c.externalId);
+      } catch (e) {
+        await db.update(schema.campaigns).set({ status: "error", statusNote: `Запуск прервался. Удалите кампанию ${c.externalId} в кабинете площадки: ${errorText(e)}` }).where(eq(schema.campaigns.id, c.id));
+        warnings.push(`${CHANNEL_NAME[c.channel]}: прерванный запуск оставил кампанию ${c.externalId} — удалите её в кабинете`);
+        continue;
+      }
+    }
+    await db.delete(schema.ads).where(eq(schema.ads.campaignId, c.id));
+    await db.delete(schema.adGroups).where(eq(schema.adGroups.campaignId, c.id));
+    await db.delete(schema.campaigns).where(eq(schema.campaigns.id, c.id));
+  }
+}
+
+/** Создаёт кампанию одного канала. Запись в БД появляется до вызова площадки, а внешний ID — сразу после создания кампании. */
+async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, account: AdAccount, launchId: string, warnings: string[]) {
+  const db = await getDb();
   const href = landingUrl(b);
   const n = nicheById(b.niche);
+  const client = await clientFor(account);
 
-  await db.update(schema.businesses).set({ status: "launching" }).where(eq(schema.businesses.id, b.id));
+  const stale = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), eq(schema.campaigns.channel, ch.channel), eq(schema.campaigns.status, "creating")));
+  await cleanupCreating(stale, client, warnings);
 
-  for (const ch of plan.channels.filter((c) => c.enabled)) {
-    const account = accounts.find((a) => a.id === ch.accountId);
-    if (!account) {
-      warnings.push(`${CHANNEL_NAME[ch.channel]}: кабинет отключён`);
-      continue;
-    }
-    try {
-      const client = await clientFor(account);
-      let regionIds: number[] = [];
-      let counterId: number | null = null;
-      let goalId: number | null = null;
-      if (account.platform === "yandex") {
-        const r = await yandexRegionIds(b.city, client as YandexDirect);
-        if (!r) throw new Error(`не нашли город «${b.city}» в справочнике Яндекса — уточните название в настройках бизнеса`);
-        regionIds = r;
-        const m = await setupMetrica(b, account, warnings);
-        counterId = m.counterId;
-        goalId = m.goalId;
-      } else if (account.platform === "vk") {
-        const r = await vkRegionIds(b.city, client as VkAds);
-        if (!r) throw new Error(`не нашли город «${b.city}» в справочнике VK — уточните название в настройках бизнеса`);
-        regionIds = r;
-      } else {
-        regionIds = [213];
-      }
-
-      const imageCache = new Map<string, Awaited<ReturnType<typeof getImage>>>();
-      const logo = ch.channel === "vk" ? await ensureLogo(b).catch(() => null) : null;
-      const spec: CampaignSpec = {
-        name: `${b.name} — ${CHANNEL_NAME[ch.channel]}`,
-        channel: ch.channel,
-        weeklyBudget: ch.weekly,
-        strategy: "clicks",
-        startDate: isoDay(),
-        counterId,
-        goalId,
-        negativeKeywords: ch.channel === "vk" ? [] : plan.negatives,
-        siteUrl: withUtm(href, account.platform),
-        groups: [],
-      };
-      for (const g of ch.groups) {
-        const ads = [];
-        for (const ad of g.ads.filter((a) => a.enabled)) {
-          let image = null;
-          if (ad.imageId) {
-            const img = imageCache.get(ad.imageId) ?? (await getImage(ad.imageId));
-            imageCache.set(ad.imageId, img);
-            if (img) image = { imageId: img.id, data: img.data, mime: img.mime, width: img.width, height: img.height, cachedRef: img.platformRefs?.[account.platform] };
-          }
-          ads.push({
-            localId: ad.id,
-            title: ad.title,
-            title2: ad.title2,
-            text: ad.text,
-            href: withUtm(href, account.platform),
-            image,
-            extras: withPlanCallouts(adExtras(b, { channel: ch.channel, href, service: ch.channel === "search" ? g.name : null, text: ad.text }), plan.callouts),
-            logo: ch.channel === "vk" && logo ? { imageId: logo.id, data: logo.data, mime: logo.mime, width: logo.width, height: logo.height, cachedRef: logo.platformRefs?.[account.platform] } : null,
-            marking: `${n.label}: ${b.name}`,
-          });
-        }
-        if (!ads.length) continue;
-        spec.groups.push({
-          localId: g.id,
-          name: g.name,
-          keywords: ch.channel === "vk" ? [] : g.keywords,
-          autotargeting: g.autotargeting,
-          regionIds,
-          ageFrom: g.ageFrom,
-          ageTo: g.ageTo,
-          sex: g.sex,
-          ads,
-        });
-      }
-      if (!spec.groups.length) continue;
-
-      const res = await client.launchCampaign(spec);
-      warnings.push(...res.warnings.map((w) => `${CHANNEL_NAME[ch.channel]}: ${w}`));
-
-      const campaignId = uid("c_");
-      await db.insert(schema.campaigns).values({
-        id: campaignId,
-        businessId: b.id,
-        accountId: account.id,
-        platform: account.platform,
-        channel: ch.channel,
-        externalId: res.campaignExt,
-        name: spec.name,
-        weeklyBudget: ch.weekly,
-        strategy: "clicks",
-        status: "active",
-        negativeKeywords: spec.negativeKeywords,
-        meta: { regionIds, launchedAt: new Date().toISOString() },
-      });
-      let adsCount = 0, errors = 0;
-      for (const g of ch.groups) {
-        const r = res.groups.find((x) => x.localId === g.id);
-        if (!r) continue;
-        const groupId = uid("g_");
-        await db.insert(schema.adGroups).values({
-          id: groupId,
-          campaignId,
-          externalId: r.groupExt,
-          name: g.name,
-          audience: g.audience,
-          keywords: g.keywords,
-          targeting: { regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, autotargeting: g.autotargeting },
-        });
-        for (const ad of g.ads.filter((a) => a.enabled)) {
-          const ra = r.ads.find((x) => x.localId === ad.id);
-          if (!ra) continue;
-          if (ra.adExt) adsCount++;
-          else errors++;
-          await db.insert(schema.ads).values({
-            id: uid("ad_"),
-            businessId: b.id,
-            campaignId,
-            adGroupId: groupId,
-            externalId: ra.adExt,
-            angle: ad.angle,
-            title: ad.title,
-            title2: ad.title2 ?? null,
-            text: ad.text,
-            imageId: ad.imageId ?? null,
-            status: ra.adExt ? "moderation" : "error",
-            statusNote: ra.error ?? null,
-          });
-          if (ra.imageRef && ad.imageId) {
-            const img = imageCache.get(ad.imageId);
-            if (img && !img.platformRefs?.[account.platform]) {
-              const refs = { ...(img.platformRefs ?? {}), [account.platform]: ra.imageRef };
-              img.platformRefs = refs;
-              await db.update(schema.images).set({ platformRefs: refs }).where(eq(schema.images.id, img.id));
-            }
-          }
-        }
-      }
-      created.push({ channel: ch.channel, campaignId, ads: adsCount, errors });
-    } catch (e) {
-      warnings.push(`${CHANNEL_NAME[ch.channel]}: не удалось создать кампанию — ${errorText(e)}`);
-    }
+  let counterId: number | null = null;
+  let goalId: number | null = null;
+  const regionIds = await regionIdsFor(b, account.platform, client);
+  if (account.platform === "yandex") {
+    const m = await setupMetrica(b, account, warnings);
+    counterId = m.counterId;
+    goalId = m.goalId;
   }
 
-  if (!created.length) {
-    await db.update(schema.businesses).set({ status: "draft" }).where(eq(schema.businesses.id, b.id));
-    return { ok: false as const, warnings };
+  const imageCache = new Map<string, Awaited<ReturnType<typeof getImage>>>();
+  const logo = ch.channel === "vk" ? await ensureLogo(b).catch(() => null) : null;
+  const spec: CampaignSpec = {
+    name: `${b.name} — ${CHANNEL_NAME[ch.channel]}`,
+    channel: ch.channel,
+    weeklyBudget: ch.weekly,
+    strategy: "clicks",
+    startDate: moscowDay(),
+    counterId,
+    goalId,
+    negativeKeywords: ch.channel === "vk" ? [] : plan.negatives,
+    siteUrl: withUtm(href, account.platform),
+    groups: [],
+  };
+  for (const g of ch.groups) {
+    const ads = [];
+    for (const ad of g.ads.filter(publishable)) {
+      let image = null;
+      if (ad.imageId) {
+        const img = imageCache.get(ad.imageId) ?? (await getImage(ad.imageId));
+        imageCache.set(ad.imageId, img);
+        if (img) image = { imageId: img.id, data: img.data, mime: img.mime, width: img.width, height: img.height, cachedRef: img.platformRefs?.[account.platform] };
+      }
+      ads.push({
+        localId: ad.id,
+        title: ad.title.trim(),
+        title2: ad.title2?.trim() || null,
+        text: ad.text.trim(),
+        href: withUtm(href, account.platform),
+        image,
+        extras: withPlanCallouts(adExtras(b, { channel: ch.channel, href, service: ch.channel === "search" ? g.name : null, text: ad.text }), plan.callouts),
+        logo: ch.channel === "vk" && logo ? { imageId: logo.id, data: logo.data, mime: logo.mime, width: logo.width, height: logo.height, cachedRef: logo.platformRefs?.[account.platform] } : null,
+        marking: `${n.label}: ${b.name}`,
+      });
+    }
+    if (!ads.length) continue;
+    spec.groups.push({ localId: g.id, name: g.name, keywords: ch.channel === "vk" ? [] : g.keywords, autotargeting: g.autotargeting, regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, ads });
+  }
+  if (!spec.groups.length) {
+    warnings.push(`${CHANNEL_NAME[ch.channel]}: нет ни одного объявления с заголовком и текстом — канал пропущен`);
+    return null;
+  }
+
+  const campaignId = uid("c_");
+  await db.insert(schema.campaigns).values({
+    id: campaignId,
+    businessId: b.id,
+    accountId: account.id,
+    platform: account.platform,
+    channel: ch.channel,
+    externalId: null,
+    name: spec.name,
+    weeklyBudget: ch.weekly,
+    strategy: "clicks",
+    status: "creating",
+    negativeKeywords: spec.negativeKeywords,
+    meta: { regionIds, launchId, startedAt: new Date().toISOString() },
+  });
+
+  let res;
+  try {
+    res = await client.launchCampaign(spec, {
+      onCampaignCreated: async (ext) => {
+        await db.update(schema.campaigns).set({ externalId: ext }).where(eq(schema.campaigns.id, campaignId));
+      },
+    });
+  } catch (e) {
+    const [row] = await db.select().from(schema.campaigns).where(eq(schema.campaigns.id, campaignId));
+    if (row) await cleanupCreating([row], client, warnings);
+    throw e;
+  }
+  warnings.push(...res.warnings.map((w) => `${CHANNEL_NAME[ch.channel]}: ${w}`));
+
+  let adsCount = 0, errors = 0;
+  for (const g of ch.groups) {
+    const r = res.groups.find((x) => x.localId === g.id);
+    if (!r) continue;
+    const groupId = uid("g_");
+    await db.insert(schema.adGroups).values({
+      id: groupId,
+      campaignId,
+      externalId: r.groupExt,
+      name: g.name,
+      audience: g.audience,
+      keywords: g.keywords,
+      targeting: { regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, autotargeting: g.autotargeting },
+    });
+    for (const ad of g.ads.filter(publishable)) {
+      const ra = r.ads.find((x) => x.localId === ad.id);
+      if (!ra) continue;
+      if (ra.adExt) adsCount++;
+      else errors++;
+      await db.insert(schema.ads).values({
+        id: uid("ad_"),
+        businessId: b.id,
+        campaignId,
+        adGroupId: groupId,
+        externalId: ra.adExt,
+        angle: ad.angle,
+        title: ad.title.trim(),
+        title2: ad.title2?.trim() || null,
+        text: ad.text.trim(),
+        imageId: ad.imageId ?? null,
+        status: ra.adExt ? "moderation" : "error",
+        statusNote: ra.error ?? null,
+      });
+      if (ra.imageRef && ad.imageId) {
+        const img = imageCache.get(ad.imageId);
+        if (img && !img.platformRefs?.[account.platform]) {
+          const refs = { ...(img.platformRefs ?? {}), [account.platform]: ra.imageRef };
+          img.platformRefs = refs;
+          await db.update(schema.images).set({ platformRefs: refs }).where(eq(schema.images.id, img.id));
+        }
+      }
+    }
+  }
+  await db.update(schema.campaigns).set({
+    externalId: res.campaignExt,
+    status: "active",
+    meta: { regionIds, launchId, launchedAt: new Date().toISOString(), launchStats: { ads: adsCount, errors } },
+  }).where(eq(schema.campaigns.id, campaignId));
+  return { channel: ch.channel, campaignId, ads: adsCount, errors };
+}
+
+export type PublishStep = {
+  done: boolean;
+  ok: boolean;
+  warnings: string[];
+  progress: { total: number; finished: number; channels: { channel: Channel; state: "done" | "failed" | "pending" }[] };
+  created?: { channel: Channel; campaignId: string; ads: number; errors: number }[];
+};
+
+/**
+ * Шаг 3: создаём кампании на площадках — по одному каналу за вызов (чтобы уложиться в лимит функции Vercel).
+ * Вызывающий должен держать блокировку запуска (run.tryLock(..., "launch")) и повторять вызов, пока done=false.
+ * Повторный вызов после обрыва безопасен: каналы с уже созданными кампаниями пропускаются,
+ * недосозданные («creating») удаляются на площадке и создаются заново.
+ */
+export async function publishStep(b: Business, plan: LaunchPlan, accounts: AdAccount[]): Promise<PublishStep> {
+  const db = await getDb();
+  const prog: LaunchProgress = plan.launch ?? { id: uid("l_"), startedAt: new Date().toISOString(), warnings: [], done: [], failed: [] };
+  if (!plan.launch) rebalancePlan(plan, b.monthlyBudget); // бюджет мог поменяться после подготовки плана
+  plan.launch = prog;
+  await db.update(schema.businesses).set({ status: "launching", launchPlan: plan, updatedAt: new Date() }).where(eq(schema.businesses.id, b.id));
+
+  const wanted = plan.channels.filter((c) => c.enabled && c.groups.some((g) => g.ads.some(publishable)));
+  const existing = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused"])));
+  // Канал, по которому кампания уже есть (в том числе от прошлого запуска), второй раз не создаём
+  for (const ch of wanted) if (!prog.done.includes(ch.channel) && existing.some((c) => c.channel === ch.channel)) prog.done.push(ch.channel);
+
+  const next = wanted.find((c) => !prog.done.includes(c.channel) && !prog.failed.includes(c.channel));
+  if (next) {
+    const warnings: string[] = [];
+    const account = accounts.find((a) => a.id === next.accountId);
+    if (!account) {
+      warnings.push(`${CHANNEL_NAME[next.channel]}: кабинет отключён`);
+      prog.failed.push(next.channel);
+    } else {
+      try {
+        const r = await launchChannel(b, plan, next, account, prog.id, warnings);
+        if (r) prog.done.push(next.channel);
+        else prog.failed.push(next.channel);
+      } catch (e) {
+        warnings.push(`${CHANNEL_NAME[next.channel]}: не удалось создать кампанию — ${errorText(e)}`);
+        prog.failed.push(next.channel);
+      }
+    }
+    prog.warnings = [...new Set([...prog.warnings, ...warnings])];
+    await savePlan(b.id, plan);
+  }
+
+  const progress = {
+    total: wanted.length,
+    finished: wanted.filter((c) => prog.done.includes(c.channel) || prog.failed.includes(c.channel)).length,
+    channels: wanted.map((c) => ({ channel: c.channel, state: prog.done.includes(c.channel) ? ("done" as const) : prog.failed.includes(c.channel) ? ("failed" as const) : ("pending" as const) })),
+  };
+  if (progress.finished < progress.total) return { done: false, ok: true, warnings: prog.warnings, progress };
+
+  // Все каналы обработаны — подводим итог
+  const mine = (await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused"]))))
+    .filter((c) => (c.meta as { launchId?: string })?.launchId === prog.id);
+  const created = mine.map((c) => {
+    const st = (c.meta as { launchStats?: { ads: number; errors: number } }).launchStats ?? { ads: 0, errors: 0 };
+    return { channel: c.channel as Channel, campaignId: c.id, ads: st.ads, errors: st.errors };
+  });
+  const anyLive = existing.length > 0 || created.length > 0;
+  if (!anyLive) {
+    // Ничего не создано — возвращаемся к плану, чтобы можно было поправить и запустить снова
+    const warnings = prog.warnings;
+    plan.launch = undefined;
+    await db.update(schema.businesses).set({ status: "draft", launchPlan: plan, updatedAt: new Date() }).where(eq(schema.businesses.id, b.id));
+    return { done: true, ok: false, warnings, progress };
   }
 
   await db.update(schema.businesses).set({ status: "active", launchPlan: null, updatedAt: new Date() }).where(eq(schema.businesses.id, b.id));
-  const total = created.reduce((s, c) => s + c.ads, 0);
-  const weekly = plan.channels.filter((c) => created.some((x) => x.channel === c.channel)).reduce((s, c) => s + c.weekly, 0);
-  await logChange({
-    businessId: b.id,
-    actor: "owner",
-    kind: "launch",
-    title: `Запустили рекламу: ${created.map((c) => CHANNEL_NAME[c.channel]).join(", ")}`,
-    reason: `Создали ${pl(total, "объявление", "объявления", "объявлений")} в ${created.length} ${created.length === 1 ? "канале" : "каналах"} с бюджетом около ${rub(weekly)} в неделю. Объявления проходят модерацию — обычно это занимает от пары часов до суток. Первые выводы робот сделает через 3 дня, когда накопятся показы.`,
-    details: { created, warnings },
-    undo: created.map((c) => ({ op: "campaignStatus" as const, campaignId: c.campaignId, status: "paused" as const })),
-  });
-  return { ok: true as const, warnings, created };
+  if (created.length) {
+    const total = created.reduce((s, c) => s + c.ads, 0);
+    const weekly = mine.reduce((s, c) => s + c.weeklyBudget, 0);
+    await logChange({
+      businessId: b.id,
+      actor: "owner",
+      kind: "launch",
+      title: `Запустили рекламу: ${created.map((c) => CHANNEL_NAME[c.channel]).join(", ")}`,
+      reason: `Создали ${pl(total, "объявление", "объявления", "объявлений")} в ${pl(created.length, "канале", "каналах", "каналах")} с бюджетом около ${rub(weekly)} в неделю. Объявления проходят модерацию — обычно это занимает от пары часов до суток. Первые выводы робот сделает через 3 дня, когда накопятся показы.`,
+      details: { created, warnings: prog.warnings },
+      undo: created.map((c) => ({ op: "campaignStatus" as const, campaignId: c.campaignId, status: "paused" as const })),
+    });
+  }
+  return { done: true, ok: true, warnings: prog.warnings, progress, created };
 }
 
 export async function campaignsOf(businessId: string) {

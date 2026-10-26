@@ -2,7 +2,7 @@ import "server-only";
 import type { AuctionRow } from "./types";
 import type { Sitelink, VCard } from "../engine/extras";
 import type {
-  AdSpec, AdState, CampaignSpec, Channel, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy,
+  AdSpec, AdState, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy,
 } from "./types";
 import { PlatformError } from "./types";
 import { sleep, uid } from "../util";
@@ -21,6 +21,58 @@ const MICRO = 1_000_000;
 const micros = (rub: number) => Math.round(rub) * MICRO;
 // Минимальный недельный бюджет автостратегии в Директе — 300 ₽
 export const DIRECT_MIN_WEEKLY = 300;
+
+/**
+ * НДС. Бюджет владельца в сервисе — это реальные деньги, которые он платит (с НДС), поэтому:
+ *  - расход из Reports берём с НДС (IncludeVAT: "YES") — его и сравниваем с месячным бюджетом;
+ *  - лимиты стратегии (WeeklySpendLimit) Директ задаёт в валюте кабинета без НДС: документация API единиц не уточняет,
+ *    но справка Директа приводит денежные настройки стратегий «без НДС» (напр. минимальная средняя цена клика 0,9 ₽ без НДС).
+ *    Поэтому недельный лимит с НДС делим на (1 + ставка), иначе Директ тратил бы на ставку НДС больше бюджета.
+ * Ставка НДС с 2026 года — 22 %; переопределяется YANDEX_DIRECT_VAT (0 — если лимиты в кабинете уже с НДС).
+ * Предел ставки (BidCeiling) не пересчитываем: он берётся из аукциона keywordbids, где цены в тех же единицах, что и ставки.
+ */
+export const DIRECT_VAT = (() => {
+  const v = Number(process.env.YANDEX_DIRECT_VAT ?? 0.22);
+  return Number.isFinite(v) && v >= 0 && v < 1 ? v : 0.22;
+})();
+export const netOfVat = (grossRub: number) => Math.max(DIRECT_MIN_WEEKLY, Math.floor(grossRub / (1 + DIRECT_VAT)));
+
+/** Ограничения Директа на быстрые ссылки: до 8 штук, заголовок до 30 символов, сумма заголовков 1–4 и 5–8 — до 66 в каждой четвёрке */
+export const SITELINK_TITLE_MAX = 30;
+export const SITELINKS_GROUP_TOTAL = 66;
+
+/**
+ * Подгоняем набор быстрых ссылок под лимиты, не теряя его целиком: ссылка, которая не помещается в первую четвёрку,
+ * переходит во вторую; не помещается никуда — отбрасываем только её.
+ */
+export function fitSitelinks<T extends { title: string }>(list: T[]): T[] {
+  const pool = list.map((l) => ({ ...l, title: l.title.trim().slice(0, SITELINK_TITLE_MAX) })).filter((l) => l.title);
+  const take = (from: T[], total: number) => {
+    const out: T[] = [], rest: T[] = [];
+    let sum = 0;
+    for (const s of from) {
+      if (out.length < 4 && sum + s.title.length <= total) { out.push(s); sum += s.title.length; }
+      else rest.push(s);
+    }
+    return { out, rest };
+  };
+  // Позиции 1–4 и 5–8 считаются по порядку в наборе, поэтому вторую четвёрку добавляем только к полной первой
+  const first = take(pool, SITELINKS_GROUP_TOTAL);
+  if (first.out.length < 4) return first.out;
+  return [...first.out, ...take(first.rest, SITELINKS_GROUP_TOTAL).out];
+}
+
+/** utm-метки объявления переносим в ссылки дополнений — иначе клики по быстрым ссылкам теряют атрибуцию */
+function withAdUtm(href: string, adHref: string) {
+  try {
+    const u = new URL(href), ad = new URL(adHref);
+    if (u.host !== ad.host) return href;
+    for (const [k, v] of ad.searchParams) if (k.startsWith("utm_") && !u.searchParams.has(k)) u.searchParams.set(k, v);
+    return u.toString().replace(/%7B/g, "{").replace(/%7D/g, "}");
+  } catch {
+    return href;
+  }
+}
 
 type DirectItemResult = { Id?: number; AdImageHash?: string; Errors?: { Code: number; Message: string; Details?: string }[]; Warnings?: { Code: number; Message: string; Details?: string }[] };
 
@@ -77,13 +129,13 @@ export class YandexDirect implements PlatformClient {
     const ceiling = bidCeiling && channel === "search" ? { BidCeiling: micros(bidCeiling) } : {};
     const active =
       strategy === "conversions" && goalId
-        ? { BiddingStrategyType: "WB_MAXIMUM_CONVERSION_RATE", WbMaximumConversionRate: { WeeklySpendLimit: micros(weeklyBudget), GoalId: goalId, ...ceiling } }
-        : { BiddingStrategyType: "WB_MAXIMUM_CLICKS", WbMaximumClicks: { WeeklySpendLimit: micros(weeklyBudget), ...ceiling } };
+        ? { BiddingStrategyType: "WB_MAXIMUM_CONVERSION_RATE", WbMaximumConversionRate: { WeeklySpendLimit: micros(netOfVat(weeklyBudget)), GoalId: goalId, ...ceiling } }
+        : { BiddingStrategyType: "WB_MAXIMUM_CLICKS", WbMaximumClicks: { WeeklySpendLimit: micros(netOfVat(weeklyBudget)), ...ceiling } };
     const off = { BiddingStrategyType: "SERVING_OFF" };
     return channel === "search" ? { Search: active, Network: off } : { Search: off, Network: active };
   }
 
-  async launchCampaign(spec: CampaignSpec): Promise<LaunchResult> {
+  async launchCampaign(spec: CampaignSpec, hooks?: LaunchHooks): Promise<LaunchResult> {
     const warnings: string[] = [];
     const unified: Record<string, unknown> = {
       BiddingStrategy: this.strategy(spec.channel, spec.weeklyBudget, spec.strategy, spec.goalId),
@@ -106,6 +158,7 @@ export class YandexDirect implements PlatformClient {
     const res = await this.call("campaigns", "add", { Campaigns: [campaign] });
     const [c] = this.items(res.AddResults, "Кампания", warnings);
     const campaignExt = String(c.Id);
+    await hooks?.onCampaignCreated?.(campaignExt);
 
     const out: LaunchResult = { campaignExt, groups: [], warnings };
     for (const g of spec.groups) {
@@ -151,12 +204,29 @@ export class YandexDirect implements PlatformClient {
     return out;
   }
 
+  /** Удаляем недосозданную кампанию; если Директ не даёт (уже были показы) — останавливаем */
+  async removeCampaign(campaignExt: string) {
+    const sel = { SelectionCriteria: { Ids: [Number(campaignExt)] } };
+    try {
+      const res = await this.call("campaigns", "delete", sel);
+      this.items(res.DeleteResults, "Удаление кампании");
+    } catch {
+      const res = await this.call("campaigns", "suspend", sel);
+      this.items(res.SuspendResults, "Остановка кампании");
+    }
+  }
+
+  private imageCache = new Map<string, string>();
+
   async uploadImage(img: NonNullable<AdSpec["image"]>): Promise<string> {
     if (img.cachedRef) return img.cachedRef;
+    const hit = this.imageCache.get(img.imageId);
+    if (hit) return hit;
     const res = await this.call("adimages", "add", {
       AdImages: [{ ImageData: img.data.toString("base64"), Name: `pz-${img.imageId}`.slice(0, 255) }],
     });
     const [r] = this.items(res.AddResults, "Изображение");
+    this.imageCache.set(img.imageId, r.AdImageHash!);
     return r.AdImageHash!;
   }
 
@@ -178,15 +248,24 @@ export class YandexDirect implements PlatformClient {
     return items.map((t) => this.calloutCache.get(t)).filter(Boolean) as number[];
   }
 
-  private async sitelinks(links: Sitelink[], warnings?: string[]): Promise<number | null> {
-    const items = links.slice(0, 8).map((l) => ({ Title: l.title.slice(0, 30), Href: l.href, Description: l.description?.slice(0, 60) || undefined }));
+  private sitelinkCache = new Map<string, number | null>();
+
+  /** Набор быстрых ссылок. Одинаковые наборы Директ и так не дублирует, но кэш экономит вызовы. */
+  private async sitelinks(links: Sitelink[], adHref: string, warnings?: string[]): Promise<number | null> {
+    const fitted = fitSitelinks(links);
+    if (fitted.length < links.length) warnings?.push(`Быстрые ссылки: оставили ${fitted.length} из ${links.length} — у Директа лимит 66 символов на заголовки каждой четвёрки`);
+    const items = fitted.map((l) => ({ Title: l.title, Href: withAdUtm(l.href, adHref).slice(0, 1024), Description: l.description?.trim().slice(0, 60) || undefined }));
     if (items.length < 2) return null;
+    const key = JSON.stringify(items);
+    if (this.sitelinkCache.has(key)) return this.sitelinkCache.get(key)!;
     try {
       const res = await this.call("sitelinks", "add", { SitelinksSets: [{ Sitelinks: items }] });
       const [r] = this.items(res.AddResults, "Быстрые ссылки");
+      this.sitelinkCache.set(key, r.Id ?? null);
       return r.Id ?? null;
     } catch (e) {
       warnings?.push(`Быстрые ссылки: ${(e as Error).message}`);
+      this.sitelinkCache.set(key, null);
       return null;
     }
   }
@@ -218,6 +297,7 @@ export class YandexDirect implements PlatformClient {
   }
 
   async addAd(campaignExt: string, groupExt: string, ad: AdSpec, _ctx: { channel: Channel }, warnings: string[] = [], moderate = true) {
+    if (!ad.title.trim() || !ad.text.trim()) throw new PlatformError("yandex", "У объявления пустой заголовок или текст");
     let imageRef: string | undefined;
     if (ad.image) {
       try {
@@ -228,7 +308,7 @@ export class YandexDirect implements PlatformClient {
     }
     const x = ad.extras;
     const extIds = x?.callouts.length ? await this.callouts(x.callouts, warnings) : [];
-    const sitelinkSetId = x?.sitelinks.length ? await this.sitelinks(x.sitelinks, warnings) : null;
+    const sitelinkSetId = x?.sitelinks.length ? await this.sitelinks(x.sitelinks, ad.href, warnings) : null;
     const vcardId = x?.vcard ? await this.vcard(campaignExt, x.vcard, warnings) : null;
 
     const textAd: Record<string, unknown> = {
@@ -242,20 +322,30 @@ export class YandexDirect implements PlatformClient {
     if (extIds.length) textAd.AdExtensionIds = extIds;
     if (sitelinkSetId) textAd.SitelinkSetId = sitelinkSetId;
     if (ad.marking) textAd.ErirAdDescription = ad.marking.slice(0, 255);
-    // Необязательные поля: если Директ их не примет, повторим без них
-    const optional: Record<string, unknown> = {};
-    if (x?.displayPath) optional.DisplayUrlPath = x.displayPath.slice(0, 20);
-    if (vcardId) optional.VCardId = vcardId;
-    if (x?.price) optional.PriceExtension = { Price: micros(x.price.price), PriceQualifier: x.price.qualifier, PriceCurrency: "RUB" };
+    // Необязательные поля: если Директ отклонит объявление, убираем их по одному (сначала визитку — в ЕПК её могут не принять),
+    // чтобы из-за одного поля не терять остальные
+    const optional: [string, string, unknown][] = [];
+    if (vcardId) optional.push(["VCardId", "визитка", vcardId]);
+    if (x?.price) optional.push(["PriceExtension", "цена", { Price: micros(x.price.price), PriceQualifier: x.price.qualifier, PriceCurrency: "RUB" }]);
+    if (x?.displayPath) optional.push(["DisplayUrlPath", "отображаемая ссылка", x.displayPath.slice(0, 20)]);
 
-    let res;
-    try {
-      res = await this.call("ads", "add", { Ads: [{ AdGroupId: Number(groupExt), TextAd: { ...textAd, ...optional } }] });
-      if (Object.keys(optional).length && (res.AddResults as DirectItemResult[] | undefined)?.[0]?.Errors?.length) throw new Error((res.AddResults as DirectItemResult[])[0].Errors![0].Message);
-    } catch (e) {
-      if (!Object.keys(optional).length) throw e;
-      warnings.push(`Цена, визитка или отображаемая ссылка не приняты, объявление создано без них: ${(e as Error).message}`);
-      res = await this.call("ads", "add", { Ads: [{ AdGroupId: Number(groupExt), TextAd: textAd }] });
+    let res: any;
+    const dropped: string[] = [];
+    for (;;) {
+      const extra = Object.fromEntries(optional.map(([k, , v]) => [k, v]));
+      let err: unknown = null;
+      try {
+        res = await this.call("ads", "add", { Ads: [{ AdGroupId: Number(groupExt), TextAd: { ...textAd, ...extra } }] });
+        const e = (res.AddResults as DirectItemResult[] | undefined)?.[0]?.Errors?.[0];
+        if (e) err = new Error(`${e.Message}${e.Details ? ` — ${e.Details}` : ""}`);
+      } catch (e) {
+        err = e;
+      }
+      if (!err) break;
+      if (!optional.length) throw err;
+      const [, label] = optional.shift()!;
+      dropped.push(label);
+      warnings.push(`Объявление «${ad.title}»: Директ не принял поле «${label}», создаём без него: ${(err as Error).message}`);
     }
     const [r] = this.items(res.AddResults, "Объявление", warnings);
     const adExt = String(r.Id);
@@ -308,13 +398,22 @@ export class YandexDirect implements PlatformClient {
       const chunk = adExts.slice(i, i + 1000).map(Number);
       const res = await this.call("ads", "get", { SelectionCriteria: { Ids: chunk }, FieldNames: ["Id", "State", "Status", "StatusClarification"] });
       for (const a of res.Ads ?? []) {
+        // State: ON — показывается; SUSPENDED — остановлено владельцем (suspend); OFF — не показывается по другой причине
+        // (черновик, модерация, отклонено, кампания остановлена или нет денег); OFF_BY_MONITORING — сайт недоступен;
+        // ARCHIVED — в архиве. «paused» у нас — только SUSPENDED: иначе после возобновления кампании объявления
+        // навсегда «застревали» выключенными.
         let status: AdState["status"] = "moderation";
+        let note: string | undefined = a.StatusClarification || undefined;
         if (a.State === "ARCHIVED") status = "archived";
         else if (a.Status === "REJECTED") status = "rejected";
-        else if (a.Status === "DRAFT" || a.Status === "MODERATION" || a.Status === "PREACCEPTED") status = "moderation";
+        else if (a.State === "SUSPENDED") status = "paused";
+        else if (a.Status === "DRAFT" || a.Status === "MODERATION") status = "moderation";
         else if (a.State === "ON") status = "active";
-        else if (a.State === "SUSPENDED" || a.State === "OFF" || a.State === "OFF_BY_MONITORING") status = "paused";
-        out[String(a.Id)] = { status, note: a.StatusClarification || undefined };
+        else if (a.Status === "ACCEPTED" || a.Status === "PREACCEPTED") {
+          status = "active";
+          note = a.State === "OFF_BY_MONITORING" ? "Не показывается: сайт недоступен (мониторинг Директа)" : note ?? "Сейчас не показывается: кампания остановлена или на счёте нет денег";
+        }
+        out[String(a.Id)] = { status, note };
       }
     }
     return out;

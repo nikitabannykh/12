@@ -224,3 +224,23 @@ export type Ad = typeof ads.$inferSelect;
 export type Change = typeof changes.$inferSelect;
 export type Experiment = typeof experiments.$inferSelect;
 export type Image = typeof images.$inferSelect;
+
+// --- Защита от спама: счётчики лимитов (работает и на serverless — общее состояние в базе) ---
+export const rateLimits = pgTable("rate_limits", {
+  key: text("key").primaryKey(), // например "lead:ip:<отпечаток>" — сам IP не храним
+  count: integer("count").notNull().default(0),
+  resetAt: timestamp("reset_at", { withTimezone: true }).notNull(),
+});
+
+// --- Уведомления владельцу о заявках (Telegram) и ежедневная сводка ---
+export const notifySettings = pgTable("notify_settings", {
+  businessId: text("business_id").primaryKey(),
+  telegramChatId: text("telegram_chat_id"),
+  telegramName: text("telegram_name"), // как подписан чат: @username или имя
+  linkedAt: timestamp("linked_at", { withTimezone: true }),
+  digest: integer("digest").notNull().default(1), // 1 — присылать утреннюю сводку
+  lastDigestAt: timestamp("last_digest_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type NotifySettings = typeof notifySettings.$inferSelect;

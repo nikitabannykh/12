@@ -31,12 +31,12 @@ function priceFor(tiers: Tier[], slot: number) {
 
 function Competitor({ label, price }: { label: string; price: number | null }) {
   return (
-    <div className="rounded-lg border border-dashed border-line-2 px-3 py-2.5 flex items-center justify-between gap-3">
+    <div className="min-w-0 rounded-lg border border-dashed border-line-2 px-3 py-2.5 flex items-center justify-between gap-3">
       <div className="min-w-0 grid gap-1.5 flex-1">
         <div className="h-2.5 w-3/4 rounded bg-line" />
         <div className="h-2 w-full rounded bg-paper" />
       </div>
-      <div className="text-right shrink-0 text-xs text-faint leading-tight">
+      <div className="text-right text-xs text-faint leading-tight max-w-[60%]">
         <div>{label} · конкурент</div>
         {price ? <div>клик ≈ {rub(price)}</div> : null}
       </div>
@@ -48,17 +48,17 @@ export function SerpScheme({ query, tv, tiers, yourCpc, ad }: { query: string; t
   const mine = slotOf(tv);
   const Mine = (
     <div className="rounded-lg ring-2 ring-mark bg-white relative">
-      <span className="absolute -top-2.5 left-3 pill bg-mark text-ink text-[11px] font-bold">Вы · {mine <= 3 ? TOP[mine].label : mine === 4 ? "внизу страницы" : "дальше 1-й страницы"}{yourCpc ? ` · клик ≈ ${rub(yourCpc)}` : ""}</span>
+      <span className="absolute -top-2.5 left-3 pill bg-mark text-ink text-[11px] font-bold whitespace-normal max-w-[calc(100%-1.5rem)]">Вы · {mine <= 3 ? TOP[mine].label : mine === 4 ? "внизу страницы" : "дальше 1-й страницы"}{yourCpc ? ` · клик ≈ ${rub(yourCpc)}` : ""}</span>
       <div className="pt-2">{ad}</div>
     </div>
   );
   return (
-    <div className="rounded-xl border border-line bg-paper/50 p-3 sm:p-4">
+    <div className="min-w-0 rounded-xl border border-line bg-paper/50 p-3 sm:p-4">
       <div className="flex items-center gap-2 rounded-full bg-white border border-line px-4 py-2 text-sm">
         <span className="font-extrabold text-bad">Я</span>
         <span className="truncate">{query}</span>
       </div>
-      <div className="mt-3 grid gap-2">
+      <div className="mt-3 grid grid-cols-1 gap-2">
         {TOP.map((t, i) => (i === mine ? <div key={i}>{Mine}</div> : <Competitor key={i} label={t.label} price={priceFor(tiers, i)} />))}
         <div className="my-1 grid gap-1.5 px-1">
           <div className="text-[11px] uppercase tracking-wide text-faint font-semibold">Обычные результаты поиска</div>

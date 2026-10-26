@@ -71,9 +71,14 @@ export type AuctionRow = { groupExt: string; keywords: number; tiers: AuctionTie
 
 export type QueryRow = { campaignExt: string; query: string; impressions: number; clicks: number; cost: number };
 
+/** Колбэки запуска: ID кампании сохраняем в БД сразу, как площадка его вернула, — чтобы таймаут не оставил «сироту» */
+export type LaunchHooks = { onCampaignCreated?: (campaignExt: string) => Promise<void> };
+
 export interface PlatformClient {
   platform: Platform;
-  launchCampaign(spec: CampaignSpec): Promise<LaunchResult>;
+  launchCampaign(spec: CampaignSpec, hooks?: LaunchHooks): Promise<LaunchResult>;
+  /** Удалить (или, если площадка не даёт, остановить) недосозданную кампанию — для возобновления прерванного запуска */
+  removeCampaign?(campaignExt: string): Promise<void>;
   addAd(campaignExt: string, groupExt: string, ad: AdSpec, ctx: { channel: Channel }): Promise<{ adExt: string; imageRef?: string }>;
   setCampaignActive(campaignExt: string, active: boolean): Promise<void>;
   setAdsActive(adExts: string[], active: boolean): Promise<void>;
@@ -87,6 +92,8 @@ export interface PlatformClient {
 }
 
 export class PlatformError extends Error {
+  /** HTTP-статус ответа площадки (не путать с `status`, по которому API-маршруты выбирают код ответа) */
+  httpStatus?: number;
   constructor(public platform: Platform, message: string, public detail?: unknown) {
     super(message);
   }

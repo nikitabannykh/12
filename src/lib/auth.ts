@@ -4,10 +4,21 @@ import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import { sign, verify } from "./crypto";
-import { uid } from "./util";
+import { appUrl, uid } from "./util";
 
 const COOKIE = "pz_session";
 const MONTH = 30 * 24 * 3600 * 1000;
+
+/** Флаги служебных cookie: недоступны из JS, только HTTPS (если сервис на HTTPS), не уходят с чужих POST */
+export function cookieOptions(maxAgeSec: number) {
+  return {
+    httpOnly: true,
+    sameSite: "lax" as const,
+    secure: appUrl().startsWith("https://") || (process.env.NODE_ENV === "production" && Boolean(process.env.VERCEL)),
+    path: "/",
+    maxAge: maxAgeSec,
+  };
+}
 
 export type SessionUser = { id: string; email: string; name: string | null; image: string | null };
 
@@ -23,23 +34,25 @@ export async function createSession(user: { email: string; name?: string | null;
     await db.update(schema.users).set({ name: user.name ?? existing.name, image: user.image ?? existing.image }).where(eq(schema.users.id, existing.id));
   }
   const jar = await cookies();
-  jar.set(COOKIE, sign({ uid: id, exp: Date.now() + MONTH }), {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: MONTH / 1000,
-  });
+  jar.set(COOKIE, sign({ uid: id, exp: Date.now() + MONTH }), cookieOptions(MONTH / 1000));
   return id!;
 }
 
 export async function destroySession() {
-  (await cookies()).delete(COOKIE);
+  (await cookies()).set(COOKIE, "", { ...cookieOptions(0), maxAge: 0 });
 }
 
 export async function getUser(): Promise<SessionUser | null> {
   const token = (await cookies()).get(COOKIE)?.value;
-  const data = verify<{ uid: string }>(token);
+  if (!token) return null;
+  let data: { uid: string } | null = null;
+  try {
+    data = verify<{ uid: string }>(token);
+  } catch (e) {
+    // Не настроен APP_SECRET в проде: считаем, что не вошли; причину покажет страница входа
+    if ((e as { code?: string })?.code === "PZ_SECRET") return null;
+    throw e;
+  }
   if (!data) return null;
   const db = await getDb();
   const [u] = await db.select().from(schema.users).where(eq(schema.users.id, data.uid));

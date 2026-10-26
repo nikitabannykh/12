@@ -25,6 +25,9 @@ export const PATCH = route<{ id: string }>(async ({ business, params, req }) => 
       },
       [{ op: "campaignStatus", campaignId: c.id, status: body.status }],
     );
+    // Решение владельца важнее прошлой паузы по бюджету: снимаем отметку, иначе 1-го числа робот включит канал сам
+    const [fresh] = await db.select({ meta: schema.campaigns.meta }).from(schema.campaigns).where(eq(schema.campaigns.id, c.id));
+    if ((fresh?.meta as any)?.pausedByGuard) await db.update(schema.campaigns).set({ meta: { ...(fresh!.meta ?? {}), pausedByGuard: null } }).where(eq(schema.campaigns.id, c.id));
     return json({ ok: true });
   }
 

@@ -12,7 +12,7 @@ export type Niche = {
   audience: { sex: "female" | "male" | "any"; ageFrom: number; ageTo: number; text: string };
   visuals: string[]; // сюжеты картинок без людей в кадре крупно — чтобы не было «пластиковых» лиц
   palette: { bg: string; ink: string; accent: string };
-  proof: string; // что обычно убеждает клиента
+  generic: string; // нейтральное название услуги, если владелец не перечислил услуги (без выдуманных деталей)
 };
 
 const COMMON_NEG = [
@@ -34,7 +34,7 @@ export const NICHES: Niche[] = [
       "detail shot of almond-shaped nails with milky pink gel polish holding a cup of coffee, morning light, cozy cafe table",
     ],
     palette: { bg: "#F3E9EC", ink: "#3A1F2B", accent: "#C2185B" },
-    proof: "аккуратность покрытия, стерильность инструментов, держится 3–4 недели",
+    generic: "Маникюр и педикюр",
   },
   {
     id: "brows",
@@ -48,7 +48,7 @@ export const NICHES: Niche[] = [
       "minimal beauty studio flat lay: brow tweezers, small brushes, cream-colored towel, morning light",
     ],
     palette: { bg: "#EEE8E2", ink: "#2B2420", accent: "#8D5B3B" },
-    proof: "натуральный результат, держится 6–8 недель",
+    generic: "Брови и ресницы",
   },
   {
     id: "hair",
@@ -62,7 +62,7 @@ export const NICHES: Niche[] = [
       "hairdresser tools neatly arranged: scissors, comb, brushes on a marble counter, bright salon",
     ],
     palette: { bg: "#ECE7DF", ink: "#2A2622", accent: "#A0522D" },
-    proof: "мастер подбирает цвет под тип внешности, бережные составы",
+    generic: "Парикмахерская",
   },
   {
     id: "barber",
@@ -76,7 +76,7 @@ export const NICHES: Niche[] = [
       "close-up of barber tools: straight razor, comb, scissors on a leather towel, moody light",
     ],
     palette: { bg: "#1F2326", ink: "#F2EDE4", accent: "#D4A24C" },
-    proof: "без очереди по записи, стрижка 45 минут, кофе включён",
+    generic: "Барбершоп",
   },
   {
     id: "massage",
@@ -90,7 +90,7 @@ export const NICHES: Niche[] = [
       "hands of a massage therapist pouring oil into a palm, warm soft light, spa atmosphere, close-up",
     ],
     palette: { bg: "#E6ECE5", ink: "#1E2A22", accent: "#4E7C59" },
-    proof: "дипломированные массажисты, тишина и чистота",
+    generic: "Массаж",
   },
   {
     id: "cosmetology",
@@ -103,13 +103,13 @@ export const NICHES: Niche[] = [
       "skincare treatment room, clean white towels, glass bottles with serums, soft daylight, clinical yet warm",
     ],
     palette: { bg: "#EAF0F2", ink: "#1C2B33", accent: "#2E7D8C" },
-    proof: "врач-косметолог с медицинской лицензией, сертифицированные препараты",
+    generic: "Косметология",
   },
   {
     id: "yoga",
     label: "Йога-студия",
     examples: ["Хатха-йога", "Йога для начинающих", "Пробное занятие", "Абонемент на месяц"],
-    searchSeeds: ["йога {city}", "йога для начинающих", "йога студия рядом", "хатха йога", "йога занятия", "йога пробное занятие", "йога утром"],
+    searchSeeds: ["йога {city}", "йога для начинающих", "йога студия рядом", "хатха йога", "йога занятия", "йога утром"],
     negatives: [...COMMON_NEG, "коврик", "одежда для йоги", "йога дома видео", "онлайн бесплатно", "асаны картинки", "инструктор вакансия"],
     audience: { sex: "female", ageFrom: 22, ageTo: 55, text: "В основном женщины 22–55 лет, живут неподалёку" },
     visuals: [
@@ -118,7 +118,7 @@ export const NICHES: Niche[] = [
       "silhouette of a person in a simple seated pose by a large window at sunrise, wide shot, minimal, serene",
     ],
     palette: { bg: "#EEF0E6", ink: "#232A1E", accent: "#5B7B3A" },
-    proof: "маленькие группы до 10 человек, первое занятие — пробное",
+    generic: "Йога",
   },
   {
     id: "fitness",
@@ -132,18 +132,18 @@ export const NICHES: Niche[] = [
       "close-up of hands gripping a pilates reformer bar, athletic, soft focus background, studio light",
     ],
     palette: { bg: "#ECEEF3", ink: "#1D2233", accent: "#4A5BD4" },
-    proof: "группы до 6 человек, тренер следит за техникой",
+    generic: "Фитнес-студия",
   },
   {
     id: "dance",
     label: "Танцы",
     examples: ["Танцы для взрослых", "Детские танцы", "Пробный урок"],
-    searchSeeds: ["танцы для взрослых {city}", "школа танцев рядом", "танцы для начинающих", "детские танцы", "пробное занятие танцы"],
+    searchSeeds: ["танцы для взрослых {city}", "школа танцев рядом", "танцы для начинающих", "детские танцы"],
     negatives: [...COMMON_NEG, "видео уроки", "музыка", "песня", "фильм"],
     audience: { sex: "any", ageFrom: 18, ageTo: 45, text: "Взрослые 18–45 лет" },
     visuals: ["empty dance studio with mirrors and wooden floor, warm evening light, motion blur of a dress, cinematic"],
     palette: { bg: "#F1E9F2", ink: "#2A1D2E", accent: "#8E3BA8" },
-    proof: "без опыта можно, первое занятие — пробное",
+    generic: "Танцы",
   },
   {
     id: "other",
@@ -154,7 +154,7 @@ export const NICHES: Niche[] = [
     audience: { sex: "any", ageFrom: 20, ageTo: 60, text: "Взрослые 20–60 лет рядом с вами" },
     visuals: ["bright modern small business interior, clean and welcoming, daylight, no people"],
     palette: { bg: "#ECEDEF", ink: "#1F2128", accent: "#3D5AFE" },
-    proof: "работаем по записи, понятные цены",
+    generic: "Запись на услугу",
   },
 ];
 
@@ -164,9 +164,9 @@ export const nicheById = (id: string) => NICHES.find((n) => n.id === id) ?? NICH
 export const ANGLES: Record<string, { name: string; hint: string }> = {
   price: { name: "Цена", hint: "Конкретная цена или «от» — человек сразу понимает, подходит ли ему" },
   offer: { name: "Предложение новым клиентам", hint: "Скидка или подарок на первый визит" },
-  proof: { name: "Доверие", hint: "Отзывы, рейтинг, опыт мастеров" },
-  convenience: { name: "Удобство", hint: "Рядом, без очереди, онлайн-запись" },
-  result: { name: "Результат", hint: "Что получит клиент и как долго это держится" },
+  proof: { name: "Доверие", hint: "Отзыв клиента или факты об опыте — только если они есть в анкете" },
+  convenience: { name: "Удобство", hint: "Адрес, часы работы, онлайн-запись" },
+  result: { name: "Результат", hint: "Что получит клиент — только из описания и преимуществ владельца" },
   emotion: { name: "Эмоция", hint: "Время для себя, забота, настроение" },
 };
 

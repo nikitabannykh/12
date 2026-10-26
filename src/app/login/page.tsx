@@ -2,16 +2,21 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Logo } from "@/components/Logo";
 import { demoAllowed, getUser, googleConfigured } from "@/lib/auth";
+import { secretError } from "@/lib/crypto";
 
 const ERRORS: Record<string, string> = {
   google_not_configured: "Вход через Google ещё не настроен на сервере. Пока можно зайти в демо.",
   google: "Google не подтвердил вход. Попробуйте ещё раз.",
   state: "Сессия входа устарела. Попробуйте ещё раз.",
   email: "В аккаунте Google не подтверждена почта.",
+  origin: "Вход отклонён: форма была отправлена не со страницы сервиса. Откройте страницу входа заново.",
+  toomany: "Слишком много входов в демо с вашего адреса. Попробуйте через час.",
+  secret: "Сервис пока не настроен: администратору нужно задать APP_SECRET.",
 };
 
 export default async function Login({ searchParams }: { searchParams: Promise<{ error?: string; demo?: string }> }) {
-  if (await getUser()) redirect("/app");
+  const configError = secretError();
+  if (!configError && (await getUser())) redirect("/app");
   const sp = await searchParams;
   const google = googleConfigured();
   const demo = demoAllowed();
@@ -21,7 +26,12 @@ export default async function Login({ searchParams }: { searchParams: Promise<{ 
         <Link href="/" className="inline-block mb-10"><Logo /></Link>
         <h1 className="text-3xl font-extrabold tracking-tight">Вход</h1>
         <p className="text-muted mt-2">Один аккаунт — для настройки, статистики и истории изменений.</p>
-        {sp.error ? <div className="mt-5 rounded-xl bg-bad-soft text-bad px-4 py-3 text-sm">{ERRORS[sp.error] ?? "Не получилось войти"}</div> : null}
+        {configError ? (
+          <div role="alert" className="mt-5 rounded-xl bg-bad-soft text-bad px-4 py-3 text-sm leading-relaxed">
+            <b>Вход временно недоступен.</b> {configError}
+          </div>
+        ) : null}
+        {sp.error && !(configError && sp.error === "secret") ? <div className="mt-5 rounded-xl bg-bad-soft text-bad px-4 py-3 text-sm">{ERRORS[sp.error] ?? "Не получилось войти"}</div> : null}
         <div className="mt-8 grid gap-3">
           <a href="/api/auth/google/start" className={`btn h-12 bg-white border border-line-2 hover:border-ink ${google ? "" : "pointer-events-none opacity-50"}`} aria-disabled={!google}>
             <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">

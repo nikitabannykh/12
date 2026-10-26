@@ -13,8 +13,14 @@ const fmt = (iso: string) => {
   return `${s.toLocaleDateString("ru-RU", o)} — ${e.toLocaleDateString("ru-RU", o)}`;
 };
 
+const plural = (n: number, one: string, few: string, many: string) => {
+  const a = Math.abs(n) % 100, b = a % 10;
+  return a > 10 && a < 20 ? many : b === 1 ? one : b > 1 && b < 5 ? few : many;
+};
+const pl = (n: number, one: string, few: string, many: string) => `${n} ${plural(n, one, few, many)}`;
+
 /** Владелец отмечает, сколько обратившихся стали клиентами. Это делает «стоимость клиента» точной. */
-export function ClientsWeek({ weekStart, leads, initial, plain = false }: { weekStart: string; leads: number; initial?: number | null; plain?: boolean }) {
+export function ClientsWeek({ weekStart, leads, otherLeads = 0, initial, plain = false, current = false }: { weekStart: string; leads: number; otherLeads?: number; initial?: number | null; plain?: boolean; current?: boolean }) {
   const [v, setV] = useState(initial != null ? String(initial) : "");
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -34,8 +40,12 @@ export function ClientsWeek({ weekStart, leads, initial, plain = false }: { week
   const body = (
     <div className="flex flex-wrap items-center gap-3">
       <div className="flex-1 min-w-[14rem] text-sm leading-relaxed">
-        {plain ? <b>{fmt(weekStart)}</b> : <b>Сколько клиентов пришло из рекламы на прошлой неделе?</b>}
-        <div className="text-muted">{plain ? "" : `${fmt(weekStart)}. `}Обращений было {leads}. Посмотрите в журнале записи — так стоимость клиента будет точной.</div>
+        {plain ? <b>{fmt(weekStart)}{current ? <span className="font-normal text-muted"> · идёт сейчас</span> : null}</b> : <b>Сколько обратившихся стали клиентами на прошлой неделе?</b>}
+        <div className="text-muted">
+          {plain ? "" : `${fmt(weekStart)}. `}
+          {leads ? <>{current ? "Пока" : "Было"} {pl(leads, "обращение", "обращения", "обращений")}{otherLeads ? `, из них ${otherLeads} не из рекламы` : ""}. </> : current ? "Обращений пока нет. " : "Обращений не было. "}
+          {plain ? (leads ? "Сколько из них записались и пришли?" : "") : "Посмотрите в журнале записи — так стоимость клиента будет точной."}
+        </div>
       </div>
       <div className="flex gap-2">
         <input className="field w-24" inputMode="numeric" value={v} onChange={(e) => setV(e.target.value.replace(/\D/g, ""))} aria-label="Клиентов" placeholder="0" />

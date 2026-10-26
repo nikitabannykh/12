@@ -9,9 +9,11 @@ import { vkConfigured } from "@/lib/platforms/vk";
 import { PLATFORM_NAME } from "@/lib/platforms";
 import { ActionButton, CopyButton } from "@/components/client";
 import { BudgetEditor } from "@/components/BudgetEditor";
+import { NotifySettings } from "@/components/NotifySettings";
+import { getNotify, linkUrl, tgConfigured } from "@/lib/notify";
 import { minMonthlyFor } from "@/lib/engine/budget";
 import { nicheById } from "@/lib/niches";
-import { appUrl, rub } from "@/lib/util";
+import { appUrl, errorText, rub } from "@/lib/util";
 
 export default async function Settings() {
   const user = await requireUser();
@@ -21,6 +23,17 @@ export default async function Settings() {
   const snippet = trackingSnippet({ counterId: b.counterId, publicKey: b.publicKey, appUrl: appUrl() });
   const landing = `${appUrl()}/p/${b.publicKey}`;
   const channels = channelsFor(accounts).map((c) => c.channel);
+  const notify = await getNotify(b.id);
+  const notifyStatus = { configured: tgConfigured(), connected: Boolean(notify?.telegramChatId), name: notify?.telegramName ?? null, digest: notify ? notify.digest === 1 : true };
+  let tgLink: string | null = null;
+  let tgLinkError: string | null = null;
+  if (notifyStatus.configured && !notifyStatus.connected) {
+    try {
+      tgLink = await linkUrl(b.id);
+    } catch (e) {
+      tgLinkError = `Telegram не ответил: ${errorText(e)}. Обновите страницу чуть позже.`;
+    }
+  }
 
   return (
     <div className="grid gap-6">
@@ -35,6 +48,11 @@ export default async function Settings() {
           </div>
           <Link href="/app/start" className="btn btn-ghost btn-sm">Изменить описание</Link>
         </div>
+      </section>
+
+      <section id="notify" className="card p-5 sm:p-7 scroll-mt-6">
+        <h2 className="text-lg font-bold">Уведомления о заявках</h2>
+        <NotifySettings initial={notifyStatus} link={tgLink} linkError={tgLinkError} />
       </section>
 
       <section id="budget" className="card p-5 sm:p-7 scroll-mt-6">
