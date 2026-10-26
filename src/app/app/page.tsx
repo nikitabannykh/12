@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { and, eq, gte, inArray } from "drizzle-orm";
-import { RefreshCw, TriangleAlert, FastForward, PauseCircle, GraduationCap } from "lucide-react";
+import { RefreshCw, TriangleAlert, FastForward, PauseCircle, GraduationCap, Wallet, CheckCircle2, CircleAlert, ExternalLink } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { getBusinessForUser, accountsFor } from "@/lib/engine/launch";
 import { report, weeksForMarking, campaignStates, LEARNING_DAYS } from "@/lib/engine/report";
@@ -14,6 +14,8 @@ import { ClientsWeek } from "@/components/ClientsWeek";
 import { CHANNEL_NAME } from "@/lib/platforms";
 import { rub, num, pl, isoDay } from "@/lib/util";
 import { monthStartDay, nextMonthStart } from "@/lib/engine/budget-plan";
+import { healthCheck, type Health } from "@/lib/engine/health";
+import { balanceText, LOW_DAYS, TOPUP_URL } from "@/lib/engine/balance";
 
 const SHORT: Record<string, string> = { search: "Поиск", network: "Сайты и приложения", vk: "ВКонтакте" };
 const ORDER = ["search", "network", "vk"];
@@ -38,6 +40,8 @@ export default async function Dashboard() {
     .where(and(eq(schema.ads.businessId, b.id), inArray(schema.ads.status, ["moderation", "rejected", "active"])));
   const monthCost = (await db.select({ cost: schema.statsDaily.cost }).from(schema.statsDaily).where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, monthStartDay(r.now))))).reduce((s, x) => s + x.cost, 0);
   const tracked = await db.select({ id: schema.leads.id }).from(schema.leads).where(eq(schema.leads.businessId, b.id)).limit(1);
+  const health = await healthCheck(b);
+  const lowBalance = health.balances.filter((x) => x.daysLeft !== null && x.daysLeft <= LOW_DAYS && camps.some((c) => c.accountId === x.accountId && c.status === "active"));
 
   const c = r.cur, p = r.prev;
   const cpc = c.clients ? c.cost / c.clients : null;
@@ -125,6 +129,12 @@ export default async function Dashboard() {
         <StopBanner tone="info" title="Объявления на модерации" text="Площадки проверяют объявления — обычно в течение суток. Показы начнутся сразу после проверки, ничего делать не нужно." />
       ) : null}
 
+      {lowBalance.map((x) => (
+        <StopBanner key={x.accountId} tone={x.daysLeft === 0 ? "bad" : "warn"} icon="wallet" title={x.daysLeft === 0 ? "Кончились деньги в рекламном кабинете" : "Скоро кончатся деньги в рекламном кабинете"} text={`${balanceText(x)}${x.demo ? " В демо пополнение происходит само." : " Пополнение — в самом кабинете площадки."}`}>
+          {TOPUP_URL[x.platform] && !x.demo ? <a href={TOPUP_URL[x.platform]} target="_blank" rel="noreferrer" className="btn btn-primary btn-sm">Пополнить <ExternalLink size={14} /></a> : null}
+        </StopBanner>
+      ))}
+
       {/* Итог одной фразой */}
       <section className="card p-5 sm:p-7">
         <p className="text-xl sm:text-2xl leading-snug font-semibold max-w-3xl">
@@ -193,6 +203,8 @@ export default async function Dashboard() {
           ) : null}
         </section>
       ) : null}
+
+      <HealthCard h={health} />
 
       <div className="grid lg:grid-cols-[1.4fr_1fr] gap-6">
         <section className="card p-5 sm:p-7 min-w-0">
@@ -279,17 +291,72 @@ export default async function Dashboard() {
   );
 }
 
-function StopBanner({ tone, title, text, children }: { tone: "bad" | "warn" | "info"; title: string; text: string; children?: React.ReactNode }) {
+function StopBanner({ tone, title, text, children, icon }: { tone: "bad" | "warn" | "info"; title: string; text: string; children?: React.ReactNode; icon?: "wallet" }) {
   const cls = tone === "bad" ? "bg-bad-soft border-bad/30" : tone === "warn" ? "bg-warn-soft border-warn/30" : "bg-info-soft border-line-2";
   const ic = tone === "bad" ? "text-bad" : tone === "warn" ? "text-warn" : "text-ink-2";
   return (
     <section className={`rounded-[var(--radius-card)] border p-4 sm:p-5 flex flex-wrap items-start gap-3 ${cls}`} role="status">
-      <PauseCircle size={22} className={`shrink-0 mt-0.5 ${ic}`} />
+      {icon === "wallet" ? <Wallet size={22} className={`shrink-0 mt-0.5 ${ic}`} /> : <PauseCircle size={22} className={`shrink-0 mt-0.5 ${ic}`} />}
       <div className="flex-1 min-w-[14rem]">
         <div className="font-bold leading-snug">{title}</div>
         <p className="text-sm text-ink-2 mt-1 leading-relaxed max-w-2xl">{text}</p>
       </div>
       {children ? <div className="flex flex-wrap gap-2 sm:self-center">{children}</div> : null}
+    </section>
+  );
+}
+
+/** «Здоровье рекламы»: балл 0–100 и чек-лист с кнопкой «исправить» у каждого невыполненного пункта */
+function HealthCard({ h }: { h: Health }) {
+  const bad = h.items.filter((x) => !x.ok).sort((a, b) => b.weight - a.weight);
+  const good = h.items.filter((x) => x.ok);
+  const tone = h.score >= 80 ? "text-good" : h.score >= 50 ? "text-warn" : "text-bad";
+  const bar = h.score >= 80 ? "bg-good" : h.score >= 50 ? "bg-warn" : "bg-bad";
+  const verdict = h.score >= 80 ? "Реклама в хорошей форме" : h.score >= 50 ? "Есть что поправить" : "Реклама работает вполсилы";
+  return (
+    <section className="card p-5 sm:p-7" aria-labelledby="health-title">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+        <div className="flex items-baseline gap-1.5">
+          <span className={`text-4xl font-extrabold tracking-tight ${tone}`}>{h.score}</span>
+          <span className="text-muted text-sm">из 100</span>
+        </div>
+        <div className="flex-1 min-w-[12rem]">
+          <h2 id="health-title" className="text-lg font-bold leading-snug">Здоровье рекламы: {verdict.toLowerCase()}</h2>
+          <div className="mt-2 h-2 rounded-full bg-paper overflow-hidden" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={h.score} aria-label="Здоровье рекламы">
+            <div className={`h-full ${bar}`} style={{ width: `${h.score}%` }} />
+          </div>
+        </div>
+      </div>
+      {bad.length ? (
+        <ul className="mt-5 grid gap-3">
+          {bad.map((x) => (
+            <li key={x.key} className="rounded-xl border border-line p-3.5 sm:p-4 flex flex-wrap items-start gap-3">
+              <CircleAlert size={18} className={`shrink-0 mt-0.5 ${x.weight >= 15 ? "text-bad" : "text-warn"}`} />
+              <div className="flex-1 min-w-[12rem]">
+                <div className="font-semibold leading-snug">{x.todo}</div>
+                {x.hint ? <p className="text-sm text-muted mt-0.5 leading-relaxed">{x.hint}</p> : null}
+              </div>
+              {x.fix ? (
+                x.fix.external ? (
+                  <a href={x.fix.href} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm shrink-0">{x.fix.label} <ExternalLink size={14} /></a>
+                ) : (
+                  <Link href={x.fix.href} className="btn btn-ghost btn-sm shrink-0">{x.fix.label}</Link>
+                )
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {good.length ? (
+        <details className="mt-4 group">
+          <summary className="cursor-pointer text-sm font-semibold text-ink-2 select-none">В порядке: {pl(good.length, "пункт", "пункта", "пунктов")}</summary>
+          <ul className="mt-2 grid gap-1.5 text-sm">
+            {good.map((x) => (
+              <li key={x.key} className="flex items-center gap-2"><CheckCircle2 size={16} className="text-good shrink-0" />{x.title}</li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
     </section>
   );
 }

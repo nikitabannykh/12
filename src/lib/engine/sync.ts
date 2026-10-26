@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, gte, inArray, sql, ne } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, or, sql, ne } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { Business, Campaign } from "../db/schema";
 import { clientFor } from "../platforms";
@@ -41,7 +41,7 @@ export async function syncBusiness(b: Business) {
       const tracked = await db
         .select({ adExt: schema.leads.adExt, day: mskDay, n: sql<number>`count(*)::int` })
         .from(schema.leads)
-        .where(and(eq(schema.leads.businessId, b.id), ne(schema.leads.kind, "suspect"), gte(schema.leads.createdAt, new Date(from))))
+        .where(and(eq(schema.leads.businessId, b.id), ne(schema.leads.kind, "suspect"), or(isNull(schema.leads.status), ne(schema.leads.status, "spam")), gte(schema.leads.createdAt, new Date(from))))
         .groupBy(schema.leads.adExt, mskDay);
       const trackedMap = new Map(tracked.filter((t) => t.adExt).map((t) => [`${t.adExt}|${t.day}`, Number(t.n)]));
 
@@ -118,4 +118,44 @@ export async function syncBusiness(b: Business) {
     }
   }
   return { errors };
+}
+
+/**
+ * Офлайн-конверсии в Метрику: заявки, которые владелец отметил «Записался» и у которых есть ClientID Метрики или yclid.
+ * Пачкой, раз в проход робота; уже загруженные помним в kv (mo:<бизнес>), чтобы не грузить дважды.
+ * Без счётчика или без подключённого Директа (токен с правом metrika:write) — тихо пропускаем.
+ * Цель pz_booked создаём при первой загрузке, если её нет (счётчики, созданные до её появления).
+ */
+const OFFLINE_DAYS = 21;
+export async function syncOfflineConversions(b: Business): Promise<{ uploaded: number; skipped?: string; error?: string }> {
+  if (!b.counterId) return { uploaded: 0, skipped: "нет счётчика Метрики" };
+  const db = await getDb();
+  const [acc] = await db.select().from(schema.adAccounts).where(and(eq(schema.adAccounts.userId, b.userId), eq(schema.adAccounts.platform, "yandex"), eq(schema.adAccounts.status, "ok")));
+  if (!acc) return { uploaded: 0, skipped: "нет доступа к Яндексу (Метрике)" };
+  const key = `mo:${b.id}`;
+  const [kvRow] = await db.select().from(schema.kv).where(eq(schema.kv.key, key));
+  const done = new Set(((kvRow?.value as { ids?: string[] } | null)?.ids ?? []));
+  const rows = await db
+    .select({ id: schema.leads.id, cid: schema.leads.metrikaClientId, yclid: schema.leads.yclid, statusAt: schema.leads.statusAt })
+    .from(schema.leads)
+    .where(and(eq(schema.leads.businessId, b.id), eq(schema.leads.status, "booked"), gte(schema.leads.statusAt, new Date(Date.now() - OFFLINE_DAYS * 864e5)), or(sql`${schema.leads.metrikaClientId} is not null`, sql`${schema.leads.yclid} is not null`)));
+  const todo = rows.filter((r) => !done.has(r.id) && r.statusAt).slice(0, 500);
+  if (!todo.length) return { uploaded: 0 };
+  try {
+    const { BOOKED_GOAL, ensureGoal, uploadOffline } = await import("../platforms/metrica");
+    const { decrypt } = await import("../crypto");
+    const token = decrypt(acc.accessToken);
+    if (!b.goalIds?.booked) {
+      const goalId = await ensureGoal(token, b.counterId, BOOKED_GOAL);
+      const goalIds = { ...(b.goalIds ?? {}), booked: goalId };
+      await db.update(schema.businesses).set({ goalIds }).where(eq(schema.businesses.id, b.id));
+      b.goalIds = goalIds;
+    }
+    const r = await uploadOffline(token, b.counterId, BOOKED_GOAL.action, todo.map((x) => ({ clientId: x.cid, yclid: x.yclid, at: x.statusAt! })));
+    const ids = [...done, ...todo.map((x) => x.id)].slice(-2000);
+    await db.insert(schema.kv).values({ key, value: { ids, at: new Date().toISOString() } }).onConflictDoUpdate({ target: schema.kv.key, set: { value: { ids, at: new Date().toISOString() }, updatedAt: new Date() } });
+    return { uploaded: r.uploaded };
+  } catch (e) {
+    return { uploaded: 0, error: errorText(e) };
+  }
 }

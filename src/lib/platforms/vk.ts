@@ -2,6 +2,8 @@ import "server-only";
 import type { AdSpec, AdState, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, StatRow, Strategy } from "./types";
 import { PlatformError } from "./types";
 import { sleep } from "../util";
+import { ctaValue, defaultFormat, fit, iconKey, imageKeyFor, legalAbout, parseBannerFormat, textKeys, type Fulltime, type VkFormat } from "./vk-formats";
+export { vkPixelSnippet, vkReachGoalJs, VK_LEAD_GOAL } from "./vk-formats";
 
 /**
  * Клиент API VK Рекламы (ads.vk.com, API v2).
@@ -35,9 +37,38 @@ const grossOf = (net: number) => Math.round(net * (1 + VK_VAT) * 100) / 100;
 
 type Tokens = { accessToken: string; refreshToken: string | null };
 
+/**
+ * Данные бизнеса, которых нет в CampaignSpec (общий тип площадок): задаются через VkAds.useBusiness() перед
+ * launchCampaign/addAd — это делает engine/regions.ts → prepareVk() (запуск) и vkAdContext() (новые объявления).
+ * Ничего не задано — поведение как раньше: регион города, без расписания, без «о компании», цель — переходы.
+ */
+export type VkBusinessContext = {
+  /** targetings.geo.local_geo (точка с радиусом); null — показ по регионам группы. С regions не совмещается (GeoTargeting) */
+  localGeo?: { visit_type: "all" | "usual" | "now"; loc_type?: ("home" | "work")[]; locations: { lat: number; lng: number; radius: number; label?: string; address?: string }[] } | null;
+  /** targetings.fulltime — дни/часы показа */
+  fulltime?: Fulltime | null;
+  /** «О компании» (about_company_115) — только юр. данные: «ИП Иванова А. А., ИНН …». Нет — блок не отправляем */
+  legalInfo?: string | null;
+  /** AdGroup.age_restrictions ("0+", "18+") */
+  ageRestrictions?: string | null;
+  /** AdPlan.priced_goal — оптимизация по цели пикселя Top@Mail.ru; null — оптимизация по переходам */
+  pricedGoal?: { name: string; source_id: number } | null;
+  /** Предупреждения подготовки (нет пикселя/цели, юр. данных) — уходят в LaunchResult.warnings */
+  notes?: string[];
+};
+
+/**
+ * Уровни повтора при 400 (запрос отклонён целиком, на площадке ничего не создано):
+ * 0 — всё; 1 — без цели, «о компании», логотипа и длинного текста, кнопка visitSite; 2 — ещё и без радиуса
+ * (регион города), расписания и возрастной метки.
+ */
+type Level = 0 | 1 | 2;
+
 export class VkAds implements PlatformClient {
   platform = "vk" as const;
   private packagesCache?: any[];
+  private formatCache = new Map<number, VkFormat>();
+  private biz: VkBusinessContext = {};
   constructor(private tokens: Tokens, private onTokens?: (t: Tokens & { expiresIn: number }) => Promise<void>) {}
 
   private async refresh() {
@@ -84,6 +115,12 @@ export class VkAds implements PlatformClient {
     return json as T;
   }
 
+  /** Данные бизнеса для таргетингов и баннеров (см. VkBusinessContext) */
+  useBusiness(ctx: VkBusinessContext) {
+    this.biz = { ...this.biz, ...ctx };
+    return this;
+  }
+
   async user() {
     return this.req("GET", "v2/user.json");
   }
@@ -110,6 +147,92 @@ export class VkAds implements PlatformClient {
     return Number(pick.id);
   }
 
+  /**
+   * Формат баннера пакета: Package.banner_format_id → BannerFormat (https://ads.vk.ru/en/doc/api/object/Package).
+   * Ресурс форматов в документации не открылся при сверке, поэтому пробуем v2/banner_formats/{id}.json и список
+   * v2/banner_formats.json; не вышло — defaultFormat() (ключи из примеров документации). Отключить: VK_ADS_FORMAT_LOOKUP=0.
+   */
+  async packageFormat(packageId: number): Promise<VkFormat> {
+    const hit = this.formatCache.get(packageId);
+    if (hit) return hit;
+    let f: VkFormat = defaultFormat();
+    if (process.env.VK_ADS_FORMAT_LOOKUP !== "0") {
+      try {
+        const pkg = (await this.packages()).find((p) => Number(p.id) === packageId);
+        const fid = Number(pkg?.banner_format_id);
+        if (fid) {
+          let raw: any = await this.req("GET", `v2/banner_formats/${fid}.json`).catch(() => null);
+          if (!raw) {
+            const list = await this.req("GET", "v2/banner_formats.json", { query: { limit: 250 } }).catch(() => null);
+            raw = (list?.items ?? []).find((x: any) => Number(x.id) === fid) ?? null;
+          }
+          const parsed = raw ? parseBannerFormat(raw) : null;
+          if (parsed?.known) f = parsed;
+        }
+      } catch {
+        /* формат по умолчанию */
+      }
+    }
+    this.formatCache.set(packageId, f);
+    return f;
+  }
+
+  /** Пакет существующей группы (для объявлений, которые робот добавляет позже) */
+  private async groupPackageId(groupExt: string): Promise<number> {
+    const g = await this.req("GET", `v2/ad_groups/${groupExt}.json`, { query: { fields: "id,package_id" } }).catch(() => null);
+    return Number(g?.package_id) || this.trafficPackageId();
+  }
+
+  // ─── Пиксель Top@Mail.ru и цель ─────────────────────────────────────────
+
+  /**
+   * Пиксель (счётчик Top@Mail.ru) в источниках данных кабинета — https://ads.vk.ru/en/doc/api/resource/RemarketingCounters
+   *  1) known — ранее сохранённый ID: проверяем, что он есть в этом кабинете (GET ?_counter_id=);
+   *  2) ищем по домену страницы и имени (в имени — наш ключ, чтобы не взять пиксель другого бизнеса на том же домене);
+   *  3) создаём: POST remarketing/counters.json {name, url}. В документации пример создания ещё с email/password
+   *     владельца Top@Mail.ru — их у нас нет; пробуем без них (VK_ADS_CREATE_PIXEL=0 — не пытаться). Не вышло — null.
+   */
+  async ensurePixel(o: { name: string; url: string; tag: string; known?: number | null }): Promise<{ counterId: number | null; note?: string }> {
+    const items = async (query: Record<string, string>) => ((await this.req("GET", "v2/remarketing/counters.json", { query: { ...query, limit: 250 } })).items ?? []) as any[];
+    const ok = (c: any) => c && c.status !== "deleted" && c.system_status !== "blocked";
+    try {
+      if (o.known) {
+        const c = (await items({ _counter_id: String(o.known) }))[0];
+        if (ok(c)) return { counterId: Number(c.counter_id) };
+      }
+      const domain = new URL(o.url).hostname;
+      const mine = (await items({ _domain: domain })).find((c) => ok(c) && String(c.name ?? "").includes(o.tag));
+      if (mine) return { counterId: Number(mine.counter_id) };
+    } catch (e) {
+      return { counterId: null, note: `не смогли прочитать пиксели кабинета (${(e as Error).message})` };
+    }
+    if (process.env.VK_ADS_CREATE_PIXEL === "0") return { counterId: null, note: "создание пикселя отключено (VK_ADS_CREATE_PIXEL=0)" };
+    try {
+      const c = await this.req("POST", "v2/remarketing/counters.json", { body: { name: `${o.name.slice(0, 60)} ${o.tag}`, url: o.url } });
+      const id = Number(c.counter_id);
+      return id ? { counterId: id } : { counterId: null, note: "VK не вернул номер пикселя" };
+    } catch (e) {
+      return { counterId: null, note: `VK не создал пиксель через API (${(e as Error).message})` };
+    }
+  }
+
+  /**
+   * Цель «заявка» пикселя для AdPlan.priced_goal {name, source_id} (https://ads.vk.ru/en/doc/api/object/PricedGoal:
+   * name — «goal identifier», source_id — «counter ID of Top@Mail.ru»). Список целей — GET v2/goals.json → topmailru[]
+   * {counter_id, goal, description} (https://ads.vk.ru/en/doc/api/resource/Goals). Создать событие через API нельзя
+   * (не документировано) — его создают в кабинете: Пиксели → Настройки → События → JS-событие с ID `lead`.
+   */
+  async leadGoal(counterId: number, goal = "lead"): Promise<{ name: string; source_id: number } | null> {
+    const j = await this.req("GET", "v2/goals.json").catch(() => null);
+    const list: any[] = (j?.topmailru ?? []).filter((g: any) => Number(g.counter_id) === counterId);
+    const want = goal.toLowerCase();
+    const hit =
+      list.find((g) => String(g.goal ?? "").toLowerCase() === want) ??
+      list.find((g) => String(g.goal ?? "").toLowerCase().endsWith(`:${want}`)) ??
+      list.find((g) => /заявк|запис|lead/i.test(`${g.goal ?? ""} ${g.description ?? ""}`));
+    return hit?.goal ? { name: String(hit.goal), source_id: counterId } : null;
+  }
+
   async createUrl(href: string): Promise<number> {
     const j = await this.req("POST", "v2/urls.json", { body: { url: href } });
     return Number(j.id);
@@ -133,37 +256,48 @@ export class VkAds implements PlatformClient {
   }
 
   /**
-   * Слот картинки в баннере. В документации («Quick start», «Add banners») встречаются image_1080x607 (16:9) и
-   * квадратный 600x600; слота image_1080x1080 там нет. Квадрат 1080×1080 VK принимает в слот 600x600 (пропорция та же).
-   * TODO: точный набор слотов задаётся форматом баннера пакета (package.banner_format_id) — читать его, когда
-   * получим доступ к API и сверим ответ на реальном кабинете.
+   * Баннер под формат пакета: ключи textblocks/content берём из формата (vk-formats.ts), а не вслепую.
+   * level ≥ 1 — без необязательного («о компании», логотип, длинный текст), кнопка visitSite.
    */
-  private contentKey(img: NonNullable<AdSpec["image"]>) {
-    const r = img.width / img.height;
-    return r > 1.3 ? "image_1080x607" : "image_600x600";
-  }
-
-  /** rich=false — только обязательные поля (если VK не принял «о компании» или логотип) */
-  private async banner(ad: AdSpec, urlId: number, rich = true) {
+  private async banner(ad: AdSpec, urlId: number, packageId: number, level: Level = 0, warn?: (s: string) => void) {
     if (!ad.title.trim() || !ad.text.trim()) throw new PlatformError("vk", "У объявления пустой заголовок или текст");
+    const f = await this.packageFormat(packageId);
+    const def = textKeys(defaultFormat());
+    const k = textKeys(f);
+    const title = k.title ?? def.title!;
+    const short = k.short ?? def.short!;
     const x = ad.extras;
     const textblocks: Record<string, { text: string; title?: string }> = {
-      title_40_vkads: { text: ad.title.slice(0, 40) },
-      text_90: { text: ad.text.slice(0, 90) },
-      text_220: { text: (x?.longText || [ad.text, ad.title2].filter(Boolean).join(". ")).slice(0, 220) },
-      cta_sites_full: { text: "signUp" },
+      [title.key]: { text: fit(ad.title, title.maxLength) },
+      [short.key]: { text: fit(ad.text, short.maxLength) },
     };
-    if (rich && x?.about) textblocks.about_company_115 = { text: x.about.slice(0, 115) };
+    const cta = k.cta ?? (f.known ? undefined : def.cta);
+    if (cta) textblocks[cta.key] = { text: ctaValue(cta, level > 0) };
+    if (level === 0) {
+      const long = k.long ?? (f.known ? undefined : def.long);
+      const longText = x?.longText || [ad.text, ad.title2].filter(Boolean).join(". ");
+      if (long && longText) textblocks[long.key] = { text: fit(longText, long.maxLength) };
+      // «О компании» — только юр. данные (справка по форматам). Нет их — блок не отправляем
+      const about = legalAbout(this.biz.legalInfo) ?? legalAbout(x?.about);
+      const aboutRole = k.about ?? (f.known ? undefined : def.about);
+      if (about && aboutRole) textblocks[aboutRole.key] = { text: fit(about, aboutRole.maxLength) };
+    }
     const content: Record<string, { id: number }> = {};
     let imageRef: string | undefined;
     if (ad.image) {
+      let key = imageKeyFor(f, ad.image.width, ad.image.height);
+      if (!key) {
+        key = imageKeyFor(defaultFormat(), ad.image.width, ad.image.height) ?? "image_600x600";
+        warn?.(`Формат VK не описывает слот для картинки ${ad.image.width}×${ad.image.height} — отправили в ${key}`);
+      }
       const id = await this.uploadImage(ad.image);
-      content[this.contentKey(ad.image)] = { id };
+      content[key] = { id };
       imageRef = String(id);
     }
-    if (rich && ad.logo) {
+    const icon = iconKey(f) ?? (f.known ? null : "icon_256x256");
+    if (level === 0 && ad.logo && icon) {
       try {
-        content.icon_256x256 = { id: await this.uploadImage(ad.logo) };
+        content[icon] = { id: await this.uploadImage(ad.logo) };
       } catch {
         /* без логотипа */
       }
@@ -224,50 +358,71 @@ export class VkAds implements PlatformClient {
       const packageId = await this.trafficPackageId();
       const daily = vkDailyNet(spec.weeklyBudget);
 
-      const buildGroups = async (rich: boolean) => {
+      const biz = this.biz;
+      warnings.push(...(biz.notes ?? []));
+      if (!biz.pricedGoal && !biz.notes?.length) warnings.push("VK: цель «заявка» не настроена — кампания оптимизируется по переходам на сайт");
+
+      const buildGroups = async (level: Level) => {
         const groups = [];
         for (const g of spec.groups) {
           const banners = [];
           for (const ad of g.ads) {
             try {
-              const b = await this.banner(ad, urlId, rich);
+              const b = await this.banner(ad, urlId, packageId, level, level === 0 ? (w) => warnings.push(w) : undefined);
               imageRefs[ad.localId] = b.imageRef;
               banners.push(b.banner);
             } catch (e) {
-              if (rich) warnings.push(`Объявление «${ad.title}»: ${(e as Error).message}`);
+              if (level === 0) warnings.push(`Объявление «${ad.title}»: ${(e as Error).message}`);
             }
           }
-          const targetings: Record<string, unknown> = {
-            geo: { regions: g.regionIds.length ? g.regionIds : [188] },
-            age: { age_list: this.age(g.ageFrom, g.ageTo) },
-          };
+          // geo: либо точка с радиусом, либо регионы — вместе нельзя (GeoTargeting)
+          const geo = level < 2 && biz.localGeo?.locations.length ? { local_geo: biz.localGeo } : { regions: g.regionIds.length ? g.regionIds : [188] };
+          const targetings: Record<string, unknown> = { geo, age: { age_list: this.age(g.ageFrom, g.ageTo) } };
           if (g.sex && g.sex !== "any") targetings.sex = [g.sex];
+          if (level < 2 && biz.fulltime) targetings.fulltime = biz.fulltime;
+          const group: Record<string, unknown> = { name: g.name.slice(0, 120), package_id: packageId, targetings, budget_limit_day: daily, date_start: spec.startDate, banners };
+          if (level < 2 && biz.ageRestrictions) group.age_restrictions = biz.ageRestrictions;
           // При бюджете на уровне кампании бюджет и дата старта групп должны ему соответствовать
-          groups.push({ name: g.name.slice(0, 120), package_id: packageId, targetings, budget_limit_day: daily, date_start: spec.startDate, banners });
+          groups.push(group);
         }
         return groups;
       };
-      const planBody = (ad_groups: unknown[]) => ({
+      const planBody = (ad_groups: unknown[], level: Level) => ({
         name, status: "blocked", objective: "traffic", autobidding_mode: "max_goals",
-        budget_limit_day: daily, date_start: spec.startDate, ad_object_type: "url", ad_object_id: urlId, ad_groups,
+        budget_limit_day: daily, date_start: spec.startDate, ad_object_type: "url", ad_object_id: urlId,
+        // Оптимизация по цели пикселя (PricedGoal). Цель пакета остаётся traffic: в списке Package.objective отдельной
+        // «конверсии на сайте» нет (https://ads.vk.ru/en/doc/api/object/Package)
+        ...(level === 0 && biz.pricedGoal ? { priced_goal: biz.pricedGoal } : {}),
+        ad_groups,
       });
-
-      try {
-        const plan = await this.req("POST", "v2/ad_plans.json", { body: planBody(await buildGroups(true)) });
+      const create = async (level: Level) => {
+        const plan = await this.req("POST", "v2/ad_plans.json", { body: planBody(await buildGroups(level), level) });
         planId = String(plan.id);
         groupIdsFromResponse = (plan.ad_groups ?? []).map((g: any) => String(g.id));
-      } catch (e) {
-        // Ответ мог потеряться, хотя план создан (таймаут, 5xx) — сначала ищем его по имени
-        planId = await this.findPlanByName(name).catch(() => null);
-        if (planId) warnings.push("VK ответил с ошибкой, но кампания создалась — используем её");
-        else if (VkAds.isValidation(e)) {
-          // 400: план не создан. Чаще всего VK не принимает необязательные «о компании» или логотип — повторяем без них
-          const plan = await this.req("POST", "v2/ad_plans.json", { body: planBody(await buildGroups(false)) });
-          planId = String(plan.id);
-          groupIdsFromResponse = (plan.ad_groups ?? []).map((g: any) => String(g.id));
-          warnings.push(`Блок «о компании» и логотип VK не принял, объявления созданы без них: ${(e as Error).message}`);
-        } else throw e;
+      };
+
+      let lastErr: unknown = null;
+      for (const level of [0, 1, 2] as Level[]) {
+        try {
+          await create(level);
+          if (level >= 1) warnings.push(`VK не принял часть настроек (${(lastErr as Error).message}) — кампания создана без цели, «о компании», логотипа и длинного текста`);
+          if (level === 2) warnings.push("…а также без радиуса вокруг адреса, расписания и возрастной метки — показ на город");
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          // Ответ мог потеряться, хотя план создан (таймаут, 5xx) — сначала ищем его по имени
+          planId = await this.findPlanByName(name).catch(() => null);
+          if (planId) {
+            warnings.push("VK ответил с ошибкой, но кампания создалась — используем её");
+            lastErr = null;
+            break;
+          }
+          if (!VkAds.isValidation(e)) throw e;
+        }
       }
+      if (lastErr) throw lastErr;
+      if (!planId) throw new PlatformError("vk", "VK не создал кампанию");
     }
     await hooks?.onCampaignCreated?.(planId);
 
@@ -313,15 +468,16 @@ export class VkAds implements PlatformClient {
 
   async addAd(_campaignExt: string, groupExt: string, ad: AdSpec, _ctx: { channel: Channel }) {
     const urlId = await this.createUrl(ad.href);
+    const packageId = await this.groupPackageId(groupExt);
     const path = `v2/ad_groups/${groupExt}/banners.json`;
-    let b = await this.banner(ad, urlId);
+    let b = await this.banner(ad, urlId, packageId, 0);
     let j;
     try {
       j = await this.req("POST", path, { body: b.banner });
     } catch (e) {
-      // Повтор без «о компании» и логотипа — только если VK отклонил запрос валидацией (значит, баннер не создан)
-      if (!VkAds.isValidation(e) || (!ad.extras?.about && !ad.logo)) throw e;
-      b = await this.banner(ad, urlId, false);
+      // Повтор без необязательных блоков — только если VK отклонил запрос валидацией (значит, баннер не создан)
+      if (!VkAds.isValidation(e)) throw e;
+      b = await this.banner(ad, urlId, packageId, 1);
       j = await this.req("POST", path, { body: b.banner });
     }
     return { adExt: String(j.id), imageRef: b.imageRef };
@@ -346,12 +502,18 @@ export class VkAds implements PlatformClient {
   /** Секция textblocks при обновлении заменяется целиком — поэтому берём текущие блоки и меняем только тексты */
   async updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string }) {
     if (!t.title.trim() || !t.text.trim()) throw new PlatformError("vk", "У объявления пустой заголовок или текст");
-    const cur = await this.req("GET", `v2/banners/${adExt}.json`, { query: { fields: "id,textblocks" } }).catch(() => ({} as any));
+    // Без текущих блоков не обновляем: POST заменил бы textblocks целиком и стёр «о компании», кнопку и длинный текст
+    const cur = await this.req("GET", `v2/banners/${adExt}.json`, { query: { fields: "id,textblocks" } });
+    if (!cur?.textblocks) throw new PlatformError("vk", "VK не отдал текущие тексты объявления — обновление отложено");
     const textblocks: Record<string, any> = { ...(cur.textblocks ?? {}) };
-    textblocks.title_40_vkads = { ...(textblocks.title_40_vkads ?? {}), text: t.title.slice(0, 40) };
-    textblocks.text_90 = { ...(textblocks.text_90 ?? {}), text: t.text.slice(0, 90) };
-    if (textblocks.text_220 || !cur.textblocks) textblocks.text_220 = { ...(textblocks.text_220 ?? {}), text: [t.text, t.title2].filter(Boolean).join(". ").slice(0, 220) };
-    if (!textblocks.cta_sites_full) textblocks.cta_sites_full = { text: "signUp" };
+    const keys = Object.keys(textblocks);
+    const len = (k: string) => Number(k.match(/_(\d+)/)?.[1]) || undefined;
+    const titleKey = keys.find((k) => /^title_\d+/.test(k)) ?? "title_40_vkads";
+    const shortKey = keys.find((k) => /^text_\d{2}$/.test(k)) ?? "text_90";
+    textblocks[titleKey] = { ...(textblocks[titleKey] ?? {}), text: fit(t.title, len(titleKey)) };
+    textblocks[shortKey] = { ...(textblocks[shortKey] ?? {}), text: fit(t.text, len(shortKey)) };
+    // Длинный текст — только если он уже есть в объявлении (ключ зависит от формата пакета)
+    for (const k of keys.filter((k) => /^text_\d{3,}$/.test(k))) textblocks[k] = { ...textblocks[k], text: fit([t.text, t.title2].filter(Boolean).join(". "), len(k)) };
     await this.req("POST", `v2/banners/${adExt}.json`, { body: { textblocks } });
   }
 

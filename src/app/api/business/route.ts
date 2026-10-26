@@ -5,7 +5,7 @@ import { getDb, schema } from "@/lib/db";
 import { normalizeUrl, plural, uid } from "@/lib/util";
 import { NICHES } from "@/lib/niches";
 import { logChange } from "@/lib/engine/ops";
-import { stripEmoji } from "@/lib/engine/extras";
+import { parseOrgId, stripEmoji } from "@/lib/engine/extras";
 
 const Body = z.object({
   name: z.string().trim().min(1, "Укажите название").max(80),
@@ -17,6 +17,8 @@ const Body = z.object({
   telegram: z.string().trim().max(60).optional().nullable(),
   hours: z.string().trim().max(80).optional().nullable(),
   siteUrl: z.string().trim().max(300).optional().nullable(),
+  orgUrl: z.string().trim().max(500).optional().nullable(),
+  legalInfo: z.string().trim().max(200).optional().nullable(),
   description: z.string().trim().max(1500).optional().default(""),
   services: z.array(z.object({ name: z.string().trim().min(1).max(80), price: z.string().trim().max(40).optional(), note: z.string().trim().max(120).optional() })).max(15).default([]),
   advantages: z.array(z.string().trim().min(1).max(100)).max(8).default([]),
@@ -29,10 +31,45 @@ const Body = z.object({
 
 const FIELD: Record<string, string> = {
   name: "Название", niche: "Чем занимаетесь", city: "Город", address: "Адрес", phone: "Телефон", whatsapp: "WhatsApp", telegram: "Telegram",
-  hours: "Часы работы", siteUrl: "Сайт", description: "Что ещё важно знать", services: "Услуги", advantages: "Преимущества",
+  hours: "Часы работы", siteUrl: "Сайт", orgUrl: "Ссылка на организацию в Яндекс Картах", legalInfo: "Юр. данные для рекламы", description: "Что ещё важно знать", services: "Услуги", advantages: "Преимущества",
   audience: "Кто ваши клиенты", offer: "Предложение для новых клиентов", review: "Отзыв клиента", monthlyBudget: "Бюджет в месяц",
   leadToClientRate: "Сколько обратившихся записываются",
 };
+
+/** Ссылка на организацию в Яндекс Картах → её ID (разбор — parseOrgId из extras.ts) и понятная ошибка, если не разобрать */
+function orgFromUrl(url: string): { orgId: string; url: string } | { error: string } {
+  const raw = url.trim();
+  if (/^\d{5,20}$/.test(raw)) return { orgId: raw, url: `https://yandex.ru/maps/org/${raw}/` };
+  let u: URL;
+  try {
+    u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+  } catch {
+    return { error: "Ссылка на организацию: не похоже на ссылку. Скопируйте её в Яндекс Картах кнопкой «Поделиться»." };
+  }
+  if (!/(^|\.)(yandex\.[a-z.]{2,6}|ya\.ru)$/i.test(u.hostname)) return { error: "Ссылка на организацию: нужна ссылка на Яндекс Карты — вида yandex.ru/maps/org/название/1234567890/." };
+  if (/\/maps\/-\//.test(u.pathname)) return { error: "Ссылка на организацию: это короткая ссылка. Откройте её в браузере и скопируйте полный адрес — вида yandex.ru/maps/org/название/1234567890/." };
+  const orgId = parseOrgId(u.toString());
+  if (!orgId) return { error: "Ссылка на организацию: не нашли в ней номер организации. Откройте свою карточку (а не поиск или адрес) и скопируйте ссылку — вида yandex.ru/maps/org/название/1234567890/." };
+  return { orgId, url: u.toString().slice(0, 500) };
+}
+
+/** ИНН: 10 цифр (организация) или 12 (ИП, самозанятый) с проверкой контрольных цифр */
+function innValid(inn: string) {
+  const d = inn.split("").map(Number);
+  const sum = (w: number[]) => (w.reduce((s, k, i) => s + k * d[i], 0) % 11) % 10;
+  if (d.length === 10) return sum([2, 4, 10, 3, 5, 9, 4, 6, 8]) === d[9];
+  if (d.length === 12) return sum([7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) === d[10] && sum([3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) === d[11];
+  return false;
+}
+
+/** «ИП Иванова А. С., ИНН 165012345678» — форма, название и ИНН. Возвращает текст ошибки или null. */
+function legalError(v: string): string | null {
+  if (!/(^|[^\p{L}])(ИП|ООО|АО|ПАО|ЗАО|НКО|АНО|самозанят[\p{L}]*|индивидуальный предприниматель)([^\p{L}]|$)/iu.test(v)) return "Юр. данные: укажите форму — ИП, ООО или «самозанятый»";
+  const nums = v.match(/\d[\d\s]{8,14}\d/g)?.map((x) => x.replace(/\s/g, "")).filter((x) => x.length === 10 || x.length === 12) ?? [];
+  if (!nums.length) return "Юр. данные: укажите ИНН — 12 цифр у ИП и самозанятых, 10 у ООО";
+  if (!nums.some(innValid)) return "Юр. данные: ИНН не сходится — проверьте цифры (ошибка в одной цифре — частая причина отказа в маркировке)";
+  return null;
+}
 
 /** Понятная ошибка по-русски: «Услуга 2 — название: не длиннее 80 символов» */
 function ruIssue(iss: z.core.$ZodIssue): string {
@@ -75,10 +112,24 @@ export const POST = route(async ({ user, business, req }) => {
     advantages: raw.advantages.map((a) => se(a)),
   };
   if (!d.name) return fail("Название: напишите буквами, без одних эмодзи");
+  // Организация в Картах и юр. данные — необязательные, но если указаны, должны быть правильными
+  let org: { orgUrl: string | null; orgId: string | null } = { orgUrl: null, orgId: null };
+  if (d.orgUrl) {
+    const p = orgFromUrl(d.orgUrl);
+    if ("error" in p) return fail(p.error);
+    org = { orgUrl: p.url, orgId: p.orgId };
+  }
+  const legalInfo = d.legalInfo ? stripEmoji(d.legalInfo).replace(/\s+/g, " ").trim() || null : null;
+  if (legalInfo) {
+    const err = legalError(legalInfo);
+    if (err) return fail(err);
+  }
   const db = await getDb();
   const values = {
     ...d,
     siteUrl: normalizeUrl(d.siteUrl),
+    ...org,
+    legalInfo,
     services: d.services.filter((s) => s.name).map((s) => ({ name: s.name, ...(s.price ? { price: s.price } : {}), ...(s.note ? { note: s.note } : {}) })),
     advantages: d.advantages.filter(Boolean),
     updatedAt: new Date(),

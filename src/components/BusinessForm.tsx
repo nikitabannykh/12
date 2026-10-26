@@ -9,6 +9,7 @@ import type { Service } from "@/lib/db/schema";
 type NicheLite = { id: string; label: string; examples: string[] };
 export type BusinessInput = {
   name: string; niche: string; city: string; address: string; phone: string; whatsapp: string; telegram: string; hours: string; siteUrl: string;
+  orgUrl: string; legalInfo: string;
   description: string; services: Service[]; advantages: string[]; audience: string; offer: string; review: string; leadToClientRate: number;
 };
 
@@ -52,7 +53,7 @@ export function BusinessForm({ initial, niches, next, aiOn, nicheLock = null }: 
         services: f.services.filter((s) => s.name.trim()).map((s) => ({ name: s.name.trim(), price: s.price?.trim() || undefined })),
         advantages: f.advantages.map((a) => a.trim()).filter(Boolean),
         address: f.address || null, phone: f.phone || null, whatsapp: f.whatsapp || null, telegram: f.telegram || null, hours: f.hours || null,
-        siteUrl: f.siteUrl || null, audience: f.audience || null, offer: f.offer || null, review: f.review || null,
+        siteUrl: f.siteUrl || null, orgUrl: f.orgUrl.trim() || null, legalInfo: f.legalInfo.trim() || null, audience: f.audience || null, offer: f.offer || null, review: f.review || null,
       });
       router.push(next);
       router.refresh();
@@ -95,10 +96,28 @@ export function BusinessForm({ initial, niches, next, aiOn, nicheLock = null }: 
           <input id="address" className="field" value={f.address} onChange={(e) => set("address", e.target.value)} placeholder="ул. Баумана, 15 — у метро «Кремлёвская»" maxLength={200} />
           <p className="hint mt-1.5">Ориентир вроде метро или ТЦ помогает: «рядом с домом» — частая причина выбрать салон.</p>
         </div>
-        <div>
-          <label className="label" htmlFor="hours">Часы работы</label>
-          <input id="hours" className="field" value={f.hours} onChange={(e) => set("hours", e.target.value)} placeholder="Ежедневно 10:00–21:00" maxLength={80} />
+        <div id="hours" className="scroll-mt-24">
+          <label className="label" htmlFor="hours-input">Часы работы</label>
+          <input id="hours-input" className="field" value={f.hours} onChange={(e) => set("hours", e.target.value)} placeholder="Ежедневно 10:00–21:00" maxLength={80} />
           <p className="hint mt-1.5">Покажем под объявлением вместе с адресом и телефоном. Не указаны часы — визитку в Директе не создаём, чтобы не показывать неверное время.</p>
+        </div>
+      </section>
+
+      <section className={section}>
+        <h2 className="text-lg font-bold">Карты и документы</h2>
+        <div id="org" className="scroll-mt-24">
+          <label className="label" htmlFor="org-url">Ссылка на организацию в Яндекс Картах</label>
+          <input id="org-url" className="field" value={f.orgUrl} onChange={(e) => set("orgUrl", e.target.value)} placeholder="yandex.ru/maps/org/lak/1234567890" inputMode="url" maxLength={500} />
+          <p className="hint mt-1.5">
+            Откройте свою карточку в Яндекс Картах → «Поделиться» → «Скопировать ссылку». С ней реклама показывается на Картах и в списке организаций, а звонки из объявлений считаются как обращения. Карточки нет — добавьте бизнес в Яндекс Бизнесе (бесплатно).
+          </p>
+        </div>
+        <div>
+          <label className="label" htmlFor="legal">Юр. данные для рекламы: ИП или ООО и ИНН</label>
+          <input id="legal" className="field" value={f.legalInfo} onChange={(e) => set("legalInfo", e.target.value)} placeholder="ИП Иванова А. С., ИНН 165012345678" maxLength={200} />
+          <p className="hint mt-1.5">
+            По закону о рекламе каждое объявление маркируется: площадка передаёт данные рекламодателя в реестр (ЕРИР). VK Реклама без них не пропускает объявления, а в блоке «о компании» показывает форму и название. ИНН — 12 цифр у ИП, 10 у ООО.
+          </p>
         </div>
       </section>
 

@@ -4,8 +4,8 @@ import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 import { Check, ImagePlus, Loader2, Pencil, Sparkles, Trash2, TriangleAlert } from "lucide-react";
 import { api, Modal, Toggle, useToast } from "./client";
-import { SearchAdPreview, ImageAdPreview } from "./AdPreview";
-import { adExtras, withPlanCallouts, type ExtrasBiz } from "@/lib/engine/extras";
+import { SearchAdPreview, ImageAdPreview, ResponsiveAssets } from "./AdPreview";
+import { adExtras, responsiveAssets, withPlanCallouts, type ExtrasBiz } from "@/lib/engine/extras";
 import { allocate, forecast, minMonthlyFor } from "@/lib/engine/budget";
 import type { LaunchPlan, PlanAd, PublishStep } from "@/lib/engine/launch";
 import type { Channel } from "@/lib/platforms/types";
@@ -370,6 +370,9 @@ export function LaunchWizard(p: Props) {
                   <div key={g.id} className="mt-4">
                     <div className="font-semibold">{g.name}</div>
                     <div className="text-sm text-muted">{g.audience}</div>
+                    {ch.channel !== "vk" && g.ads.filter((a) => a.enabled).length > 3 ? (
+                      <div className="text-sm text-warn mt-1">В группе Директа может работать не больше 3 объявлений — оставьте включёнными три, остальные не отправим.</div>
+                    ) : null}
                     {g.keywords.length && ch.channel === "search" ? (
                       <details className="mt-1 text-sm">
                         <summary className="cursor-pointer text-ink-2 font-medium">Запросы: {g.keywords.slice(0, 3).join(", ")}{g.keywords.length > 3 ? ` и ещё ${g.keywords.length - 3}` : ""}</summary>
@@ -384,6 +387,10 @@ export function LaunchWizard(p: Props) {
                           ) : (
                             <ImageAdPreview channel={ch.channel} title={ad.title} text={ad.text} host={ch.channel === "vk" ? p.business.name : p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={adExtras(p.biz, { channel: ch.channel, href: p.href, text: ad.text })} logo={p.logo} />
                           )}
+                          {ch.channel !== "vk" && ch.platform !== "vk" ? (() => {
+                            const ra = responsiveAssets(p.biz, ad, { service: ch.channel === "search" ? g.name : null });
+                            return <ResponsiveAssets titles={ra.titles} texts={ra.texts} className="mt-1.5" />;
+                          })() : null}
                           <div className="mt-1.5 flex items-center justify-between gap-2 text-xs">
                             <span className="text-muted">Идея: {ANGLE[ad.angle] ?? ad.angle}</span>
                             <span className="flex items-center gap-1">

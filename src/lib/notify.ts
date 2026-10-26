@@ -156,12 +156,12 @@ export async function saveNotify(businessId: string, set: Partial<typeof schema.
 }
 
 /** Отправить сообщение в привязанный чат. Если бот заблокирован — отвязываем, чтобы не долбить. */
-export async function sendToBusiness(businessId: string, html: string): Promise<{ ok: boolean; error?: string }> {
+export async function sendToBusiness(businessId: string, html: string, extra: Record<string, unknown> = {}): Promise<{ ok: boolean; error?: string }> {
   if (!tgConfigured()) return { ok: false, error: "Telegram не настроен на сервере" };
   const s = await getNotify(businessId);
   if (!s?.telegramChatId) return { ok: false, error: "Telegram не подключён" };
   try {
-    await tg("sendMessage", { chat_id: s.telegramChatId, text: html, parse_mode: "HTML", link_preview_options: { is_disabled: true } });
+    await tg("sendMessage", { chat_id: s.telegramChatId, text: html, parse_mode: "HTML", link_preview_options: { is_disabled: true }, ...extra });
     return { ok: true };
   } catch (e) {
     if (e instanceof TgError && (e.code === 403 || /chat not found|bot was kicked|user is deactivated/i.test(e.message))) {
@@ -182,11 +182,12 @@ export async function sendToBusiness(businessId: string, html: string): Promise<
 
 const reply = (chatId: number | string, text: string, extra: Record<string, unknown> = {}) => tg("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", ...extra }).catch(() => {});
 
+type TgButton = { text: string; callback_data?: string; url?: string };
 type TgChat = { id: number; type?: string; title?: string; username?: string; first_name?: string; last_name?: string };
 type TgUpdate = {
   update_id: number;
   message?: { text?: string; chat: TgChat };
-  callback_query?: { id: string; data?: string; message?: { message_id: number; chat: TgChat } };
+  callback_query?: { id: string; data?: string; message?: { message_id: number; chat: TgChat; reply_markup?: { inline_keyboard?: TgButton[][] } } };
 };
 
 const chatName = (chat: TgChat) => (chat.title || (chat.username ? `@${chat.username}` : [chat.first_name, chat.last_name].filter(Boolean).join(" ")) || "Telegram").slice(0, 80);
@@ -199,6 +200,62 @@ async function businessName(id: string) {
 
 const STALE = `Ссылка не сработала: она одноразовая и действует ${LINK_TTL_MIN} минут. Откройте «Настройки» в сервисе «Полный зал» и нажмите «Подключить Telegram» ещё раз.`;
 
+
+/** Чат, нажавший кнопку, должен быть тем самым, куда этот бизнес получает уведомления */
+async function chatOwns(businessId: string, chat: TgChat) {
+  const s = await getNotify(businessId);
+  return Boolean(s?.telegramChatId) && s!.telegramChatId === String(chat.id);
+}
+
+// ─── Статус заявки в один тап: кнопки под сообщением о заявке (callback_data «ls:<id заявки>:b|n|s») ───
+const LS_CODE = { b: "booked", n: "no_answer", s: "spam" } as const;
+const LS_TEXT: Record<string, string> = { booked: "Записался", no_answer: "Не дозвонились", spam: "Спам" };
+
+export function leadKeyboard(leadId: string, status: string | null): TgButton[][] {
+  const btn = (code: keyof typeof LS_CODE) => {
+    const st = LS_CODE[code];
+    return { text: `${status === st ? "✓ " : ""}${LS_TEXT[st]}`, callback_data: `ls:${leadId}:${code}` };
+  };
+  return [[btn("b"), btn("n")], [btn("s")]];
+}
+
+async function onLeadStatus(leadId: string, code: string | undefined, chat: TgChat, answer: (t?: string) => Promise<unknown>, setKeyboard: (k: TgButton[][]) => Promise<unknown>) {
+  const st = LS_CODE[code as keyof typeof LS_CODE];
+  if (!st || !/^[\w-]{4,64}$/.test(leadId)) return void (await answer());
+  const db = await getDb();
+  const [lead] = await db.select({ id: schema.leads.id, businessId: schema.leads.businessId, status: schema.leads.status }).from(schema.leads).where(eq(schema.leads.id, leadId));
+  if (!lead || !(await chatOwns(lead.businessId, chat))) return void (await answer("Эта заявка не из вашего кабинета или чат отключён от уведомлений"));
+  // Повторное нажатие на выбранный статус снимает отметку
+  const next = lead.status === st ? null : st;
+  const { setLeadStatus } = await import("./engine/ops");
+  await setLeadStatus(lead.businessId, lead.id, next);
+  await setKeyboard(leadKeyboard(lead.id, next));
+  await answer(next ? `Отмечено: ${LS_TEXT[next]}` : "Отметка снята");
+}
+
+// ─── «Отменить» в утренней сводке (callback_data «rv:<id изменения>») ───
+async function onRevert(changeId: string, chat: TgChat, answer: (t?: string) => Promise<unknown>, keyboard: TgButton[][], setKeyboard: (k: TgButton[][]) => Promise<unknown>) {
+  if (!/^[\w-]{4,64}$/.test(changeId)) return void (await answer());
+  const db = await getDb();
+  const [ch] = await db.select({ id: schema.changes.id, businessId: schema.changes.businessId, title: schema.changes.title }).from(schema.changes).where(eq(schema.changes.id, changeId));
+  if (!ch || !(await chatOwns(ch.businessId, chat))) return void (await answer("Это изменение не из вашего кабинета или чат отключён от уведомлений"));
+  const mark = async (label: string) => setKeyboard(keyboard.map((row) => row.map((b) => (b.callback_data === `rv:${changeId}` ? { text: label, callback_data: "noop:x" } : b))));
+  try {
+    const { revertChange } = await import("./engine/ops");
+    await revertChange(ch.businessId, ch.id, "owner");
+    await mark(`✓ Отменено: ${short(ch.title, 40)}`);
+    await answer("Отменили — вернули как было");
+  } catch (e) {
+    const status = (e as { status?: number }).status;
+    const msg = e instanceof Error && status ? e.message : "Не получилось отменить. Попробуйте в разделе «История» сервиса.";
+    if (status === 409 && /уже отменено/i.test(msg)) await mark(`Уже отменено: ${short(ch.title, 40)}`);
+    // У всплывающего ответа лимит 200 символов
+    await answer(msg.slice(0, 190));
+  }
+}
+
+const short = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
+
 /** Обработка сообщений боту: /start <код> — спросить подтверждение, кнопка «Подключить» — привязать, /stop — отвязать */
 export async function processUpdate(u: TgUpdate) {
   const db = await getDb();
@@ -206,9 +263,12 @@ export async function processUpdate(u: TgUpdate) {
   if (cq) {
     const answer = (text?: string) => tg("answerCallbackQuery", { callback_query_id: cq.id, ...(text ? { text } : {}) }).catch(() => {});
     const chat = cq.message?.chat;
-    const [act, code] = String(cq.data || "").split(":");
+    const [act, code, arg] = String(cq.data || "").split(":");
     if (!chat || !code) return void (await answer());
     const edit = (text: string) => tg("editMessageText", { chat_id: chat.id, message_id: cq.message!.message_id, text, parse_mode: "HTML" }).catch(() => {});
+    const setKeyboard = (inline_keyboard: unknown[][]) => tg("editMessageReplyMarkup", { chat_id: chat.id, message_id: cq.message!.message_id, reply_markup: { inline_keyboard } }).catch(() => {});
+    if (act === "ls") return void (await onLeadStatus(code, arg, chat, answer, setKeyboard));
+    if (act === "rv") return void (await onRevert(code, chat, answer, cq.message?.reply_markup?.inline_keyboard ?? [], setKeyboard));
     if (act === "no") {
       await answer();
       await edit("Не подключили. Если это была не ваша ссылка — всё в порядке, ничего не изменилось.");
@@ -278,7 +338,7 @@ export function formatPhone(p: string) {
 const SOURCE: Record<string, string> = { yandex: "Яндекс Директ", vk: "VK Реклама", demo: "демо-реклама" };
 
 /** Сообщение о новой заявке — сразу после записи в базу */
-export async function notifyLead(l: { businessId: string; businessName: string; name: string | null; contact: string; service: string | null; source: string | null; adTitle: string | null }) {
+export async function notifyLead(l: { leadId?: string; businessId: string; businessName: string; name: string | null; contact: string; service: string | null; source: string | null; adTitle: string | null }) {
   if (!tgConfigured()) return { ok: false };
   const lines = [
     `<b>Новая заявка</b> · ${esc(l.businessName)}`,
@@ -289,8 +349,9 @@ export async function notifyLead(l: { businessId: string; businessName: string; 
     l.source ? `Откуда: ${esc(SOURCE[l.source] ?? l.source)}${l.adTitle ? `, объявление «${esc(l.adTitle)}»` : ""}` : "Откуда: страница записи",
     "",
     "Перезвоните в ближайшие 15 минут — так записывается больше людей.",
+    l.leadId ? "После звонка отметьте, чем закончилось, — так робот считает настоящую стоимость клиента." : null,
   ].filter((x) => x !== null);
-  return sendToBusiness(l.businessId, lines.join("\n"));
+  return sendToBusiness(l.businessId, lines.join("\n"), l.leadId ? { reply_markup: { inline_keyboard: leadKeyboard(l.leadId, null) } } : {});
 }
 
 /** Всплеск заявок: шлём одно предупреждение вместо десятков сообщений */
@@ -306,8 +367,12 @@ export async function notifySuspect(businessId: string, name: string, perHour: n
   ].join("\n"));
 }
 
-/** Утренняя сводка за вчера: расход, обращения, что сделал робот. null — если сообщать нечего. */
-export async function buildDigest(businessId: string): Promise<string | null> {
+/**
+ * Утренняя сводка за вчера: расход, обращения, что сделал робот. null — если сообщать нечего.
+ * Под сводкой — кнопки «Отменить» для изменений робота за последние сутки (те же проверки, что в «Истории»).
+ */
+export type Digest = { text: string; keyboard: TgButton[][] };
+export async function buildDigest(businessId: string): Promise<Digest | null> {
   const db = await getDb();
   const [b] = await db.select().from(schema.businesses).where(eq(schema.businesses.id, businessId));
   if (!b) return null;
@@ -322,9 +387,9 @@ export async function buildDigest(businessId: string): Promise<string | null> {
   const [own] = await db
     .select({ n: sql<number>`count(*)::int`, untracked: sql<number>`count(*) filter (where ${schema.leads.adExt} is null)::int`, forms: sql<number>`count(*) filter (where ${schema.leads.contact} is not null)::int` })
     .from(schema.leads)
-    .where(and(eq(schema.leads.businessId, b.id), ne(schema.leads.kind, "suspect"), gte(schema.leads.createdAt, dayStart), lt(schema.leads.createdAt, dayEnd)));
+    .where(and(eq(schema.leads.businessId, b.id), ne(schema.leads.kind, "suspect"), or(isNull(schema.leads.status), ne(schema.leads.status, "spam")), gte(schema.leads.createdAt, dayStart), lt(schema.leads.createdAt, dayEnd)));
   const robot = await db
-    .select({ title: schema.changes.title })
+    .select({ id: schema.changes.id, title: schema.changes.title, undo: schema.changes.undo })
     .from(schema.changes)
     .where(and(eq(schema.changes.businessId, b.id), eq(schema.changes.actor, "robot"), gte(schema.changes.at, addDays(now, -1)), isNull(schema.changes.revertedAt)))
     .orderBy(schema.changes.at)
@@ -343,8 +408,10 @@ export async function buildDigest(businessId: string): Promise<string | null> {
     for (const c of changes.slice(0, 5)) out.push(`• ${esc(c.title)}`);
     if (changes.length > 5) out.push(`…и ещё ${changes.length - 5}`);
   } else out.push("", "Робот ничего не менял: всё идёт по плану.");
-  out.push("", `Подробнее и отмена любого шага: ${appUrl()}/app/history`);
-  return out.join("\n");
+  const undoable = changes.slice(0, 5).filter((c) => c.undo?.length);
+  if (undoable.length) out.push("", "Не согласны с шагом — нажмите «Отменить» под сообщением.");
+  out.push("", `Подробнее: ${appUrl()}/app/history`);
+  return { text: out.join("\n"), keyboard: undoable.map((c) => [{ text: `Отменить: ${short(c.title, 48)}`, callback_data: `rv:${c.id}` }]) };
 }
 
 /** Разослать утренние сводки (раз в ~сутки на бизнес). Вызывается из cron после прохода робота. */
@@ -360,8 +427,8 @@ export async function sendDigests(deadlineMs = 8000) {
   for (const s of list) {
     if (Date.now() - started > deadlineMs) break;
     try {
-      const text = await buildDigest(s.businessId);
-      if (text && (await sendToBusiness(s.businessId, text)).ok) sent++;
+      const d = await buildDigest(s.businessId);
+      if (d && (await sendToBusiness(s.businessId, d.text, d.keyboard.length ? { reply_markup: { inline_keyboard: d.keyboard } } : {})).ok) sent++;
       else skipped++;
     } catch (e) {
       console.error("digest", s.businessId, e);

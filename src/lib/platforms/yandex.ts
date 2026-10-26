@@ -1,8 +1,8 @@
 import "server-only";
 import type { AuctionRow } from "./types";
-import type { Sitelink, VCard } from "../engine/extras";
+import type { Sitelink } from "../engine/extras";
 import type {
-  AdSpec, AdState, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy,
+  AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy,
 } from "./types";
 import { PlatformError } from "./types";
 import { sleep, uid } from "../util";
@@ -11,6 +11,14 @@ import { sleep, uid } from "../util";
  * Клиент API Яндекс Директа.
  * Кампании создаются как Единые перфоманс-кампании (UnifiedCampaign) — это основной тип Директа.
  * Для ЕПК нужна версия API v501; отчёты работают через сервис Reports (v5).
+ *
+ * Объявления — комбинаторные (ResponsiveAd): с 30 июня текстово-графические объявления в ЕПК доступны только для
+ * редактирования (https://yandex.ru/dev/direct/doc/ru/objects/ad, https://yandex.ru/dev/direct/doc/ru/update-tga).
+ * ResponsiveAd: Titles 1–7 (до 56 символов, слово до 22), Texts 1–3 (до 81, слово до 23), AdImageHashes 1–5,
+ * Href и/или BusinessId, SitelinkSetId и DisplayUrlPath — только вместе с Href, AdExtensionIds до 50, PriceExtension,
+ * ErirAdDescription (https://yandex.ru/dev/direct/doc/ru/ads/add). VCardId в ResponsiveAd нет — вместо визитки профиль
+ * организации (BusinessId), который должен быть опубликован (businesses.get → IsPublished = YES).
+ * В группе — не больше 3 неархивных комбинаторных объявлений и 10 вместе с архивными (objects/ad).
  */
 const sandbox = () => process.env.YANDEX_DIRECT_SANDBOX === "true";
 const host = () => (sandbox() ? "https://api-sandbox.direct.yandex.com" : "https://api.direct.yandex.com");
@@ -60,6 +68,51 @@ export function fitSitelinks<T extends { title: string }>(list: T[]): T[] {
   const first = take(pool, SITELINKS_GROUP_TOTAL);
   if (first.out.length < 4) return first.out;
   return [...first.out, ...take(first.rest, SITELINKS_GROUP_TOTAL).out];
+}
+
+/** Лимит Директа на комбинаторные объявления в группе: 3 неархивных, 10 вместе с архивными */
+export const DIRECT_AD_LIMITS: AdLimits = { nonArchived: 3, total: 10 };
+
+/** Ограничения ResponsiveAd (ads.add): заголовок до 56 символов (слово до 22), текст до 81 (слово до 23) */
+const RA = { titles: 7, texts: 3, title: 56, text: 81, titleWord: 22, textWord: 23, images: 5 } as const;
+const fitsWords = (s: string, max: number) => s.split(/\s+/).every((w) => w.length <= max);
+
+/**
+ * Заголовки и тексты комбинаторного объявления: основной первым, затем дополнительные из AdSpec.titles/texts.
+ * Без списков — основной заголовок и, если влезает, склейка «Заголовок. Второй заголовок» (так Директ сам поступает
+ * со вторым заголовком при переводе ТГО в комбинаторные).
+ */
+export function responsiveTexts(ad: Pick<AdSpec, "title" | "title2" | "text" | "titles" | "texts">) {
+  const uniq = (list: (string | null | undefined)[], max: number, word: number, limit: number, first: string) => {
+    const out: string[] = [first];
+    const seen = new Set([first.toLowerCase()]);
+    for (const x of list) {
+      const t = (x ?? "").replace(/\s+/g, " ").trim();
+      if (!t || seen.has(t.toLowerCase()) || t.length > max || !fitsWords(t, word)) continue;
+      seen.add(t.toLowerCase());
+      out.push(t);
+      if (out.length >= limit) break;
+    }
+    return out;
+  };
+  const title = ad.title.trim(), text = ad.text.trim();
+  const merged = ad.title2?.trim() ? `${title.replace(/[.!]$/, "")}. ${ad.title2.trim()}` : null;
+  return {
+    titles: uniq([...(ad.titles ?? []), merged], RA.title, RA.titleWord, RA.titles, title),
+    texts: uniq(ad.texts ?? [], RA.text, RA.textWord, RA.texts, text),
+  };
+}
+
+/**
+ * Автотаргетинг без брендов конкурентов и слишком широких запросов (keywords.add → AutotargetingSettings,
+ * https://yandex.ru/dev/direct/doc/ru/keywords/add). Категории без явного YES/NO Директ считает включёнными,
+ * поэтому передаём все. В сетях «широкие» оставляем: там это охват интересов, а не мусорные запросы.
+ */
+export function autotargetingSettings(channel: Channel) {
+  return {
+    Categories: { Exact: "YES", Narrow: "YES", Alternative: "YES", Accessory: "NO", Broader: channel === "network" ? "YES" : "NO" },
+    BrandOptions: { WithoutBrands: "YES", WithAdvertiserBrand: "YES", WithCompetitorsBrand: "NO" },
+  };
 }
 
 /** utm-метки объявления переносим в ссылки дополнений — иначе клики по быстрым ссылкам теряют атрибуцию */
@@ -124,7 +177,7 @@ export class YandexDirect implements PlatformClient {
     return list;
   }
 
-  private strategy(channel: Channel, weeklyBudget: number, strategy: Strategy, goalId?: number | null, bidCeiling?: number | null) {
+  private strategy(channel: Channel, weeklyBudget: number, strategy: Strategy, goalId?: number | null, bidCeiling?: number | null, placements?: Record<string, "YES" | "NO"> | null) {
     // Потолок ставки ограничивает, сколько автостратегия готова платить за клик, — а значит, и место в выдаче
     const ceiling = bidCeiling && channel === "search" ? { BidCeiling: micros(bidCeiling) } : {};
     const active =
@@ -132,7 +185,8 @@ export class YandexDirect implements PlatformClient {
         ? { BiddingStrategyType: "WB_MAXIMUM_CONVERSION_RATE", WbMaximumConversionRate: { WeeklySpendLimit: micros(netOfVat(weeklyBudget)), GoalId: goalId, ...ceiling } }
         : { BiddingStrategyType: "WB_MAXIMUM_CLICKS", WbMaximumClicks: { WeeklySpendLimit: micros(netOfVat(weeklyBudget)), ...ceiling } };
     const off = { BiddingStrategyType: "SERVING_OFF" };
-    return channel === "search" ? { Search: active, Network: off } : { Search: off, Network: active };
+    // Места показов на поиске (UnifiedCampaign BiddingStrategy.Search.PlacementTypes): Карты и список организаций — с профилем организации
+    return channel === "search" ? { Search: placements ? { ...active, PlacementTypes: placements } : active, Network: off } : { Search: off, Network: active };
   }
 
   /**
@@ -148,32 +202,14 @@ export class YandexDirect implements PlatformClient {
     const late = () => spec.deadline !== undefined && Date.now() > spec.deadline;
     this.onImageUploaded = hooks?.onImageUploaded;
 
+    // Профиль организации: привязываем, только если он опубликован и доступен этому логину
+    const businessId = await this.linkableBusiness(spec.orgId, warnings);
+
     let campaignExt = resume?.campaignExt ?? null;
     if (!campaignExt) {
-      const unified: Record<string, unknown> = {
-        BiddingStrategy: this.strategy(spec.channel, spec.weeklyBudget, spec.strategy, spec.goalId),
-        Settings: [
-          { Option: "ADD_METRICA_TAG", Value: "YES" },
-          { Option: "ENABLE_SITE_MONITORING", Value: "YES" },
-          { Option: "ALTERNATIVE_TEXTS_ENABLED", Value: "YES" },
-        ],
-      };
-      if (spec.counterId) unified.CounterIds = { Items: [spec.counterId] };
-      if (spec.counterId && spec.goalId) unified.PriorityGoals = { Items: [{ GoalId: spec.goalId, Value: micros(1000) }] };
-
-      const campaign: Record<string, unknown> = {
-        Name: spec.name.slice(0, 255),
-        StartDate: spec.startDate,
-        UnifiedCampaign: unified,
-      };
-      if (spec.negativeKeywords.length) campaign.NegativeKeywords = { Items: spec.negativeKeywords.slice(0, 1000) };
-
-      const res = await this.call("campaigns", "add", { Campaigns: [campaign] });
-      const [c] = this.items(res.AddResults, "Кампания", warnings);
-      campaignExt = String(c.Id);
+      campaignExt = await this.addCampaign(spec, businessId, warnings);
       await hooks?.onCampaignCreated?.(campaignExt);
     }
-
     const out: LaunchResult = { campaignExt, groups: [], warnings, complete: true };
     for (const g of spec.groups) {
       const done = resume?.groups[g.localId];
@@ -187,34 +223,23 @@ export class YandexDirect implements PlatformClient {
         }
       }
       if (!groupExt) {
-        const gr = await this.call("adgroups", "add", {
-          AdGroups: [{ Name: g.name.slice(0, 255), CampaignId: Number(campaignExt), RegionIds: g.regionIds, UnifiedAdGroup: { OfferRetargeting: "NO" } }],
-        });
-        const [gi] = this.items(gr.AddResults, `Группа «${g.name}»`, warnings);
-        groupExt = String(gi.Id);
-
-        const keywords = [...new Set(g.keywords.map((k) => k.trim()).filter(Boolean))].slice(0, 200);
-        if (g.autotargeting) keywords.push("---autotargeting");
-        if (keywords.length) {
-          try {
-            const kr = await this.call("keywords", "add", { Keywords: keywords.map((Keyword) => ({ Keyword, AdGroupId: Number(groupExt) })) });
-            for (const [i, r] of ((kr.AddResults ?? []) as DirectItemResult[]).entries()) {
-              if (r.Errors?.length) warnings.push(`Фраза «${keywords[i]}» не добавлена: ${r.Errors[0].Message}`);
-            }
-          } catch (e) {
-            warnings.push(`Ключевые фразы группы «${g.name}»: ${(e as Error).message}`);
-          }
-        }
+        groupExt = await this.createGroup(campaignExt, g, spec.channel, warnings);
         await hooks?.onGroupCreated?.(g.localId, groupExt);
       }
 
       const created: LaunchResult["groups"][number]["ads"] = [];
       if (todo.length) {
-        // Готовим все объявления группы (картинки, уточнения, ссылки, визитка), затем одним ads.add
-        const built: { ad: AdSpec; b: Awaited<ReturnType<YandexDirect["buildTextAd"]>> }[] = [];
-        for (const ad of todo) {
+        // Готовим все объявления группы (картинки, уточнения, быстрые ссылки), затем одним ads.add.
+        // В группе не больше 3 неархивных комбинаторных объявлений: лишние не отправляем, а честно пишем почему.
+        const room = Math.max(0, DIRECT_AD_LIMITS.nonArchived - Object.keys(known).length);
+        const built: { ad: AdSpec; b: Awaited<ReturnType<YandexDirect["buildResponsiveAd"]>> }[] = [];
+        for (const [i, ad] of todo.entries()) {
+          if (i >= room) {
+            created.push({ localId: ad.localId, adExt: null, error: `В группе Директа может быть не больше ${DIRECT_AD_LIMITS.nonArchived} объявлений — это не отправили` });
+            continue;
+          }
           try {
-            built.push({ ad, b: await this.buildTextAd(campaignExt, ad, warnings) });
+            built.push({ ad, b: await this.buildResponsiveAd(ad, warnings, businessId) });
           } catch (e) {
             created.push({ localId: ad.localId, adExt: null, error: (e as Error).message });
           }
@@ -223,7 +248,7 @@ export class YandexDirect implements PlatformClient {
         if (built.length) {
           try {
             const res = await this.call("ads", "add", {
-              Ads: built.map(({ b }) => ({ AdGroupId: Number(groupExt), TextAd: { ...b.textAd, ...Object.fromEntries(b.optional.map(([k, , v]) => [k, v])) } })),
+              Ads: built.map(({ b }) => ({ AdGroupId: Number(groupExt), ResponsiveAd: { ...b.ad, ...Object.fromEntries(b.optional.map(([k, , v]) => [k, v])) } })),
             });
             batch = (res.AddResults ?? []) as DirectItemResult[];
           } catch {
@@ -297,7 +322,6 @@ export class YandexDirect implements PlatformClient {
   }
 
   private calloutCache = new Map<string, number>();
-  private vcardCache = new Map<string, number | null>();
 
   /** Уточнения переиспользуем: у Директа они общие на весь аккаунт */
   private async callouts(texts: string[], warnings?: string[]): Promise<number[]> {
@@ -336,77 +360,193 @@ export class YandexDirect implements PlatformClient {
     }
   }
 
-  /** Визитка: адрес, телефон и часы работы под объявлением. Одна на кампанию. */
-  private async vcard(campaignExt: string, v: VCard, warnings?: string[]): Promise<number | null> {
-    if (this.vcardCache.has(campaignExt)) return this.vcardCache.get(campaignExt)!;
-    if (!v.phone) return null;
-    try {
-      const card: Record<string, unknown> = {
-        CampaignId: Number(campaignExt),
-        Country: "Россия",
-        City: v.city,
-        CompanyName: v.company,
-        WorkTime: v.workTime,
-        Phone: { CountryCode: v.phone.country, CityCode: v.phone.city, PhoneNumber: v.phone.number },
+  // ─── Кампания, группа, организация ───────────────────────────────────
+
+  /**
+   * campaigns.add для ЕПК. Необязательные части (расписание показов, профиль организации и места показа на Картах)
+   * при отказе Директа снимаем по одной, чтобы кампания всё равно создалась.
+   */
+  private async addCampaign(spec: CampaignSpec, businessId: number | null, warnings: string[]): Promise<string> {
+    const settings = [
+      { Option: "ADD_METRICA_TAG", Value: "YES" },
+      { Option: "ENABLE_SITE_MONITORING", Value: "YES" },
+      { Option: "ALTERNATIVE_TEXTS_ENABLED", Value: "YES" },
+    ];
+    // Карты и список организаций на поиске — только вместе с профилем организации
+    const placements = businessId && spec.channel === "search"
+      ? { SearchResults: "YES", ProductGallery: "YES", DynamicPlaces: "YES", Maps: "YES", SearchOrganizationList: "YES" } as Record<string, "YES" | "NO">
+      : null;
+    const optional: { label: string; apply: (c: Record<string, any>, u: Record<string, any>) => void }[] = [];
+    const tt = spec.timeTargeting;
+    if (tt?.schedule.length) {
+      optional.push({
+        label: "расписание показов по часам работы",
+        apply: (c) => {
+          c.TimeZone = tt.timeZone;
+          c.TimeTargeting = { Schedule: { Items: tt.schedule }, ConsiderWorkingWeekends: tt.considerWorkingWeekends ? "YES" : "NO", HolidaysSchedule: { SuspendOnHolidays: "NO" } };
+        },
+      });
+    }
+    if (businessId) {
+      optional.push({
+        label: "показ на Картах и данные организации",
+        apply: (_c, u) => {
+          u.Settings = [...u.Settings, { Option: "ENABLE_COMPANY_INFO", Value: "YES" }];
+          if (placements) u.BiddingStrategy = this.strategy(spec.channel, spec.weeklyBudget, spec.strategy, spec.goalId, null, placements);
+        },
+      });
+    }
+    for (;;) {
+      const unified: Record<string, any> = {
+        BiddingStrategy: this.strategy(spec.channel, spec.weeklyBudget, spec.strategy, spec.goalId),
+        Settings: [...settings],
       };
-      if (v.street) card.Street = v.street.slice(0, 55);
-      if (v.house) card.House = v.house.slice(0, 30);
-      const res = await this.call("vcards", "add", { VCards: [card] });
-      const [r] = this.items(res.AddResults, "Визитка");
-      this.vcardCache.set(campaignExt, r.Id ?? null);
-      return r.Id ?? null;
+      if (spec.counterId) unified.CounterIds = { Items: [spec.counterId] };
+      if (spec.counterId && spec.goalId) unified.PriorityGoals = { Items: [{ GoalId: spec.goalId, Value: micros(1000) }] };
+      const campaign: Record<string, any> = { Name: spec.name.slice(0, 255), StartDate: spec.startDate, UnifiedCampaign: unified };
+      if (spec.negativeKeywords.length) campaign.NegativeKeywords = { Items: spec.negativeKeywords.slice(0, 1000) };
+      for (const o of optional) o.apply(campaign, unified);
+      try {
+        const res = await this.call("campaigns", "add", { Campaigns: [campaign] });
+        const local: string[] = [];
+        const [c] = this.items(res.AddResults, "Кампания", local);
+        warnings.push(...local);
+        return String(c.Id);
+      } catch (e) {
+        if (!optional.length) throw e;
+        const o = optional.shift()!; // сначала расписание (часовой пояс), потом организация
+        warnings.push(`Кампания: Директ не принял ${o.label}, создаём без этого — ${(e as Error).message}`);
+      }
+    }
+  }
+
+  /** Группа с ключевыми фразами и автотаргетингом (без брендов конкурентов и слишком широких запросов) */
+  private async createGroup(campaignExt: string, g: Pick<GroupSpec, "name" | "regionIds" | "keywords" | "autotargeting">, channel: Channel, warnings: string[]) {
+    const gr = await this.call("adgroups", "add", {
+      AdGroups: [{ Name: g.name.slice(0, 255), CampaignId: Number(campaignExt), RegionIds: g.regionIds, UnifiedAdGroup: { OfferRetargeting: "NO" } }],
+    });
+    const [gi] = this.items(gr.AddResults, `Группа «${g.name}»`, warnings);
+    const groupExt = String(gi.Id);
+    const keywords = [...new Set(g.keywords.map((k) => k.trim()).filter(Boolean))].slice(0, 200);
+    const items: Record<string, unknown>[] = keywords.map((Keyword) => ({ Keyword, AdGroupId: Number(groupExt) }));
+    if (g.autotargeting) items.push({ Keyword: "---autotargeting", AdGroupId: Number(groupExt), AutotargetingSettings: autotargetingSettings(channel) });
+    if (items.length) {
+      try {
+        const kr = await this.call("keywords", "add", { Keywords: items });
+        for (const [i, r] of ((kr.AddResults ?? []) as DirectItemResult[]).entries()) {
+          if (!r.Errors?.length) continue;
+          const it = items[i];
+          if (it.AutotargetingSettings) {
+            // Настройки категорий не приняты — включаем автотаргетинг как раньше, со всеми категориями
+            const retry = await this.call("keywords", "add", { Keywords: [{ Keyword: "---autotargeting", AdGroupId: Number(groupExt) }] }).catch(() => null);
+            warnings.push(`Автотаргетинг группы «${g.name}»: Директ не принял исключение конкурентов и широких запросов — ${r.Errors[0].Message}${retry ? "; включили со всеми категориями" : ""}`);
+          } else warnings.push(`Фраза «${it.Keyword}» не добавлена: ${r.Errors[0].Message}`);
+        }
+      } catch (e) {
+        warnings.push(`Ключевые фразы группы «${g.name}»: ${(e as Error).message}`);
+      }
+    }
+    return groupExt;
+  }
+
+  /** Новая группа в работающей кампании — когда в старой исчерпан лимит в 10 объявлений */
+  async addGroup(campaignExt: string, g: Omit<GroupSpec, "ads" | "localId">, ctx: { channel: Channel }) {
+    const warnings: string[] = [];
+    const groupExt = await this.createGroup(campaignExt, g, ctx.channel, warnings);
+    return { groupExt, warnings };
+  }
+
+  private businessCache = new Map<string, { id: number; name: string; isPublished: boolean; address: string | null; profileUrl: string | null } | null>();
+
+  /**
+   * Профиль организации в Яндекс Бизнесе (businesses.get). Директ отдаёт только профили, на которые у представителя
+   * подтверждены права, или уже привязанные к объявлениям; привязать можно только опубликованный (IsPublished = YES).
+   * https://yandex.ru/dev/direct/doc/ru/businesses/get
+   */
+  async businessProfile(orgId: string | number) {
+    const key = String(orgId);
+    if (this.businessCache.has(key)) return this.businessCache.get(key)!;
+    const res = await this.call("businesses", "get", { SelectionCriteria: { Ids: [Number(orgId)] }, FieldNames: ["Id", "Name", "Address", "ProfileUrl", "IsPublished"] });
+    const b = (res?.Businesses ?? []).find((x: any) => String(x.Id) === key) ?? (res?.Businesses ?? [])[0];
+    const out = b ? { id: Number(b.Id), name: String(b.Name ?? ""), isPublished: b.IsPublished === "YES", address: b.Address ?? null, profileUrl: b.ProfileUrl ?? null } : null;
+    this.businessCache.set(key, out);
+    return out;
+  }
+
+  /** BusinessId для объявлений или null с понятным предупреждением владельцу */
+  private async linkableBusiness(orgId: string | null | undefined, warnings: string[]): Promise<number | null> {
+    if (!orgId || !/^\d{3,20}$/.test(String(orgId))) return null;
+    try {
+      const p = await this.businessProfile(orgId);
+      if (!p) {
+        warnings.push("Организация из Яндекс Карт не привязана: Директ не видит её профиль. Подтвердите права на организацию в Яндекс Бизнесе тем же логином, что и рекламный кабинет, — робот привяжет её к новым объявлениям.");
+        return null;
+      }
+      if (!p.isPublished) {
+        warnings.push(`Организация «${p.name}» ещё не опубликована в Яндекс Бизнесе (не прошла проверку) — привяжем, когда опубликуют.`);
+        return null;
+      }
+      return p.id;
     } catch (e) {
-      warnings?.push(`Визитка (адрес и телефон): ${(e as Error).message}`);
-      this.vcardCache.set(campaignExt, null);
+      warnings.push(`Профиль организации проверить не удалось: ${(e as Error).message}`);
       return null;
     }
   }
 
-  /** Поля объявления и необязательные дополнения (в порядке, в котором их убираем, если Директ отклонит) */
-  private async buildTextAd(campaignExt: string, ad: AdSpec, warnings: string[]) {
-    if (!ad.title.trim() || !ad.text.trim()) throw new PlatformError("yandex", "У объявления пустой заголовок или текст");
+  // ─── Объявления ──────────────────────────────────────────────────────
+
+  /** Картинки объявления: основная + другие пропорции, до 5 разных (ResponsiveAd.AdImageHashes) */
+  private async uploadImages(ad: AdSpec, warnings: string[]) {
+    const list = [ad.image, ...(ad.images ?? [])].filter((x): x is NonNullable<AdSpec["image"]> => !!x);
+    const seen = new Set<string>();
+    const hashes: string[] = [];
     let imageRef: string | undefined;
-    if (ad.image) {
+    for (const img of list) {
+      if (seen.has(img.imageId) || hashes.length >= RA.images) continue;
+      seen.add(img.imageId);
       try {
-        imageRef = await this.uploadImage(ad.image);
+        const h = await this.uploadImage(img);
+        if (!hashes.includes(h)) hashes.push(h);
+        if (img === ad.image) imageRef = h;
       } catch (e) {
-        warnings.push(`Картинка не загрузилась, объявление пойдёт без неё: ${(e as Error).message}`);
+        warnings.push(`Картинка ${img.width}×${img.height} не загрузилась, объявление пойдёт без неё: ${(e as Error).message}`);
       }
     }
+    return { hashes, imageRef };
+  }
+
+  /** Поля комбинаторного объявления и необязательные дополнения (в порядке, в котором их убираем, если Директ отклонит) */
+  private async buildResponsiveAd(ad: AdSpec, warnings: string[], businessId: number | null) {
+    if (!ad.title.trim() || !ad.text.trim()) throw new PlatformError("yandex", "У объявления пустой заголовок или текст");
+    const { titles, texts } = responsiveTexts(ad);
+    const { hashes, imageRef } = await this.uploadImages(ad, warnings);
     const x = ad.extras;
     const extIds = x?.callouts.length ? await this.callouts(x.callouts, warnings) : [];
     const sitelinkSetId = x?.sitelinks.length ? await this.sitelinks(x.sitelinks, ad.href, warnings) : null;
-    const vcardId = x?.vcard ? await this.vcard(campaignExt, x.vcard, warnings) : null;
 
-    const textAd: Record<string, unknown> = {
-      Title: ad.title,
-      Text: ad.text,
-      Href: ad.href,
-      Mobile: "NO",
-    };
-    if (ad.title2) textAd.Title2 = ad.title2;
-    if (imageRef) textAd.AdImageHash = imageRef;
-    if (extIds.length) textAd.AdExtensionIds = extIds;
-    if (sitelinkSetId) textAd.SitelinkSetId = sitelinkSetId;
-    if (ad.marking) textAd.ErirAdDescription = ad.marking.slice(0, 255);
-    // Необязательные поля: если Директ отклонит объявление, убираем их по одному (сначала визитку — в ЕПК её могут не принять),
+    const body: Record<string, unknown> = { Titles: titles, Texts: texts, Href: ad.href };
+    if (hashes.length) body.AdImageHashes = hashes;
+    if (extIds.length) body.AdExtensionIds = extIds;
+    if (sitelinkSetId) body.SitelinkSetId = sitelinkSetId;
+    if (ad.marking) body.ErirAdDescription = ad.marking.slice(0, 255);
+    // Необязательные поля: если Директ отклонит объявление, убираем их по одному (сначала профиль организации),
     // чтобы из-за одного поля не терять остальные
     const optional: [string, string, unknown][] = [];
-    if (vcardId) optional.push(["VCardId", "визитка", vcardId]);
+    if (businessId) optional.push(["BusinessId", "профиль организации", businessId]);
     if (x?.price) optional.push(["PriceExtension", "цена", { Price: micros(x.price.price), PriceQualifier: x.price.qualifier, PriceCurrency: "RUB" }]);
     if (x?.displayPath) optional.push(["DisplayUrlPath", "отображаемая ссылка", x.displayPath.slice(0, 20)]);
-    return { textAd, optional, imageRef };
+    return { ad: body, optional, imageRef };
   }
 
   /** Одно объявление с повторами без необязательных полей */
-  private async addBuilt(groupExt: string, ad: AdSpec, b: { textAd: Record<string, unknown>; optional: [string, string, unknown][] }, warnings: string[]) {
+  private async addBuilt(groupExt: string, ad: AdSpec, b: { ad: Record<string, unknown>; optional: [string, string, unknown][] }, warnings: string[]) {
     const optional = [...b.optional];
     let res: any;
     for (;;) {
       const extra = Object.fromEntries(optional.map(([k, , v]) => [k, v]));
       let err: unknown = null;
       try {
-        res = await this.call("ads", "add", { Ads: [{ AdGroupId: Number(groupExt), TextAd: { ...b.textAd, ...extra } }] });
+        res = await this.call("ads", "add", { Ads: [{ AdGroupId: Number(groupExt), ResponsiveAd: { ...b.ad, ...extra } }] });
         const e = (res.AddResults as DirectItemResult[] | undefined)?.[0]?.Errors?.[0];
         if (e) err = new Error(`${e.Message}${e.Details ? ` — ${e.Details}` : ""}`);
       } catch (e) {
@@ -422,11 +562,34 @@ export class YandexDirect implements PlatformClient {
   }
 
   /** Новое объявление в работающую группу (робот): сразу на модерацию */
-  async addAd(campaignExt: string, groupExt: string, ad: AdSpec, _ctx: { channel: Channel }, warnings: string[] = [], moderate = true) {
-    const b = await this.buildTextAd(campaignExt, ad, warnings);
+  async addAd(_campaignExt: string, groupExt: string, ad: AdSpec, ctx: { channel: Channel; orgId?: string | null }, warnings: string[] = [], moderate = true) {
+    const businessId = await this.linkableBusiness(ctx.orgId, warnings);
+    const b = await this.buildResponsiveAd(ad, warnings, businessId);
     const adExt = await this.addBuilt(groupExt, ad, b, warnings);
     if (moderate) await this.call("ads", "moderate", { SelectionCriteria: { Ids: [Number(adExt)] } });
     return { adExt, imageRef: b.imageRef };
+  }
+
+  adLimits(_channel: Channel): AdLimits {
+    return DIRECT_AD_LIMITS;
+  }
+
+  /** В архив (ads.archive): освобождает место среди 3 неархивных объявлений группы */
+  async archiveAds(adExts: string[]) {
+    if (!adExts.length) return;
+    const res = await this.call("ads", "archive", { SelectionCriteria: { Ids: adExts.map(Number) } });
+    for (const r of (res?.ArchiveResults ?? []) as DirectItemResult[]) {
+      if (r.Errors?.length && !/архив|archiv/i.test(r.Errors[0].Message + (r.Errors[0].Details ?? ""))) {
+        throw new PlatformError("yandex", `Архивирование объявления: ${r.Errors[0].Message}`, r.Errors);
+      }
+    }
+  }
+
+  /** ads.delete: Директ удаляет только объявления без статистики (черновики, отклонённые без показов) */
+  async deleteAds(adExts: string[]) {
+    if (!adExts.length) return [];
+    const res = await this.call("ads", "delete", { SelectionCriteria: { Ids: adExts.map(Number) } });
+    return ((res?.DeleteResults ?? []) as DirectItemResult[]).map((r, i) => (r.Id && !r.Errors?.length ? String(r.Id ?? adExts[i]) : null)).filter((x): x is string => !!x);
   }
 
   async setCampaignActive(campaignExt: string, active: boolean) {
@@ -435,6 +598,17 @@ export class YandexDirect implements PlatformClient {
 
   async setAdsActive(adExts: string[], active: boolean) {
     if (!adExts.length) return;
+    if (active) {
+      // Архивное объявление (робот освобождал место в группе) сначала достаём из архива — иначе resume его не включит
+      const got = await this.call("ads", "get", { SelectionCriteria: { Ids: adExts.map(Number) }, FieldNames: ["Id", "State"] }).catch(() => null);
+      const archived = ((got?.Ads ?? []) as { Id: number; State: string }[]).filter((a) => a.State === "ARCHIVED").map((a) => a.Id);
+      if (archived.length) {
+        const ur = await this.call("ads", "unarchive", { SelectionCriteria: { Ids: archived } });
+        for (const r of (ur?.UnarchiveResults ?? []) as DirectItemResult[]) {
+          if (r.Errors?.length) throw new PlatformError("yandex", `Объявление в архиве и не возвращается: ${r.Errors[0].Message}${r.Errors[0].Details ? ` — ${r.Errors[0].Details}` : ""}. В группе Директа может быть не больше ${DIRECT_AD_LIMITS.nonArchived} неархивных объявлений — сначала остановите и уберите в архив другое.`, r.Errors);
+        }
+      }
+    }
     const res = await this.call("ads", active ? "resume" : "suspend", { SelectionCriteria: { Ids: adExts.map(Number) } });
     const results = (active ? res.ResumeResults : res.SuspendResults) as DirectItemResult[] | undefined;
     // Повторная остановка уже остановленного объявления — не ошибка
@@ -459,10 +633,23 @@ export class YandexDirect implements PlatformClient {
     this.items(res.UpdateResults, "Минус-слова");
   }
 
-  async updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string }) {
-    const textAd: Record<string, unknown> = { Title: t.title, Text: t.text };
-    textAd.Title2 = t.title2 || null;
-    const res = await this.call("ads", "update", { Ads: [{ Id: Number(adExt), TextAd: textAd }] });
+  /**
+   * Правка текста (ads.update → ResponsiveAd). Titles и Texts в update передаются целиком: без готовых списков
+   * берём текущие у Директа и меняем в них основной вариант (первый), убирая склейки со старым основным заголовком.
+   */
+  async updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string; titles?: string[]; texts?: string[] }) {
+    let titles = t.titles, texts = t.texts;
+    if (!titles || !texts) {
+      const cur = await this.call("ads", "get", { SelectionCriteria: { Ids: [Number(adExt)] }, FieldNames: ["Id"], ResponsiveAdFieldNames: ["Titles", "Texts"] }).catch(() => null);
+      const ra = cur?.Ads?.[0]?.ResponsiveAd;
+      const oldTitles: string[] = ra?.Titles?.Items ?? ra?.Titles ?? [];
+      const oldTexts: string[] = ra?.Texts?.Items ?? ra?.Texts ?? [];
+      const oldMain = oldTitles[0];
+      titles ??= oldTitles.slice(1).filter((x) => !oldMain || !x.startsWith(oldMain.replace(/[.!]$/, "")));
+      texts ??= oldTexts.slice(1);
+    }
+    const r = responsiveTexts({ title: t.title, title2: t.title2, text: t.text, titles, texts });
+    const res = await this.call("ads", "update", { Ads: [{ Id: Number(adExt), ResponsiveAd: { Titles: r.titles, Texts: r.texts } }] });
     this.items(res.UpdateResults, "Текст объявления");
     await this.call("ads", "moderate", { SelectionCriteria: { Ids: [Number(adExt)] } });
   }

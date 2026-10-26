@@ -9,6 +9,7 @@ import { DaysChart } from "@/components/charts";
 import { ClientsWeek } from "@/components/ClientsWeek";
 import { CHANNEL_NAME } from "@/lib/platforms";
 import { num, pl, rub } from "@/lib/util";
+import { LeadStatus } from "./LeadStatus";
 
 const KIND: Record<string, string> = { form: "Заявка", phone: "Звонок", messenger: "Мессенджер", suspect: "Заявка" };
 const SRC: Record<string, string> = { yandex: "Реклама в Яндексе", vk: "Реклама ВКонтакте", demo: "Реклама (демо)" };
@@ -68,10 +69,13 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
         <div className="mt-6"><DaysChart series={r.series} /></div>
         <p className="hint mt-4 max-w-3xl">
           Здесь всё — только из рекламы: обращение — заявка, звонок или сообщение от человека, который пришёл по объявлению; стоимость клиента = потрачено ÷ клиенты.{" "}
+          {c.adBooked || c.adMarked
+            ? `Клиенты — по вашим отметкам заявок: «Записался» — клиент (${num(c.adBooked)}), «Не дозвонились» — нет. `
+            : ""}
           {c.clientsEstimated
-            ? `Где вы не отметили клиентов, считаем так: обычно записываются ${Math.round(r.rate * 10)} из 10 обратившихся. Отметьте точные цифры ниже — оценка станет фактом.`
-            : "Клиенты — по вашим отметкам."}{" "}
-          Отметки — за календарные недели, а период — последние {days} дней: неделю, попавшую в период частично, считаем по доле её обращений.
+            ? `${c.adMarked ? "Неотмеченные" : "Пока заявки не отмечены, клиентов"} считаем по обычной доле: записываются ${Math.round(r.rate * 10)} из 10 обратившихся. Отмечайте заявки ниже или кнопками в Telegram — оценка станет фактом.`
+            : c.adMarked ? "" : "Клиенты — по вашим отметкам."}{" "}
+          Если за неделю указано число клиентов, берём его. Заявки с отметкой «Спам» не считаются нигде.
         </p>
       </section>
 
@@ -143,17 +147,27 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
         </div>
       </section>
 
-      <section className="card p-5 sm:p-7">
+      <section id="leads" className="card p-5 sm:p-7 scroll-mt-6">
         <h2 className="text-lg font-bold">Последние обращения</h2>
+        {leads.some((l) => l.contact) ? (
+          <p className="hint mt-1 max-w-2xl">
+            После звонка отметьте, чем закончилось: «Записался» — это клиент в стоимости клиента{b.counterId ? " и сигнал для Директа (передаём в Метрику)" : ""}; «Спам» убираем из статистики. Те же кнопки есть в Telegram под каждой заявкой.
+          </p>
+        ) : null}
         {leads.length ? (
           <ul className="mt-3 divide-y divide-line">
             {leads.map((l) => (
-              <li key={l.id} className="py-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+              <li key={l.id} className="py-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
                 <span className="font-semibold w-24 shrink-0">{KIND[l.kind] ?? l.kind}</span>
                 <span className="text-muted w-36 shrink-0">{l.createdAt.toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow" })}</span>
                 <span className="flex-1 min-w-[8rem] truncate">{[l.name, l.contact].filter(Boolean).join(", ") || "—"}</span>
                 {l.kind === "suspect" ? <span className="pill bg-warn-soft text-warn" title="Пришла во время всплеска заявок — возможно, спам. В статистику рекламы не входит.">похоже на спам</span> : null}
                 <span className="pill bg-paper text-muted">{l.adExt || l.campaignExt || (l.source && SRC[l.source]) ? SRC[l.source ?? ""] ?? "Реклама" : l.source ? `Не из рекламы (${l.source})` : "Не из рекламы"}</span>
+                {l.contact ? (
+                  <div className="basis-full sm:basis-auto sm:ml-auto">
+                    <LeadStatus id={l.id} initial={(l.status as "booked" | "no_answer" | "spam" | null) ?? null} />
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>

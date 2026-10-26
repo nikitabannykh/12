@@ -17,6 +17,15 @@ export type AdSpec = {
   /** Логотип 256×256 для VK */
   logo?: ImageInput | null;
   marking?: string; // описание объекта рекламы для ЕРИР
+  /**
+   * Директ (комбинаторное объявление ResponsiveAd): все заголовки и тексты, из которых Яндекс собирает показ.
+   * Первый элемент — основной (title/text выше). Не задано — шлём только основные. Строятся детерминированно
+   * из анкеты (extras.responsiveAssets), поэтому в БД хранится только основной заголовок/текст.
+   */
+  titles?: string[];
+  texts?: string[];
+  /** Директ: дополнительные картинки других пропорций (1:1, 16:9, 4:3, 3:4) — до 5 вместе с image */
+  images?: ImageInput[];
 };
 
 export type GroupSpec = {
@@ -31,6 +40,12 @@ export type GroupSpec = {
   ads: AdSpec[];
 };
 
+/** Расписание показов по часам работы (Директ TimeTargeting): 7 строк «день,24 коэффициента» */
+export type TimeTargetingSpec = { schedule: string[]; timeZone: string; considerWorkingWeekends: boolean; note: string };
+
+/** Лимиты площадки на объявления в группе (Директ, комбинаторные: 3 неархивных и 10 вместе с архивными) */
+export type AdLimits = { nonArchived: number; total: number };
+
 export type CampaignSpec = {
   name: string;
   channel: Channel;
@@ -41,6 +56,10 @@ export type CampaignSpec = {
   goalId?: number | null;
   negativeKeywords: string[];
   siteUrl: string;
+  /** Директ: ID организации в Яндекс Бизнесе (permalink). Привязываем, если профиль опубликован и доступен логину */
+  orgId?: string | null;
+  /** Директ: расписание показов по часам работы */
+  timeTargeting?: TimeTargetingSpec | null;
   groups: GroupSpec[];
   /**
    * Метка запуска (короткая, латиница/цифры). Попадает в имя кампании на площадке, где по имени ищем
@@ -113,12 +132,20 @@ export interface PlatformClient {
   findCampaignByName?(name: string): Promise<string | null>;
   /** Удалить (или, если площадка не даёт, остановить) недосозданную кампанию — для возобновления прерванного запуска */
   removeCampaign?(campaignExt: string): Promise<void>;
-  addAd(campaignExt: string, groupExt: string, ad: AdSpec, ctx: { channel: Channel }): Promise<{ adExt: string; imageRef?: string }>;
+  addAd(campaignExt: string, groupExt: string, ad: AdSpec, ctx: { channel: Channel; orgId?: string | null }): Promise<{ adExt: string; imageRef?: string }>;
+  /** Лимиты на число объявлений в группе для канала (null — площадка их не ограничивает так жёстко) */
+  adLimits?(channel: Channel): AdLimits | null;
+  /** В архив: архивные объявления не показываются и не занимают место среди 3 неархивных в группе Директа */
+  archiveAds?(adExts: string[]): Promise<void>;
+  /** Удалить (Директ разрешает только объявления без показов). Возвращает удалённые */
+  deleteAds?(adExts: string[]): Promise<string[]>;
+  /** Новая группа в работающей кампании (когда в старой исчерпан лимит объявлений) */
+  addGroup?(campaignExt: string, g: Omit<GroupSpec, "ads" | "localId">, ctx: { channel: Channel }): Promise<{ groupExt: string; warnings: string[] }>;
   setCampaignActive(campaignExt: string, active: boolean): Promise<void>;
   setAdsActive(adExts: string[], active: boolean): Promise<void>;
   setBudget(campaignExt: string, p: { channel: Channel; weeklyBudget: number; strategy: Strategy; goalId?: number | null; bidCeiling?: number | null }): Promise<void>;
   setNegativeKeywords(campaignExt: string, words: string[]): Promise<void>;
-  updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string }): Promise<void>;
+  updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string; titles?: string[]; texts?: string[] }): Promise<void>;
   getAdStates(adExts: string[]): Promise<Record<string, AdState>>;
   getStats(campaignExts: string[], from: string, to: string, goalIds: number[]): Promise<StatRow[]>;
   getAuction?(campaignExt: string): Promise<AuctionRow[]>;

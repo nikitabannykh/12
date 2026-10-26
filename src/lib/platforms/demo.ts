@@ -1,7 +1,8 @@
 import "server-only";
 import { and, eq } from "drizzle-orm";
 import { createHash } from "crypto";
-import type { AuctionRow, AdSpec, AdState, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy } from "./types";
+import type { AuctionRow, AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy } from "./types";
+import { PlatformError } from "./types";
 import { getDb, schema } from "../db";
 import { addDays, isoDay, uid } from "../util";
 
@@ -123,6 +124,10 @@ export async function shiftDemoClock(days: number, scope?: DemoScope) {
   return offset;
 }
 
+/** Как в Директе: в группе до 3 неархивных комбинаторных объявлений и до 10 вместе с архивными (поиск и РСЯ) */
+const DEMO_DIRECT_LIMITS: AdLimits = { nonArchived: 3, total: 10 };
+const limitsFor = (channel: Channel | undefined) => (channel === "vk" ? null : DEMO_DIRECT_LIMITS);
+
 const BAD_WORDS = ["бесплатно", "вакансии", "обучение", "своими руками", "курсы", "работа", "дома самой", "как сделать", "отзывы сотрудников", "игра"];
 
 export class DemoPlatform implements PlatformClient {
@@ -195,10 +200,16 @@ export class DemoPlatform implements PlatformClient {
       campaignExt, groups: [], complete: true,
       warnings: [`Демо-кабинет: чтобы отчёты и решения робота были видны сразу, кампания «работает» с ${day} — статистика за ${DEMO_BACKFILL_DAYS} дней до запуска смоделирована`],
     };
+    const lim = limitsFor(spec.channel);
     for (const g of spec.groups) {
       const done = spec.resume?.groups[g.localId];
       const groupExt = done?.groupExt ?? this.id(s);
-      const ads = g.ads.map((a) => ({ localId: a.localId, adExt: done?.ads[a.localId] ?? this.newAd(s, campaignExt, groupExt, a, day) }));
+      const ads = g.ads.map((a): { localId: string; adExt: string | null; error?: string } => {
+        if (done?.ads[a.localId]) return { localId: a.localId, adExt: done.ads[a.localId] };
+        const room = this.room(s, groupExt, lim);
+        if (room) return { localId: a.localId, adExt: null, error: room };
+        return { localId: a.localId, adExt: this.newAd(s, campaignExt, groupExt, a, day) };
+      });
       await this.save(s);
       if (!done) await hooks?.onGroupCreated?.(g.localId, groupExt);
       await hooks?.onAdsCreated?.(g.localId, groupExt, ads.filter((a) => !done?.ads[a.localId]));
@@ -228,8 +239,57 @@ export class DemoPlatform implements PlatformClient {
     await this.save(s);
   }
 
+  /** Почему в группу нельзя добавить объявление (лимиты Директа) или null */
+  private room(s: State, groupExt: string, lim: AdLimits | null) {
+    if (!lim) return null;
+    const peers = Object.values(s.ads).filter((a) => a.group === groupExt);
+    if (peers.length >= lim.total) return `В группе уже ${lim.total} объявлений вместе с архивными — больше Директ не принимает`;
+    if (peers.filter((a) => a.status !== "archived").length >= lim.nonArchived) return `В группе может быть не больше ${lim.nonArchived} неархивных объявлений — сначала уберите одно в архив`;
+    return null;
+  }
+
+  adLimits(channel: Channel) {
+    return limitsFor(channel);
+  }
+
+  async archiveAds(adExts: string[]) {
+    const s = await this.load();
+    const day = isoDay(await this.now());
+    for (const id of adExts) {
+      const a = s.ads[id];
+      if (!a || a.status === "archived") continue;
+      this.setActive(a.intervals, false, day);
+      a.status = "archived";
+    }
+    await this.save(s);
+  }
+
+  /** Как в Директе: удалить можно только объявление, которое ни разу не показывалось */
+  async deleteAds(adExts: string[]) {
+    const s = await this.load();
+    const out: string[] = [];
+    for (const id of adExts) {
+      const a = s.ads[id];
+      if (a && !a.intervals.length) {
+        delete s.ads[id];
+        out.push(id);
+      }
+    }
+    await this.save(s);
+    return out;
+  }
+
+  async addGroup(_campaignExt: string, _g: Omit<GroupSpec, "ads" | "localId">) {
+    const s = await this.load();
+    const groupExt = this.id(s);
+    await this.save(s);
+    return { groupExt, warnings: [] };
+  }
+
   async addAd(campaignExt: string, groupExt: string, ad: AdSpec) {
     const s = await this.load();
+    const room = this.room(s, groupExt, limitsFor(s.campaigns[campaignExt]?.channel));
+    if (room) throw new PlatformError("demo", room);
     const day = isoDay(await this.now());
     // Новые варианты робот пишет с учётом статистики — в среднем они чуть сильнее
     const peers = Object.values(s.ads).filter((a) => a.group === groupExt);
@@ -252,7 +312,13 @@ export class DemoPlatform implements PlatformClient {
     const day = isoDay(await this.now());
     for (const id of adExts) {
       const a = s.ads[id];
-      if (!a || a.status === "rejected" || a.status === "archived") continue;
+      if (!a || a.status === "rejected") continue;
+      if (a.status === "archived") {
+        if (!active) continue;
+        // Достаём из архива, как ads.unarchive в Директе — если в группе есть место
+        const room = this.room(s, a.group, limitsFor(s.campaigns[a.campaign]?.channel));
+        if (room && !/вместе с архивными/.test(room)) throw new PlatformError("demo", `Объявление в архиве и не возвращается: ${room}`);
+      }
       this.setActive(a.intervals, active, day);
       a.status = active ? "active" : "paused";
     }

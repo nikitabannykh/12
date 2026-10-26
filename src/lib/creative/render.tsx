@@ -72,7 +72,9 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
   const box = { position: "absolute" as const, top: 0, left: 0, width: W, height: H, display: "flex" };
 
   // Без фото вместо него — тематическая иллюстрация ниши
-  const illoSize = (wide ? 0.62 * H : 0.62 * W);
+  // 4:3 тоже «широкая» картинка, но иллюстрацию считаем как для 16:9 — иначе она наезжает на текст
+  const wideH = Math.min(H, (W * 9) / 16);
+  const illoSize = (wide ? 0.62 * wideH : 0.62 * W);
   const Photo = ({ dim = 0, illo = "right" }: { dim?: number; illo?: "right" | "center" | "corner" | "none" }) =>
     photo ? (
       <div style={box}>
@@ -201,7 +203,7 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
         el = (
           <div style={{ width: W, height: H, display: "flex", flexDirection: "column", justifyContent: "space-between", background: accent, color: "#fff", fontFamily: "Onest", padding: `${(wide ? 60 : 90) * u}px`, position: "relative" }}>
             <div style={{ position: "absolute", right: -40 * u, bottom: -30 * u, display: "flex", opacity: 0.95 }}>
-              <Illustration niche={inp.business.niche} variant={variant} palette={{ ink, accent: "#FFFDF8", bg }} size={(wide ? 0.75 * H : 0.55 * W)} />
+              <Illustration niche={inp.business.niche} variant={variant} palette={{ ink, accent: "#FFFDF8", bg }} size={(wide ? 0.75 * wideH : 0.55 * W)} />
             </div>
             <div style={{ fontSize: (wide ? 30 : 36) * u, fontWeight: 700, opacity: 0.85, display: "flex" }}>{inp.business.offer ? "Для новых клиентов" : inp.business.name}</div>
             <div style={{ display: "flex", flexDirection: "column" }}>

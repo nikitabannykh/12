@@ -4,8 +4,8 @@ import { getDb, schema } from "../db";
 import type { Ad, AdGroup, Business, Campaign, Change, Experiment, UndoOp } from "../db/schema";
 import { clientFor, CHANNEL_NAME } from "../platforms";
 import { demoNow } from "../platforms/demo";
-import { ensureLogo, getImage, makeCreative } from "./images";
-import { adExtras } from "./extras";
+import { ensureLogo, getImage, imageSet, makeCreative } from "./images";
+import { adExtras, responsiveAssets } from "./extras";
 import { liftBy, pickByThompson, placeName } from "./insights";
 import { availableLayouts, LAYOUT_NAME, type Layout } from "../creative/render";
 import { act, ceilingOf, logChange } from "./ops";
@@ -17,8 +17,10 @@ import { firstDays, learningLeft as learningLeftFor, LEARN_LOOKBACK_DAYS } from 
 import { CATCH_UP, CATCH_UP_GAP, cutMeta, daysLeftInMonth, monthDays, monthKey, monthWeekly, planLimits, reserveFor, restoreTarget, spendableWeekly, type BudgetMeta, type Plan, type PlanItem } from "./budget-plan";
 import { budgetState, businessNow, liveCampaigns, patchBudgetMeta, pausedForBudget, type BudgetState } from "./budget-guard";
 import { addDays, errorText, isoDay, rub, uid, pl, num } from "../util";
-import { landingUrl } from "./launch";
-import type { Channel } from "../platforms/types";
+import { isDirectChannel, landingUrl, withUtm } from "./launch";
+import { VkAds } from "../platforms/vk";
+import { vkAdContext } from "./regions";
+import type { AdSpec, Channel, PlatformClient } from "../platforms/types";
 
 /**
  * Робот-оптимизатор. Работает по расписанию (каждые несколько часов) и принимает решения
@@ -29,6 +31,9 @@ import type { Channel } from "../platforms/types";
  *  - сравниваем объявления только внутри одной группы — у них одинаковая аудитория;
  *  - меняем одну вещь за раз (текст при той же картинке), чтобы было понятно, что сработало;
  *  - в группе всегда остаётся минимум 2 рабочих объявления;
+ *  - лимиты площадки соблюдаются: в группе Директа не больше 3 неархивных комбинаторных объявлений и 10 вместе
+ *    с архивными. Перед новым вариантом робот убирает в архив проигравшее или самое слабое (не участвующее в тесте)
+ *    объявление, а когда группа заполнена до 10 — переносит её в новую группу с теми же запросами;
  *  - бюджет месяца — жёсткая граница.
  */
 
@@ -200,10 +205,173 @@ function chooseAngle(cx: Ctx, channel: string, groupId: string, exclude: string[
   return pickByThompson(candidates, angleStats(cx, channel));
 }
 
-async function createVariant(cx: Ctx, base: Ad, reason: string, opts: { experiment?: boolean; angle?: string; owner?: boolean } = {}) {
+/**
+ * Объявление для площадки: ссылка с теми же UTM, что при запуске (withUtm), дополнения, а для Директа —
+ * все заголовки и тексты комбинаторного объявления и картинки других пропорций.
+ */
+async function adSpecFor(cx: Ctx, camp: Campaign, group: AdGroup, platform: string, a: { title: string; title2?: string | null; text: string; imageId?: string | null }, localId: string): Promise<AdSpec> {
+  const href = landingUrl(cx.b);
+  const img = a.imageId ? await getImage(a.imageId) : null;
+  const direct = isDirectChannel(camp.channel) && platform !== "vk";
+  const svc0 = cx.b.services?.[0];
+  const service = camp.channel === "search" ? cx.b.services?.find((x) => x.name === group.name) ?? svc0 : svc0;
+  const set = img && direct ? await imageSet(cx.b, img.id, { headline: camp.channel === "search" ? service?.name ?? group.name : svc0?.name, price: service?.price }).catch(() => []) : [];
+  const assets = direct ? responsiveAssets(cx.b, a, { service: camp.channel === "search" ? group.name : null }) : null;
+  const toInput = (x: NonNullable<typeof img>) => ({ imageId: x.id, data: x.data, mime: x.mime, width: x.width, height: x.height, cachedRef: x.platformRefs?.[platform] });
+  return {
+    localId,
+    title: a.title,
+    title2: a.title2 ?? null,
+    text: a.text,
+    titles: assets?.titles,
+    texts: assets?.texts,
+    href: withUtm(href, platform),
+    image: img ? toInput(img) : null,
+    images: set.map(toInput),
+    extras: adExtras(cx.b, { channel: camp.channel, href, service: camp.channel === "search" ? group.name : null, text: a.text }),
+    logo: await logoFor(cx.b, camp.channel),
+    marking: `${nicheById(cx.b.niche).label}: ${cx.b.name}`,
+  };
+}
+
+async function clientOf(camp: Campaign) {
+  const db = await getDb();
+  const [acc] = await db.select().from(schema.adAccounts).where(eq(schema.adAccounts.id, camp.accountId));
+  if (!acc) throw new Error("Рекламный кабинет отключён");
+  const client: PlatformClient = await clientFor(acc);
+  // VK: «о компании», возрастная метка и расписание берутся из анкеты бизнеса
+  if (client instanceof VkAds) {
+    const [b] = await db.select().from(schema.businesses).where(eq(schema.businesses.id, camp.businessId));
+    if (b) client.useBusiness(vkAdContext(b));
+  }
+  return { acc, client: client as PlatformClient };
+}
+
+/** Объявления, которые занимают место среди неархивных (у площадки они есть и не в архиве) */
+const NOT_LIVE = ["archived", "error"];
+
+/**
+ * Место для нового объявления в группе с учётом лимитов площадки (Директ: 3 неархивных, 10 вместе с архивными).
+ * Сначала в архив уходит заменяемое (отклонённое) и проигравшие (остановленные), потом самое слабое по кликабельности
+ * из работающих — кроме keep, участников тестов и того, что владелец недавно менял сам. Когда группа заполнена до 10,
+ * удаляем архивные без показов, а если нельзя — переносим группу в новую (те же запросы, лучшие объявления — копиями).
+ * null — места нет (всё занято тестами): новый вариант добавим в следующий раз.
+ */
+async function ensureRoom(cx: Ctx, client: PlatformClient, camp: Campaign, group: AdGroup, keep: string[], why: string): Promise<{ group: AdGroup; copies: Map<string, Ad> } | null> {
+  const ok = { group, copies: new Map<string, Ad>() };
+  const lim = client.adLimits?.(camp.channel as Channel) ?? null;
+  if (!lim) return ok;
+  const db = await getDb();
+  const peers = () => cx.ads.filter((a) => a.adGroupId === group.id && a.externalId);
+  if (peers().length + 1 > lim.total && client.deleteAds) {
+    const arch = peers().filter((a) => a.status === "archived");
+    const deleted = new Set(arch.length ? await client.deleteAds(arch.map((a) => a.externalId!)).catch(() => [] as string[]) : []);
+    for (const a of arch.filter((x) => deleted.has(x.externalId!))) {
+      // Удалено у площадки: строку оставляем ради статистики, но без внешнего ID она не считается в лимите
+      await db.update(schema.ads).set({ externalId: null }).where(eq(schema.ads.id, a.id));
+      a.externalId = null;
+    }
+  }
+  if (peers().length + 1 > lim.total) return rolloverGroup(cx, client, camp, group, keep, lim);
+
+  const live = () => peers().filter((a) => !NOT_LIVE.includes(a.status));
+  let need = live().length + 1 - lim.nonArchived;
+  if (need <= 0) return ok;
+  const since = isoDay(addDays(cx.now, -WINDOW_DAYS));
+  const free = (a: Ad) => !keep.includes(a.id) && !inTest(cx, a.id);
+  const candidates = [
+    ...live().filter((a) => free(a) && a.status === "rejected"),
+    ...live().filter((a) => free(a) && a.status === "paused").sort((x, y) => Number(cx.protected.has(x.id)) - Number(cx.protected.has(y.id))),
+    ...live()
+      .filter((a) => free(a) && !cx.protected.has(a.id) && (a.status === "active" || a.status === "moderation"))
+      .map((a) => ({ a, s: sumAd(cx, a.id, since) }))
+      .sort((x, y) => ctr(x.s) - ctr(y.s) || x.s.conversions - y.s.conversions)
+      .map((x) => x.a),
+  ];
+  if (candidates.length < need) {
+    cx.log.push(`${group.name}: в группе уже ${live().length} объявлений (лимит ${lim.nonArchived}), все заняты тестами — новый вариант позже`);
+    return null;
+  }
+  for (const a of candidates.slice(0, need)) {
+    try {
+      if (a.status === "active" || a.status === "moderation") {
+        const s = sumAd(cx, a.id, since);
+        await act(
+          {
+            businessId: cx.b.id, actor: "robot", kind: "pause",
+            title: `Убрали в архив объявление ${adLabel(a)}`,
+            reason: `В одной группе Директа может быть не больше ${lim.nonArchived} неархивных объявлений. ${why} — поэтому освободили место: ${adLabel(a)} работает слабее остальных в группе «${group.name}» (${s.impressions ? `${pct(ctr(s))} кликов из ${num(s.impressions)} показов` : "показов пока почти нет"}).`,
+            details: { adId: a.id, stats: s, archived: true },
+          },
+          [{ op: "adStatus", adId: a.id, status: "paused" }],
+        );
+      }
+      await client.archiveAds?.([a.externalId!]);
+      await db.update(schema.ads).set({ status: "archived" }).where(eq(schema.ads.id, a.id));
+      a.status = "archived";
+      need--;
+      cx.log.push(`В архив: ${a.id} (лимит ${lim.nonArchived} в группе)`);
+    } catch (e) {
+      cx.log.push(`Не удалось убрать в архив ${a.id}: ${errorText(e)}`);
+      return null;
+    }
+  }
+  return need <= 0 ? ok : null;
+}
+
+/** Группа заполнена до 10 объявлений: такая же новая группа, лучшие объявления — копиями, старые — в архив */
+async function rolloverGroup(cx: Ctx, client: PlatformClient, camp: Campaign, group: AdGroup, keep: string[], lim: { nonArchived: number; total: number }) {
+  if (!client.addGroup || !camp.externalId) {
+    cx.log.push(`${group.name}: в группе ${lim.total} объявлений — больше площадка не принимает`);
+    return null;
+  }
+  const db = await getDb();
+  const { acc } = await clientOf(camp);
+  const t = (group.targeting ?? {}) as { regionIds?: number[]; ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; autotargeting?: boolean };
+  const regionIds = t.regionIds ?? ((camp.meta as { regionIds?: number[] })?.regionIds ?? []);
+  const { groupExt, warnings } = await client.addGroup(camp.externalId, { name: group.name, keywords: group.keywords ?? [], autotargeting: t.autotargeting ?? true, regionIds, ageFrom: t.ageFrom, ageTo: t.ageTo, sex: t.sex }, { channel: camp.channel as Channel });
+  const fresh: AdGroup = { ...group, id: uid("g_"), externalId: groupExt, status: "active", createdAt: new Date() };
+  await db.insert(schema.adGroups).values(fresh);
+  cx.groups.push(fresh);
+  // Тесты старой группы завершаем: объявления переезжают, сравнение начнётся заново
+  for (const ex of cx.experiments.filter((e) => e.status === "running" && cx.ads.some((a) => a.adGroupId === group.id && (a.id === e.controlId || a.id === e.variantId)))) {
+    await endExperiment(cx, ex, "draw", "Группу перенесли в новую: в старой закончилось место для объявлений. Сравнение начнётся заново.");
+  }
+  const copies = new Map<string, Ad>();
+  const toCopy = keep
+    .map((id) => cx.ads.find((a) => a.id === id))
+    .filter((a): a is Ad => !!a && a.adGroupId === group.id && (a.status === "active" || a.status === "moderation"))
+    .slice(0, lim.nonArchived - 1);
+  for (const src of toCopy) {
+    const localId = uid("ad_");
+    const res = await client.addAd(camp.externalId, groupExt, await adSpecFor(cx, camp, fresh, acc.platform, src, localId), { channel: camp.channel as Channel, orgId: cx.b.orgId });
+    const copy: Ad = { ...src, id: localId, adGroupId: fresh.id, externalId: res.adExt, status: "moderation", statusNote: null, experimentId: null, parentAdId: src.id, createdAt: new Date() };
+    await db.insert(schema.ads).values(copy);
+    cx.ads.push(copy);
+    copies.set(src.id, copy);
+  }
+  const old = cx.ads.filter((a) => a.adGroupId === group.id && a.externalId && !NOT_LIVE.includes(a.status));
+  if (old.length) await client.archiveAds?.(old.map((a) => a.externalId!));
+  for (const a of old) {
+    await db.update(schema.ads).set({ status: "archived" }).where(eq(schema.ads.id, a.id));
+    a.status = "archived";
+  }
+  await db.update(schema.adGroups).set({ status: "archived" }).where(eq(schema.adGroups.id, group.id));
+  group.status = "archived";
+  await logChange({
+    businessId: cx.b.id, actor: "robot", kind: "ad_new",
+    title: `Перенесли «${group.name}» в новую группу Директа`,
+    reason: `В одной группе Директа может быть не больше ${lim.total} объявлений вместе с архивными, а робот уже проверил здесь все эти варианты. Создали такую же группу — те же запросы и настройки — и перенесли туда ${toCopy.length ? `лучшие объявления (${toCopy.map(adLabel).join(", ")})` : "новые объявления"}; старые убрали в архив. Их статистика сохранилась в отчётах.${warnings.length ? ` ${warnings.join(" ")}` : ""}`,
+    details: { fromGroupId: group.id, toGroupId: fresh.id, copied: [...copies.values()].map((a) => a.id) },
+  });
+  cx.log.push(`Группа ${group.id} → ${fresh.id} (лимит ${lim.total})`);
+  return { group: fresh, copies };
+}
+
+async function createVariant(cx: Ctx, base: Ad, reason: string, opts: { experiment?: boolean; angle?: string; owner?: boolean; replacing?: boolean } = {}) {
   const db = await getDb();
   const camp = cx.campaigns.find((c) => c.id === base.campaignId)!;
-  const group = cx.groups.find((g) => g.id === base.adGroupId)!;
+  let group = cx.groups.find((g) => g.id === base.adGroupId)!;
   if (!camp.externalId || !group.externalId) return null;
   // Робот не пишет объявления в остановленные кампании и аудитории (в т. ч. остановленные защитой бюджета в этом проходе)
   if (!opts.owner && (camp.status !== "active" || group.status !== "active")) return null;
@@ -225,25 +393,14 @@ async function createVariant(cx: Ctx, base: Ad, reason: string, opts: { experime
   }
   if (seen(draft)) return null;
 
-  const [acc] = await db.select().from(schema.adAccounts).where(eq(schema.adAccounts.id, camp.accountId));
-  const client = await clientFor(acc);
-  const img = base.imageId ? await getImage(base.imageId) : null;
-  const href = landingUrl(cx.b);
-  const utm = acc.platform === "yandex"
-    ? "utm_source=yandex&utm_medium=cpc&utm_campaign={campaign_id}&utm_content={ad_id}&utm_term={keyword}"
-    : acc.platform === "vk" ? "utm_source=vk&utm_medium=cpc&utm_campaign={{campaign_id}}&utm_content={{banner_id}}" : "utm_source=demo";
+  const { acc, client } = await clientOf(camp);
+  // Лимит объявлений в группе: заменяемое отклонённое уходит в архив первым, базовое и лидер группы остаются
+  const room = await ensureRoom(cx, client, camp, group, [...(opts.replacing ? [] : [base.id]), ...(winner ? [winner.id] : [])], opts.replacing ? "Отклонённое объявление заменяем новым" : "Робот добавляет новый вариант");
+  if (!room) return null;
+  group = room.group;
+  base = room.copies.get(base.id) ?? base;
   const localId = uid("ad_");
-  const res = await client.addAd(camp.externalId, group.externalId, {
-    localId,
-    title: draft.title,
-    title2: draft.title2,
-    text: draft.text,
-    href: `${href}${href.includes("?") ? "&" : "?"}${utm}`,
-    image: img ? { imageId: img.id, data: img.data, mime: img.mime, width: img.width, height: img.height, cachedRef: img.platformRefs?.[acc.platform] } : null,
-    extras: adExtras(cx.b, { channel: camp.channel, href, service: camp.channel === "search" ? group.name : null, text: draft.text }),
-    logo: await logoFor(cx.b, camp.channel),
-    marking: `${nicheById(cx.b.niche).label}: ${cx.b.name}`,
-  }, { channel: camp.channel as Channel });
+  const res = await client.addAd(camp.externalId, group.externalId!, await adSpecFor(cx, camp, group, acc.platform, { ...draft, imageId: base.imageId }, localId), { channel: camp.channel as Channel, orgId: cx.b.orgId });
 
   let experimentId: string | null = null;
   if (opts.experiment) experimentId = uid("x_");
@@ -473,10 +630,15 @@ async function handleRejected(cx: Ctx) {
     if (cx.groups.find((g) => g.id === ad.adGroupId)?.status !== "active") continue; // аудиторию отключили — не пишем замену
     if (cx.ads.some((a) => a.parentAdId === ad.id)) continue; // замену уже делали
     try {
-      const r = await createVariant(cx, ad, `Модерация отклонила объявление: ${ad.statusNote || "без пояснения"}. Нужно переписать, сохранив смысл.`);
+      const r = await createVariant(cx, ad, `Модерация отклонила объявление: ${ad.statusNote || "без пояснения"}. Нужно переписать, сохранив смысл.`, { replacing: true });
       if (!r) continue;
-      await db.update(schema.ads).set({ status: "archived" }).where(eq(schema.ads.id, ad.id));
-      ad.status = "archived";
+      if (ad.status !== "archived") {
+        // Отклонённое занимает место среди неархивных объявлений группы — убираем в архив и у площадки
+        const { client } = await clientOf(camp);
+        if (ad.externalId) await client.archiveAds?.([ad.externalId]).catch((e) => cx.log.push(`Архив ${ad.id}: ${errorText(e)}`));
+        await db.update(schema.ads).set({ status: "archived" }).where(eq(schema.ads.id, ad.id));
+        ad.status = "archived";
+      }
       await logChange({
         businessId: cx.b.id, actor: "robot", kind: "ad_new",
         title: `Переписали объявление, которое не прошло модерацию`,
@@ -576,6 +738,8 @@ async function optimizeAds(cx: Ctx) {
     const cpa = groupS.conversions ? groupS.cost / groupS.conversions : null;
 
     for (const r of rows) {
+      if (g.status !== "active") break; // группу перенесли в новую (лимит объявлений) — дальше решаем уже там
+      if (r.a.status !== "active") continue; // ушло в архив, освобождая место новому варианту
       if (r.a.id === best.a.id || inTest(cx, r.a.id) || cx.protected.has(r.a.id)) continue;
       const pWorse = probBetter(best.s.clicks, best.s.impressions, r.s.clicks, r.s.impressions);
       const ratio = ctr(best.s) / Math.max(ctr(r.s), 1e-6);
@@ -701,47 +865,39 @@ async function creativeTests(cx: Ctx) {
       if (!options.length) continue;
       const layout = pickByThompson(options, layoutStats(cx, camp.channel));
       try {
+        const { acc, client } = await clientOf(camp);
+        // Лимит объявлений в группе: лидер остаётся, место освобождает проигравшее или самое слабое
+        const room = await ensureRoom(cx, client, camp, g, [best.a.id], "Робот проверяет новую картинку");
+        if (!room) continue;
+        const group = room.group;
+        const control = room.copies.get(best.a.id) ?? best.a;
         const creative = await makeCreative(cx.b, { layout, photoId: img.photoId, width: img.width, height: img.height });
-        const [acc] = await db.select().from(schema.adAccounts).where(eq(schema.adAccounts.id, camp.accountId));
-        const client = await clientFor(acc);
-        const full = await getImage(creative.id);
-        const href = landingUrl(cx.b);
-        const utm = acc.platform === "yandex"
-          ? "utm_source=yandex&utm_medium=cpc&utm_campaign={campaign_id}&utm_content={ad_id}"
-          : acc.platform === "vk" ? "utm_source=vk&utm_medium=cpc&utm_campaign={{campaign_id}}&utm_content={{banner_id}}" : "utm_source=demo";
         const localId = uid("ad_");
-        const res = await client.addAd(camp.externalId!, g.externalId!, {
-          localId, title: best.a.title, title2: best.a.title2, text: best.a.text,
-          href: `${href}${href.includes("?") ? "&" : "?"}${utm}`,
-          image: full ? { imageId: full.id, data: full.data, mime: full.mime, width: full.width, height: full.height } : null,
-          extras: adExtras(cx.b, { channel: camp.channel, href, text: best.a.text }),
-          logo: await logoFor(cx.b, camp.channel),
-          marking: `${nicheById(cx.b.niche).label}: ${cx.b.name}`,
-        }, { channel: camp.channel as Channel });
+        const res = await client.addAd(camp.externalId!, group.externalId!, await adSpecFor(cx, camp, group, acc.platform, { title: control.title, title2: control.title2, text: control.text, imageId: creative.id }, localId), { channel: camp.channel as Channel, orgId: cx.b.orgId });
         const experimentId = uid("x_");
         const ad: Ad = {
-          id: localId, businessId: cx.b.id, campaignId: camp.id, adGroupId: g.id, externalId: res.adExt, angle: best.a.angle,
-          title: best.a.title, title2: best.a.title2, text: best.a.text, imageId: creative.id, status: "moderation", statusNote: null,
-          experimentId, parentAdId: best.a.id, createdAt: new Date(),
+          id: localId, businessId: cx.b.id, campaignId: camp.id, adGroupId: group.id, externalId: res.adExt, angle: control.angle,
+          title: control.title, title2: control.title2, text: control.text, imageId: creative.id, status: "moderation", statusNote: null,
+          experimentId, parentAdId: control.id, createdAt: new Date(),
         };
         await db.insert(schema.ads).values(ad);
         cx.ads.push(ad);
         cx.images.set(creative.id, { layout, photoId: img.photoId, width: img.width, height: img.height });
         cx.newAds++;
         const hypothesis = `привлечёт ли картинка «${LAYOUT_NAME[layout]}» больше людей, чем «${LAYOUT_NAME[img.layout as Layout] ?? img.layout}», при том же тексте`;
-        const ex: Experiment = { id: experimentId, businessId: cx.b.id, campaignId: camp.id, kind: "creative", hypothesis, controlId: best.a.id, variantId: ad.id, status: "running", result: null, startedAt: cx.now, finishedAt: null };
+        const ex: Experiment = { id: experimentId, businessId: cx.b.id, campaignId: camp.id, kind: "creative", hypothesis, controlId: control.id, variantId: ad.id, status: "running", result: null, startedAt: cx.now, finishedAt: null };
         await db.insert(schema.experiments).values(ex);
-        await db.update(schema.ads).set({ experimentId }).where(eq(schema.ads.id, best.a.id));
-        best.a.experimentId = experimentId;
+        await db.update(schema.ads).set({ experimentId }).where(eq(schema.ads.id, control.id));
+        control.experimentId = experimentId;
         cx.experiments.push(ex);
         await logChange({
           businessId: cx.b.id, actor: "robot", kind: "test_start",
-          title: `Тестируем другую картинку для ${adLabel(best.a)}`,
+          title: `Тестируем другую картинку для ${adLabel(control)}`,
           reason: `Текст этого объявления работает лучше всех в аудитории «${g.name}». Теперь проверяем, ${hypothesis}. Меняем только картинку — так будет понятно, что именно сработало.`,
-          details: { experimentId, controlId: best.a.id, variantId: ad.id, layout },
+          details: { experimentId, controlId: control.id, variantId: ad.id, layout },
           undo: [{ op: "adStatus", adId: ad.id, status: "paused" }],
         });
-        cx.log.push(`Тест картинки ${layout} в ${g.id}`);
+        cx.log.push(`Тест картинки ${layout} в ${group.id}`);
       } catch (e) {
         cx.log.push(`Тест картинки: ${errorText(e)}`);
       }
@@ -1068,7 +1224,7 @@ export async function ownerVariant(b: Business, adId: string) {
     throw new Error("Для этого объявления уже идёт тест — дождитесь результата");
   }
   const v = await createVariant(cx, ad, "Владелец попросил попробовать другой подход", { experiment: true, owner: true });
-  if (!v) throw new Error("Кампания ещё не создана на площадке");
+  if (!v) throw new Error("Сейчас добавить вариант не получится: кампания ещё не создана на площадке или в группе нет места — все объявления участвуют в тестах. Попробуйте после окончания теста.");
   await logChange({
     businessId: b.id, actor: "owner", kind: "test_start",
     title: `Запустили A/B-тест для ${adLabel(ad)}`,

@@ -482,3 +482,24 @@ export function ceilingOf(camp: { meta?: Record<string, unknown> | null }) {
   const v = camp.meta?.bidCeiling;
   return typeof v === "number" && v > 0 ? v : null;
 }
+
+// ─── Статус заявки (владелец отмечает в один тап: в Telegram или в «Статистике») ───
+export const LEAD_STATUSES = ["booked", "no_answer", "spam"] as const;
+export type LeadStatus = (typeof LEAD_STATUSES)[number];
+export const LEAD_STATUS_LABEL: Record<LeadStatus, string> = { booked: "Записался", no_answer: "Не дозвонились", spam: "Спам" };
+export const isLeadStatus = (v: unknown): v is LeadStatus => typeof v === "string" && (LEAD_STATUSES as readonly string[]).includes(v);
+
+/**
+ * Поставить (или снять — null) статус заявке этого бизнеса. Чужую заявку не находит — 404.
+ * «Записался» затем уходит в Метрику офлайн-конверсией (run.ts → uploadBooked), «Спам» не входит в статистику.
+ */
+export async function setLeadStatus(businessId: string, leadId: string, status: LeadStatus | null) {
+  const db = await getDb();
+  const [row] = await db
+    .update(schema.leads)
+    .set({ status, statusAt: status ? new Date() : null })
+    .where(and(eq(schema.leads.id, leadId), eq(schema.leads.businessId, businessId)))
+    .returning({ id: schema.leads.id, status: schema.leads.status, name: schema.leads.name, contact: schema.leads.contact });
+  if (!row) throw userError("Заявка не найдена", 404);
+  return row;
+}

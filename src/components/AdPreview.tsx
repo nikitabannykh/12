@@ -8,7 +8,6 @@ export function SearchAdPreview({
 }: { title: string; title2?: string | null; text: string; host: string; callouts?: string[]; extras?: AdExtras | null; full?: boolean; image?: string | null }) {
   // Яндекс обычно показывает 3–4 уточнения — столько и показываем
   const cl = (extras?.callouts?.length ? extras.callouts : callouts ?? []).slice(0, 4);
-  const v = extras?.vcard;
   return (
     <div className="rounded-xl border border-line bg-white p-4">
       <div className="flex items-center gap-2 text-[13px] text-muted min-w-0">
@@ -43,11 +42,9 @@ export function SearchAdPreview({
           <div className={`mt-1.5 text-[13.5px] ${LINK} flex flex-wrap gap-x-3`}>{extras.sitelinks.map((s) => <span key={s.title}>{s.title}</span>)}</div>
         )
       ) : null}
-      {v ? (
-        <div className="mt-2 text-[12.5px] text-muted flex flex-wrap gap-x-2">
-          {v.phoneText ? <span className={LINK}>{v.phoneText}</span> : null}
-          {v.street ? <span>· {v.city}, {v.street}{v.house ? `, ${v.house}` : ""}</span> : null}
-          <span>· {v.hoursText}</span>
+      {extras?.org ? (
+        <div className="mt-2 text-[12.5px] text-muted">
+          <span className={LINK}>Адрес, часы работы и рейтинг</span> — из Яндекс Бизнеса
         </div>
       ) : null}
     </div>
@@ -85,11 +82,11 @@ export function ImageAdPreview({
       <div className="p-3">
         <div className="font-bold text-[15px] leading-snug">{title}</div>
         <p className="text-[13.5px] text-ink-2 mt-1 leading-snug">{text}</p>
-        {extras?.price || extras?.vcard ? (
+        {extras?.price || extras?.place ? (
           <div className="mt-1.5 text-[12.5px] text-muted">
             {extras?.price ? <span className="font-semibold text-ink">{extras.price.label}</span> : null}
-            {extras?.price && extras?.vcard?.street ? " · " : ""}
-            {extras?.vcard?.street ? `${extras.vcard.street}${extras.vcard.house ? `, ${extras.vcard.house}` : ""}` : ""}
+            {extras?.price && extras?.place ? " · " : ""}
+            {extras?.place ?? ""}
           </div>
         ) : null}
         <div className="mt-2.5 flex items-center justify-between gap-2">
@@ -98,5 +95,37 @@ export function ImageAdPreview({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Комбинаторное объявление Директа: Яндекс сам собирает показ из нескольких заголовков, текстов и картинок
+ * и чаще показывает удачные сочетания. Показываем владельцу, из чего именно.
+ */
+export function ResponsiveAssets({ titles, texts, images, className = "" }: { titles: string[]; texts: string[]; images?: number; className?: string }) {
+  if (titles.length <= 1 && texts.length <= 1) return null;
+  const n = (k: number, one: string, few: string, many: string) => {
+    const m10 = k % 10, m100 = k % 100;
+    return `${k} ${m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many}`;
+  };
+  return (
+    <details className={`group/ra text-[12.5px] text-muted ${className}`}>
+      <summary className="cursor-pointer list-none inline-flex flex-wrap gap-x-1 font-medium text-ink-2">
+        Яндекс собирает объявление из {n(titles.length, "заголовка", "заголовков", "заголовков")} и {n(texts.length, "текста", "текстов", "текстов")}
+        {images && images > 1 ? <span>, {n(images, "картинки", "картинок", "картинок")}</span> : null}
+        <span className="text-faint group-open/ra:hidden">— показать</span>
+      </summary>
+      <div className="mt-1.5 grid gap-2">
+        <div>
+          <div className="text-faint">Заголовки</div>
+          <ol className="list-decimal pl-5">{titles.map((t) => <li key={t} className="text-ink-2">{t}</li>)}</ol>
+        </div>
+        <div>
+          <div className="text-faint">Тексты</div>
+          <ol className="list-decimal pl-5">{texts.map((t) => <li key={t} className="text-ink-2">{t}</li>)}</ol>
+        </div>
+        <p className="text-faint">Яндекс сам подбирает сочетания и чаще показывает те, на которые лучше кликают. Все варианты — из фактов вашей анкеты.</p>
+      </div>
+    </details>
   );
 }

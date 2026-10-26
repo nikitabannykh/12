@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { and, isNotNull, lt, or } from "drizzle-orm";
 import { runAll } from "@/lib/engine/run";
-import { sendDigests } from "@/lib/notify";
+import { pollUpdates, sendDigests } from "@/lib/notify";
 import { getDb, schema } from "@/lib/db";
 import { macEqual } from "@/lib/crypto";
 import { hit } from "@/lib/ratelimit";
@@ -24,7 +24,9 @@ async function cleanup() {
  * Оптимизатор по расписанию. Вызывается:
  *  - Vercel Cron (заголовок Authorization: Bearer CRON_SECRET — переменную CRON_SECRET нужно создать в проекте),
  *  - GitHub Actions / любой внешний планировщик: заголовок Authorization: Bearer CRON_SECRET
- * После прохода робота рассылает утренние сводки в Telegram.
+ * После прохода робота рассылает утренние сводки в Telegram. Внутри прохода (run.ts) — проверка баланса кабинетов
+ * с предупреждением в Telegram и пачечная загрузка офлайн-конверсий «Записался» в Метрику.
+ * Без https (локально) сначала забирает нажатия кнопок в Telegram (getUpdates) — на https они приходят вебхуком.
  */
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
@@ -39,6 +41,7 @@ export async function GET(req: Request) {
   if (!allowed) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const started = Date.now();
+  await pollUpdates().catch(() => {});
   const r = await runAll(45_000);
   let digests: unknown = null;
   try {

@@ -95,3 +95,51 @@ export async function ensureLogo(b: Business) {
   const saved = await saveImage(b.id, "creative", await renderLogo(b), { layout: "logo" });
   return getImage(saved.id);
 }
+
+/**
+ * Пропорции картинок для комбинаторного объявления Директа (до 5 в ResponsiveAd.AdImageHashes):
+ * 1:1 и 4:3/3:4 — тип REGULAR (450–5000 px по стороне), 16:9 — WIDE (от 1080×607),
+ * https://yandex.ru/dev/direct/doc/ru/objects/adimage. Разные пропорции — больше мест показа в РСЯ и на поиске.
+ */
+export const DIRECT_IMAGE_SIZES = [
+  { width: 1080, height: 1080 },
+  { width: 1080, height: 607 },
+  { width: 1080, height: 810 },
+  { width: 810, height: 1080 },
+] as const;
+
+const ratioKey = (w: number, h: number) => (Math.abs(w / h - 16 / 9) < 0.05 ? "16:9" : Math.abs(w / h - 1) < 0.02 ? "1:1" : w > h ? "4:3" : "3:4");
+
+/**
+ * Та же картинка в других пропорциях: тот же макет и то же фото (а для поиска — та же услуга и цена).
+ * Набор запоминается (kv `imgset:<id>`), поэтому при запуске, у робота и при повторах он одинаковый.
+ * Возвращает картинки без исходной; ошибки рендера не мешают — просто меньше пропорций.
+ */
+export async function imageSet(b: Business, baseImageId: string, ctx: { headline?: string; price?: string } = {}) {
+  const db = await getDb();
+  const key = `imgset:${baseImageId}`;
+  const base = await getImage(baseImageId);
+  if (!base || !base.layout || base.layout === "logo") return [];
+  const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, key));
+  const known = { ...((row?.value as Record<string, string> | undefined) ?? {}) };
+  const own = ratioKey(base.width, base.height);
+  let changed = false;
+  for (const sz of DIRECT_IMAGE_SIZES) {
+    const r = ratioKey(sz.width, sz.height);
+    if (r === own || known[r]) continue;
+    try {
+      const img = await makeCreative(b, { layout: base.layout as Layout, photoId: base.prompt?.startsWith("img_") ? base.prompt : null, width: sz.width, height: sz.height, headline: ctx.headline, price: ctx.price, variant: 0 });
+      known[r] = img.id;
+      changed = true;
+    } catch {
+      /* без этой пропорции */
+    }
+  }
+  if (changed) {
+    if (row) await db.update(schema.kv).set({ value: known, updatedAt: new Date() }).where(eq(schema.kv.key, key));
+    else await db.insert(schema.kv).values({ key, value: known }).onConflictDoUpdate({ target: schema.kv.key, set: { value: known, updatedAt: new Date() } });
+  }
+  const ids = Object.entries(known).filter(([r]) => r !== own).map(([, id]) => id);
+  const imgs = await Promise.all(ids.map((id) => getImage(id)));
+  return imgs.filter((x): x is NonNullable<typeof x> => !!x);
+}

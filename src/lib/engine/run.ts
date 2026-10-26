@@ -1,7 +1,8 @@
 import "server-only";
 import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { getDb, schema } from "../db";
-import { syncBusiness } from "./sync";
+import { syncBusiness, syncOfflineConversions } from "./sync";
+import { checkBalances } from "./balance";
 import { optimizeBusiness } from "./optimizer";
 import { accountsFor, launchStalled, publishStep, type LaunchPlan } from "./launch";
 import { errorText, uid } from "../util";
@@ -48,6 +49,12 @@ export async function runBusiness(businessId: string, opts: { optimize?: boolean
   try {
     const s = await syncBusiness(b);
     log.push(...s.errors.map((e) => `синхронизация: ${e}`));
+    // Баланс кабинетов и офлайн-конверсии «Записался» в Метрику — их ошибки не мешают роботу
+    const bal = await checkBalances(b).catch((e) => ({ balances: [], errors: [errorText(e)] }));
+    log.push(...bal.errors);
+    const off = await syncOfflineConversions(b).catch((e) => ({ uploaded: 0, error: errorText(e) }));
+    if (off.error) log.push(`офлайн-конверсии: ${off.error}`);
+    else if (off.uploaded) log.push(`офлайн-конверсии: загружено в Метрику ${off.uploaded}`);
     if (opts.optimize !== false && b.status === "active") {
       const o = await optimizeBusiness(b);
       log.push(...o.log);

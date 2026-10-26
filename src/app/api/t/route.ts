@@ -2,6 +2,7 @@ import { and, eq, gte } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { uid } from "@/lib/util";
 import { attribute, ipKey, signFirstTouch, within } from "@/lib/ratelimit";
+import { metrikaIds } from "@/lib/platforms/metrica";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" };
 const empty = () => new Response(null, { status: 204, headers: cors });
@@ -44,6 +45,7 @@ export async function POST(req: Request) {
       if (recent.length) return empty();
     }
     const a = await attribute(b, d.ft);
+    const ids = metrikaIds(d);
     await db.insert(schema.leads).values({
       id: uid("l_"),
       businessId: b.id,
@@ -52,6 +54,8 @@ export async function POST(req: Request) {
       source: a.source,
       campaignExt: a.campaignExt,
       adExt: a.adExt,
+      metrikaClientId: ids.metrikaClientId,
+      yclid: ids.yclid,
     });
   } catch {
     /* трекер не должен ломать сайт */

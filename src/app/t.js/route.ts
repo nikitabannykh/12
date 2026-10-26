@@ -8,6 +8,9 @@ import { appUrl } from "@/lib/util";
  * - Персональные данные НЕ собирает: значения полей форм не читаются и никуда не отправляются.
  *   Засчитываются только формы с полем телефона или с атрибутом data-pz-lead; формы с паролем — никогда.
  * - window.pzGoal(kind) — только цели Метрики (для нашей формы записи, которая сама шлёт заявку на сервер).
+ * - Для офлайн-конверсий запоминает ClientID Метрики (ym(id,'getClientID')) и yclid из ссылки Директа (30 дней)
+ *   и передаёт их вместе с обращением: когда владелец отметит «Записался», мы загрузим это в Метрику.
+ *   window.pzIds() — те же идентификаторы для нашей формы записи.
  */
 export async function GET() {
   const endpoint = `${appUrl()}/api/t`;
@@ -21,10 +24,16 @@ var q;try{q=new URLSearchParams(location.search)}catch(e){q=null}
 if(q&&q.get('utm_source')&&!ft()&&window.fetch){
 fetch(E,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({key:key,kind:'visit',source:q.get('utm_source'),campaign:q.get('utm_campaign'),ad:q.get('utm_content')})})
 .then(function(r){return r.json()}).then(function(d){if(d&&d.ft)ls('pz_ft',JSON.stringify({v:d.ft,t:Date.now()}))})['catch'](function(){})}
+if(q){var yc=q.get('yclid');if(yc&&/^\\d{1,25}$/.test(yc))ls('pz_yclid',JSON.stringify({v:yc,t:Date.now()}))}
+function ycl(){try{var x=JSON.parse(ls('pz_yclid')||'null');if(x&&x.v&&Date.now()-x.t<30*864e5)return x.v}catch(e){}return null}
+var cid=ls('pz_ymcid');
+function askCid(n){if(!ym)return;if(window.ym){try{ym(+ym,'getClientID',function(c){if(c&&/^\\d{1,25}$/.test(String(c))){cid=String(c);ls('pz_ymcid',cid)}})}catch(e){}}else if(n<20)setTimeout(function(){askCid(n+1)},500)}
+askCid(0);
+function ids(){return{cid:cid||null,yclid:ycl()}}
 function goal(kind){if(ym&&window.ym){try{ym(+ym,'reachGoal','pz_'+kind);ym(+ym,'reachGoal','pz_lead')}catch(e){}}}
 var sent={};
 function send(kind){if(sent[kind]&&Date.now()-sent[kind]<60000)return;sent[kind]=Date.now();goal(kind);
-var body=JSON.stringify({key:key,kind:kind,vid:vid,ft:ft()});
+var i=ids(),body=JSON.stringify({key:key,kind:kind,vid:vid,ft:ft(),cid:i.cid,yclid:i.yclid});
 try{if(navigator.sendBeacon&&navigator.sendBeacon(E,new Blob([body],{type:'text/plain'})))return}catch(e){}
 if(window.fetch)fetch(E,{method:'POST',body:body,keepalive:true,headers:{'Content-Type':'text/plain'}})['catch'](function(){})}
 function isLeadForm(f){if(f.hasAttribute('data-pz-lead'))return true;try{if(f.querySelector('input[type=password]'))return false;
@@ -35,6 +44,7 @@ document.addEventListener('submit',function(e){var f=e.target;if(!f||!f.hasAttri
 window.pzLead=function(kind){send(kind==='phone'||kind==='messenger'?kind:'form')};
 window.pzGoal=goal;
 window.pzFirstTouch=ft;
+window.pzIds=ids;
 })();`;
   return new Response(js, { headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600", "Access-Control-Allow-Origin": "*" } });
 }

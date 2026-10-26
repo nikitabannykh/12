@@ -3,7 +3,19 @@
 import { useEffect, useState } from "react";
 import { Check, Loader2 } from "lucide-react";
 
-type W = Window & { pzGoal?: (kind: string) => void; pzFirstTouch?: () => string | null; ym?: (...a: unknown[]) => void };
+type W = Window & { pzGoal?: (kind: string) => void; pzFirstTouch?: () => string | null; pzIds?: () => { cid: string | null; yclid: string | null }; ym?: (...a: unknown[]) => void };
+
+/** ClientID Метрики и yclid Директа — для офлайн-конверсии, когда владелец отметит «Записался» */
+function metrikaIds(): { cid: string | null; yclid: string | null } {
+  try {
+    const w = window as W;
+    if (w.pzIds) return w.pzIds();
+    const y = JSON.parse(localStorage.getItem("pz_yclid") || "null");
+    return { cid: localStorage.getItem("pz_ymcid"), yclid: y?.v && Date.now() - y.t < 30 * 864e5 ? y.v : null };
+  } catch {
+    return { cid: null, yclid: null };
+  }
+}
 
 /** Подписанное первое касание: из трекера (localStorage), иначе — выданное сервером по utm этой страницы */
 function firstTouch(fallback: string | null): string | null {
@@ -18,8 +30,12 @@ function firstTouch(fallback: string | null): string | null {
 }
 
 /** Цели Метрики: pz_form и pz_lead (по pz_lead Директ оптимизирует стратегию «по заявкам») */
-function reachGoals(counterId: number | null) {
+function reachGoals(counterId: number | null, vkPixel: number | null) {
   const w = window as W;
+  // VK: событие «lead» пикселя — по нему VK Реклама оптимизирует кампанию на заявки
+  try {
+    if (vkPixel) ((window as unknown as { _tmr?: unknown[] })._tmr ??= []).push({ type: "reachGoal", id: vkPixel, goal: "lead" });
+  } catch {}
   try {
     if (w.pzGoal) return w.pzGoal("form");
     if (counterId && w.ym) {
@@ -36,8 +52,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * onAccent — текст на кнопке цвета accent. Цвет текста задаём явно, иначе на тёмных палитрах он наследует светлый.
  */
 export function LeadForm({
-  publicKey, services, accent, onAccent, ink, ts: ts0, ft, counterId, privacyUrl,
-}: { publicKey: string; services: string[]; accent: string; onAccent: string; ink: string; ts: string; ft: string | null; counterId: number | null; privacyUrl: string }) {
+  publicKey, services, accent, onAccent, ink, ts: ts0, ft, counterId, vkPixel = null, privacyUrl,
+}: { publicKey: string; services: string[]; accent: string; onAccent: string; ink: string; ts: string; ft: string | null; counterId: number | null; vkPixel?: number | null; privacyUrl: string }) {
   const [state, setState] = useState<"idle" | "busy" | "done">("idle");
   const [err, setErr] = useState("");
   const [ts, setTs] = useState(ts0);
@@ -77,7 +93,7 @@ export function LeadForm({
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                key: publicKey, ts: token, ft: firstTouch(ft), vid,
+                key: publicKey, ts: token, ft: firstTouch(ft), vid, ...metrikaIds(),
                 name: fd.get("name"), contact: fd.get("phone"), message: fd.get("service"), website: fd.get("website"),
               }),
             });
@@ -94,7 +110,7 @@ export function LeadForm({
             }
           }
           if (res.ok || data.code === "used") {
-            if (res.ok) reachGoals(counterId);
+            if (res.ok) reachGoals(counterId, vkPixel);
             setState("done");
           } else {
             setErr(data.error || "Не отправилось — попробуйте ещё раз");

@@ -4,6 +4,7 @@ import { uid } from "@/lib/util";
 import { sameOrigin } from "@/lib/api";
 import { attribute, consumeFormToken, formToken, hit, ipKey, readFormToken, within } from "@/lib/ratelimit";
 import { formatPhone, notifyLead, notifySuspect } from "@/lib/notify";
+import { metrikaIds } from "@/lib/platforms/metrica";
 
 const bad = (error: string, status = 400) => Response.json({ error }, { status });
 
@@ -90,8 +91,9 @@ export async function POST(req: Request) {
   const suspect = !burst.ok;
   const a = suspect ? { source: null, campaignExt: null, adExt: null, adTitle: null } : await attribute(b, d.ft);
   const vid = typeof d.vid === "string" && /^[\w-]{6,64}$/.test(d.vid) ? d.vid : null;
+  const leadId = uid("l_");
   await db.insert(schema.leads).values({
-    id: uid("l_"),
+    id: leadId,
     businessId: b.id,
     kind: suspect ? "suspect" : "form",
     visitorId: vid,
@@ -101,11 +103,12 @@ export async function POST(req: Request) {
     source: a.source,
     campaignExt: a.campaignExt,
     adExt: a.adExt,
+    ...metrikaIds(d),
   });
 
   // Сразу сообщаем владельцу; ошибка уведомления не должна терять заявку
   try {
-    if (!suspect) await notifyLead({ businessId: b.id, businessName: b.name, name: name || null, contact: phone, service, source: a.source, adTitle: a.adTitle });
+    if (!suspect) await notifyLead({ leadId, businessId: b.id, businessName: b.name, name: name || null, contact: phone, service, source: a.source, adTitle: a.adTitle });
     else if (burst.count === BIZ_SUSPECT_PER_HOUR + 1) await notifySuspect(b.id, b.name, BIZ_SUSPECT_PER_HOUR);
   } catch (e) {
     console.error("notifyLead", e);

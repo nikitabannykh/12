@@ -1,12 +1,16 @@
 /**
  * Всё, что можно показать в объявлении помимо заголовка и текста:
- * уточнения, быстрые ссылки, отображаемая ссылка, цена, визитка (адрес, телефон, часы), длинный текст для VK.
- * Собирается из анкеты бизнеса — одинаково для запуска, робота и предпросмотра.
+ * уточнения, быстрые ссылки, отображаемая ссылка, цена, профиль организации, длинный текст для VK,
+ * дополнительные заголовки и тексты комбинаторного объявления Директа, расписание показов по часам работы.
+ * Собирается из анкеты бизнеса — одинаково для запуска, робота и предпросмотра (модуль работает и в браузере).
  */
 import type { Business } from "../db/schema";
 import { nicheById } from "../niches";
 
-export type ExtrasBiz = Pick<Business, "name" | "niche" | "city" | "address" | "phone" | "whatsapp" | "telegram" | "hours" | "services" | "advantages" | "offer" | "review" | "description">;
+export type ExtrasBiz = Pick<Business, "name" | "niche" | "city" | "address" | "phone" | "whatsapp" | "telegram" | "hours" | "services" | "advantages" | "offer" | "review" | "description"> & {
+  /** ID организации в Яндекс Бизнесе (permalink): адрес, телефон, часы и рейтинг Директ берёт из профиля */
+  orgId?: string | null;
+};
 
 /** Уточнения из плана (их можно отредактировать в мастере) идут первыми, затем факты из анкеты */
 export function withPlanCallouts<T extends { callouts: string[] }>(x: T, planned: string[] | undefined): T {
@@ -16,22 +20,18 @@ export function withPlanCallouts<T extends { callouts: string[] }>(x: T, planned
 
 export type Sitelink = { title: string; href: string; description?: string };
 export type PriceExt = { price: number; qualifier: "FROM" | "NONE"; label: string };
-export type VCard = {
-  company: string;
-  city: string;
-  street: string | null;
-  house: string | null;
-  phone: { country: string; city: string; number: string } | null;
-  phoneText: string | null;
-  hoursText: string;
-  workTime: string; // формат Директа: «день;день;час;мин;час;мин»
-};
 export type AdExtras = {
   callouts: string[];
   sitelinks: Sitelink[];
   displayPath: string | null;
   price: PriceExt | null;
-  vcard: VCard | null;
+  /**
+   * Профиль организации в Яндекс Бизнесе (Директ: BusinessId). Визитки (VCardId) Директ больше не сохраняет —
+   * адрес, телефон, часы и рейтинг под объявлением показываются только из профиля организации.
+   */
+  org: { id: string } | null;
+  /** Улица и дом — для подписи под картинкой в предпросмотре РСЯ */
+  place: string | null;
   longText: string; // VK: до 220
   about: string; // VK: «о компании», до 115
 };
@@ -156,14 +156,6 @@ function splitAddress(addr?: string | null) {
   return { street: parts[0] ?? addr, house: null };
 }
 
-function parsePhone(p?: string | null) {
-  if (!p) return null;
-  let d = p.replace(/\D/g, "");
-  if (d.length === 11 && (d[0] === "8" || d[0] === "7")) d = d.slice(1);
-  if (d.length !== 10) return null;
-  return { country: "+7", city: d.slice(0, 3), number: d.slice(3) };
-}
-
 /** «Пн–Пт 9:00–20:00» → «0;4;09;00;20;00». По умолчанию ежедневно 10–21. */
 export function parseHours(h?: string | null) {
   const text = clean(h ?? "") || "Ежедневно 10:00–21:00";
@@ -231,12 +223,7 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
     .reduce((acc, w) => (acc.done ? acc : (acc.s ? `${acc.s}-${w}` : w).length <= 20 ? { s: acc.s ? `${acc.s}-${w}` : w, done: false } : { ...acc, done: true }), { s: "", done: false })
     .s.replace(/(-(и|в|во|на|для|с|со|по|от|до|к|у|из|или|а|о|за))+$/, "");
 
-  const phone = parsePhone(b.phone);
-  const vcard: VCard | null =
-    // Директ требует часы работы в визитке — без часов от владельца визитку не создаём, а не выдумываем «10–21»
-    (phone || b.address) && clean(b.hours ?? "")
-      ? { company: cut(b.name, 255), city: b.city, street, house, phone, phoneText: b.phone ?? null, hoursText: hours.text, workTime: hours.workTime }
-      : null;
+  const orgId = b.orgId && /^\d{3,20}$/.test(String(b.orgId).trim()) ? String(b.orgId).trim() : null;
 
   const longParts = [
     o.text,
@@ -270,10 +257,268 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
     sitelinks,
     displayPath: displayPath || null,
     price: o.channel === "vk" ? null : priceLabel,
-    vcard,
+    org: o.channel === "vk" || !orgId ? null : { id: orgId },
+    place: street ? `${street}${house ? `, ${house}` : ""}` : null,
     longText,
     about,
   };
 }
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// ─── Организация в Яндекс Картах / Бизнесе ─────────────────────────────
+
+/**
+ * ID организации (permalink) из ссылки владельца:
+ *  - yandex.ru/maps/org/<slug>/<id>/ (и yandex.com, .kz, .by, с /maps/<город>/org/…);
+ *  - yandex.ru/maps/?…&oid=<id> и …&ll=…&poi[uri]=ymapsbm1://org?oid=<id>;
+ *  - yandex.ru/sprav/<id>/… и yandex.ru/sprav/companies/<id>, business.yandex.ru/…/<id>;
+ *  - просто число.
+ * Короткие ссылки (yandex.ru/maps/-/…) без запроса к Яндексу не раскрыть — для них null.
+ */
+export function parseOrgId(input?: string | null): string | null {
+  const raw = (input ?? "").trim();
+  if (!raw) return null;
+  if (/^\d{5,20}$/.test(raw)) return raw;
+  let s = raw;
+  try {
+    s = decodeURIComponent(raw);
+  } catch {
+    /* как есть */
+  }
+  if (!/yandex\.|ya\.ru/i.test(s)) return null;
+  const pats = [
+    /\/maps\/(?:\d+\/[^/]+\/)?org\/(?:[^/?#]+\/)?(\d{5,20})(?:[/?#]|$)/i,
+    /[?&](?:oid|orgid|permalink)=(\d{5,20})/i,
+    /org\?oid=(\d{5,20})/i,
+    /\/sprav\/(?:companies\/)?(\d{5,20})(?:[/?#]|$)/i,
+    /business\.yandex\.[a-z]+\/[^?#]*?\/(\d{5,20})(?:[/?#]|$)/i,
+  ];
+  for (const re of pats) {
+    const m = s.match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// ─── Расписание показов по часам работы ────────────────────────────────
+
+const DAY_CODES = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"] as const;
+const DAY_FULL: [RegExp, string][] = [
+  [/понедельник[а-я]*/g, "пн"], [/вторник[а-я]*/g, "вт"], [/сред[а-я]*/g, "ср"], [/четверг[а-я]*/g, "чт"],
+  [/пятниц[а-я]*/g, "пт"], [/суббот[а-я]*/g, "сб"], [/воскресень[а-я]*|воскресен[а-я]*/g, "вс"],
+];
+
+/** Часы работы по дням: [открытие, закрытие) в часах (0–24) или null — выходной. null целиком — разобрать не удалось. */
+export function parseWeekHours(h?: string | null): ({ open: number; close: number } | null)[] | null {
+  let t = ` ${(h ?? "").toLowerCase().replace(/ё/g, "е").replace(/[–—−‐‑]/g, "-")} `;
+  if (!t.trim()) return null;
+  for (const [re, code] of DAY_FULL) t = t.replace(re, code);
+  // «пн-пт» → «пн вт ср чт пт»
+  t = t.replace(/(пн|вт|ср|чт|пт|сб|вс)\.?\s*-\s*(пн|вт|ср|чт|пт|сб|вс)\.?/g, (_, a: string, b: string) => {
+    const i = DAY_CODES.indexOf(a as (typeof DAY_CODES)[number]), j = DAY_CODES.indexOf(b as (typeof DAY_CODES)[number]);
+    const out: string[] = [];
+    for (let k = i; ; k = (k + 1) % 7) {
+      out.push(DAY_CODES[k]);
+      if (k === j || out.length > 7) break;
+    }
+    return ` ${out.join(" ")} `;
+  });
+  const days: ({ open: number; close: number } | null | undefined)[] = Array(7).fill(undefined);
+  let pending: number[] = [];
+  let any = false;
+  const assign = (v: { open: number; close: number } | null) => {
+    const target = pending.length ? pending : days.map((d, i) => (d === undefined ? i : -1)).filter((i) => i >= 0);
+    for (const i of target) days[i] = v;
+    pending = [];
+    any = true;
+  };
+  const re = /(?<![а-я])(ежедневно|каждый день|без выходных|круглосуточно|24\s*\/\s*7|будни|будние дни|по будням|выходн[а-я]*|закрыт[а-я]*|пн|вт|ср|чт|пт|сб|вс)(?![а-я])|(\d{1,2})(?:[:.](\d{2}))?\s*(?:-|до)\s*(\d{1,2})(?:[:.](\d{2}))?/g;
+  for (const m of t.matchAll(re)) {
+    const w = m[1];
+    if (w) {
+      if (/^(ежедневно|каждый день|без выходных)$/.test(w)) pending = [0, 1, 2, 3, 4, 5, 6];
+      else if (/^(круглосуточно|24)/.test(w)) assign({ open: 0, close: 24 });
+      else if (/^(будни|будние дни|по будням)$/.test(w)) pending = [0, 1, 2, 3, 4];
+      else if (/^выходн/.test(w)) {
+        if (pending.length) assign(null); // «сб, вс — выходной»
+        else pending = [5, 6]; // «выходные 11-20»
+      } else if (/^закрыт/.test(w)) assign(null);
+      else {
+        const i = DAY_CODES.indexOf(w as (typeof DAY_CODES)[number]);
+        if (i >= 0 && !pending.includes(i)) pending.push(i);
+      }
+      continue;
+    }
+    const open = Number(m[2]) + Number(m[3] ?? 0) / 60;
+    let close = Number(m[4]) + Number(m[5] ?? 0) / 60;
+    if (open > 24 || close > 24) continue;
+    if (close === 0 || close <= open) close = 24; // «до 00:00», «до 2 ночи» — считаем до полуночи
+    assign({ open, close });
+  }
+  if (!any) return null;
+  // Дни, которые владелец не упомянул («Пн–Пт 9–20»), считаем выходными
+  return days.map((d) => (d === undefined ? null : d));
+}
+
+/** Часовой пояс Директа по городу (по умолчанию — московское время) */
+const CITY_TZ: [RegExp, string][] = [
+  [/калининград/, "Europe/Kaliningrad"],
+  [/самар|тольятти|ижевск|сызран/, "Europe/Samara"],
+  [/ульяновск/, "Europe/Ulyanovsk"],
+  [/саратов/, "Europe/Saratov"],
+  [/волгоград|волжск/, "Europe/Volgograd"],
+  [/астрахан/, "Europe/Astrakhan"],
+  [/екатеринбург|челябинск|пермь|уфа|тюмень|оренбург|курган|магнитогорск|сургут|нижневартовск|стерлитамак|нижний тагил|ханты/, "Asia/Yekaterinburg"],
+  [/омск/, "Asia/Omsk"],
+  [/новосибирск|бердск/, "Asia/Novosibirsk"],
+  [/барнаул|бийск/, "Asia/Barnaul"],
+  [/томск/, "Asia/Tomsk"],
+  [/кемерово|новокузнецк/, "Asia/Novokuznetsk"],
+  [/красноярск|абакан|норильск/, "Asia/Krasnoyarsk"],
+  [/иркутск|улан-удэ|братск|ангарск/, "Asia/Irkutsk"],
+  [/чита/, "Asia/Chita"],
+  [/якутск/, "Asia/Yakutsk"],
+  [/владивосток|хабаровск|уссурийск|находка|комсомольск/, "Asia/Vladivostok"],
+  [/магадан|южно-сахалинск/, "Asia/Magadan"],
+  [/петропавловск-камчатский/, "Asia/Kamchatka"],
+];
+export function timeZoneFor(city?: string | null) {
+  const c = (city ?? "").toLowerCase().replace(/ё/g, "е");
+  // «Омск» не путаем с «Томском»: сначала проверяем более длинные совпадения
+  if (/томск/.test(c)) return "Asia/Tomsk";
+  return CITY_TZ.find(([re]) => re.test(c))?.[1] ?? "Europe/Moscow";
+}
+
+/**
+ * Расписание показов Директа (TimeTargeting.Schedule) по часам работы: реклама идёт с часа-двух до открытия
+ * (люди планируют визит заранее) и до часа после закрытия. Ночью не показываем: записаться можно только на завтра,
+ * а звонок останется без ответа. В выходной день бизнеса реклама идёт в обычные часы — записываются на другие дни
+ * через онлайн-форму. Коэффициенты только 0 и 100: почасовые корректировки автостратегии Директа не учитывают.
+ * null — часы неизвестны, работают круглосуточно или окно вышло бы слишком узким (Директ требует от 40 часов
+ * показов в рабочие дни недели).
+ */
+export function timeTargeting(b: Pick<ExtrasBiz, "hours" | "city">): { schedule: string[]; timeZone: string; considerWorkingWeekends: boolean; note: string } | null {
+  const week = parseWeekHours(b.hours);
+  if (!week) return null;
+  const open = week.filter((d): d is { open: number; close: number } => !!d);
+  if (!open.length || open.every((d) => d.open <= 0 && d.close >= 24)) return null;
+  // Обычные часы — самые частые среди рабочих дней
+  const key = (d: { open: number; close: number }) => `${d.open}-${d.close}`;
+  const freq = new Map<string, number>();
+  for (const d of open) freq.set(key(d), (freq.get(key(d)) ?? 0) + 1);
+  const usual = open.find((d) => key(d) === [...freq.entries()].sort((x, y) => y[1] - x[1])[0][0])!;
+  const windowOf = (d: { open: number; close: number }) => ({ from: Math.max(0, Math.floor(d.open) - 2), to: Math.min(24, Math.ceil(d.close) + 1) });
+  const schedule: string[] = [];
+  let weekdayHours = 0;
+  for (let i = 0; i < 7; i++) {
+    const w = windowOf(week[i] ?? usual);
+    const coef = Array.from({ length: 24 }, (_, h) => (h >= w.from && h < w.to ? 100 : 0));
+    if (i < 5) weekdayHours += coef.filter(Boolean).length;
+    schedule.push(`${i + 1},${coef.join(",")}`);
+  }
+  if (weekdayHours < 40) return null;
+  const u = windowOf(usual);
+  const hh = (x: number) => `${String(x).padStart(2, "0")}:00`;
+  return {
+    schedule,
+    timeZone: timeZoneFor(b.city),
+    considerWorkingWeekends: true,
+    note: `Реклама показывается с ${hh(u.from)} до ${hh(u.to)} (по часам работы: за пару часов до открытия и час после закрытия), ночью — нет.`,
+  };
+}
+
+// ─── Комбинаторное объявление Директа: дополнительные заголовки и тексты ──
+
+/** Директ: заголовок до 56 символов (слово до 22), текст до 81 (слово до 23); до 7 заголовков и 3 текстов */
+export const RESPONSIVE_LIMITS = { title: 56, text: 81, word: 22, textWord: 23, titles: 7, texts: 3 } as const;
+
+/**
+ * Заголовки и тексты комбинаторного объявления (ResponsiveAd): основной вариант + варианты из фактов анкеты
+ * (услуга, цена, адрес, предложение, преимущества, часы). Ничего не придумываем — только то, что написал владелец,
+ * и правда о продукте (онлайн-запись). Детерминированно: одинаково при запуске, у робота и в предпросмотре,
+ * поэтому в БД хранится только основной заголовок и текст.
+ */
+export function responsiveAssets(b: ExtrasBiz, ad: { title: string; title2?: string | null; text: string }, o: { service?: string | null } = {}) {
+  const L = RESPONSIVE_LIMITS;
+  const services = b.services ?? [];
+  const svcRow = (o.service && services.find((s) => s.name === o.service)) || null;
+  const svc = clean(svcRow?.name ?? o.service ?? services[0]?.name ?? "") || (nicheById(b.niche).id === "other" ? clean(b.name) : nicheById(b.niche).generic);
+  const priceRaw = clean((svcRow ?? (o.service ? null : services[0]))?.price ?? "");
+  const p = priceRaw ? (/₽|руб/i.test(priceRaw) ? priceRaw : `${priceRaw} ₽`) : null;
+  const name = clean(b.name);
+  const street = b.address ? clean(b.address.split(/[,—–]/)[0]) : null;
+  const where = street ? `${b.city}, ${street}` : b.city;
+  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter(Boolean);
+  const offer = b.offer ? withoutSuperlatives(b.offer) : null;
+  const hours = clean(b.hours ?? "") || null;
+  const low = (s: string) => (/^\p{Lu}{2}/u.test(s) ? s : s.charAt(0).toLowerCase() + s.slice(1));
+  const okWords = (s: string, max: number) => s.split(/\s+/).every((w) => w.length <= max);
+  const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+
+  const pickList = (cands: (string | null | false | undefined)[], max: number, word: number, limit: number, distinct = false) => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const c0 of cands) {
+      if (!c0) continue;
+      const c = clean(c0).replace(/\s+([.,!?;:])/g, "$1");
+      if (!c || c.length > max || !okWords(c, word) || hasSuperlative(c) || badChars(c).length) continue;
+      const k = norm(c);
+      if (!k || seen.has(k)) continue;
+      // Текст, который почти целиком повторяет уже взятый, Яндексу ничего не добавляет
+      if (distinct && [...seen].some((x) => x.includes(k) || k.includes(x))) continue;
+      seen.add(k);
+      out.push(c);
+      if (out.length >= limit) break;
+    }
+    return out;
+  };
+  const sent = (parts: (string | null | false | undefined)[], max: number) => {
+    let out = "";
+    for (const raw of parts) {
+      if (!raw) continue;
+      const t = clean(raw).replace(/[.!]+$/, "");
+      if (!t) continue;
+      const s = `${t}.`;
+      if (out.toLowerCase().includes(t.toLowerCase())) continue;
+      const next = out ? `${out} ${s}` : s;
+      if (next.length <= max) out = next;
+    }
+    return out;
+  };
+
+  const title = clean(ad.title);
+  const title2 = clean(ad.title2 ?? "");
+  const titles = pickList(
+    [
+      title,
+      // Так Директ сам склеивает второй заголовок текстово-графического объявления (если влезает в 56)
+      title2 && `${title.replace(/[.!]$/, "")}. ${title2}`,
+      // Второго заголовка у комбинаторного объявления нет: если склейка не влезла, факт из него — отдельным заголовком с услугой
+      title2 && !norm(title2).includes(norm(svc)) && `${svc}: ${low(title2)}`,
+      p && `${svc} — ${p}`,
+      p && `${svc} — ${p}, ${b.city}`,
+      street ? `${svc} — ${b.city}, ${street}` : `${svc} — ${b.city}`,
+      `${name}: ${low(svc)}`,
+      offer && `${svc}: ${low(offer)}`,
+      // Преимущество — отдельным заголовком, не приписывая его конкретной услуге
+      adv[0] && adv[0].length >= 12 && adv[0],
+      adv[1] && adv[1].length >= 12 && adv[1],
+      `${svc} — онлайн-запись`,
+    ],
+    L.title, L.word, L.titles,
+  );
+  const texts = pickList(
+    [
+      clean(ad.text),
+      sent([`${svc}${p ? ` — ${p}` : ""}`, adv[0], adv[1], `${name}, ${where}`, "Запишитесь онлайн за минуту"], L.text),
+      sent([offer ? offer.charAt(0).toUpperCase() + offer.slice(1) : null, adv[1] ?? adv[0], hours && `Работаем: ${hours}`, `${name}, ${where}`, "Онлайн-запись на удобное время"], L.text),
+      sent([`${name}, ${where}`, hours, "Выберите удобное время онлайн"], L.text),
+    ],
+    L.text, L.textWord, L.texts, true,
+  );
+  // Основной заголовок и текст идут первыми, даже если они длиннее лимита (их проверяет валидация владельца)
+  if (title && titles[0] !== title) titles.unshift(title);
+  if (clean(ad.text) && texts[0] !== clean(ad.text)) texts.unshift(clean(ad.text));
+  return { titles: titles.slice(0, L.titles), texts: texts.slice(0, L.texts) };
+}

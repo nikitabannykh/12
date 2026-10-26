@@ -33,6 +33,8 @@ export default async function Start() {
           telegram: b?.telegram ?? "",
           hours: b?.hours ?? "",
           siteUrl: b?.siteUrl ?? "",
+          orgUrl: b?.orgUrl ?? "",
+          legalInfo: b?.legalInfo ?? "",
           description: b?.description ?? "",
           services: b?.services ?? [],
           advantages: b?.advantages ?? [],

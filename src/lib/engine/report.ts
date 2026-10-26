@@ -1,5 +1,5 @@
 import "server-only";
-import { and, desc, eq, gte, lte, ne } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lte, ne, or } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { Business, Campaign } from "../db/schema";
 import { demoNow } from "../platforms/demo";
@@ -15,7 +15,10 @@ import { pausedForBudget } from "./budget-guard";
  *    В стоимость клиента они не входят.
  *  - Клиенты: владелец отмечает число клиентов за календарную неделю (по всем обращениям недели).
  *    Для любого периода берём долю недели: обращения периода × (клиенты недели / обращения недели).
- *    Неделя без отметки — оценка по обычной доле «обращение → клиент».
+ *    Неделя без отметки — по статусам заявок: «Записался» — клиент, «Не дозвонились» — не клиент,
+ *    неотмеченные (и обращения, которые засчитала площадка без нашей заявки) — по обычной доле «обращение → клиент».
+ *    Если ни одной отметки нет — это оценка.
+ *  - Заявки со статусом «Спам» не считаются нигде (ни обращениями, ни в решениях робота).
  */
 
 export type Totals = {
@@ -30,6 +33,9 @@ export type Totals = {
   /** обращения без рекламной метки */
   otherLeads: number;
   otherClients: number;
+  /** заявки из рекламы, которые владелец отметил: всего и «Записался» */
+  adMarked: number;
+  adBooked: number;
 };
 
 export type DayPoint = { day: string; cost: number; leads: number; clicks: number; other: number };
@@ -37,7 +43,7 @@ export type DayPoint = { day: string; cost: number; leads: number; clicks: numbe
 const AD_SOURCES = new Set(["yandex", "vk", "demo"]);
 const CHANNEL_ORDER = ["search", "network", "vk", "unknown"];
 
-const zero = (): Totals => ({ impressions: 0, clicks: 0, cost: 0, leads: 0, clients: 0, clientsEstimated: false, otherLeads: 0, otherClients: 0 });
+const zero = (): Totals => ({ impressions: 0, clicks: 0, cost: 0, leads: 0, clients: 0, clientsEstimated: false, otherLeads: 0, otherClients: 0, adMarked: 0, adBooked: 0 });
 
 export async function reportNow(b: Business) {
   const db = await getDb();
@@ -45,10 +51,13 @@ export async function reportNow(b: Business) {
   return camps.some((c) => c.platform === "demo") ? demoNow({ businessId: b.id }) : new Date();
 }
 
+type ChAgg = { impressions: number; clicks: number; cost: number; leads: number; booked: number; done: number };
 type DayAgg = {
   impressions: number; clicks: number; cost: number;
   adLeads: number; otherLeads: number;
-  byChannel: Map<string, { impressions: number; clicks: number; cost: number; leads: number }>;
+  /** отмеченные владельцем заявки: done — «Записался» или «Не дозвонились», booked — «Записался» */
+  adBooked: number; adDone: number; otherBooked: number; otherDone: number;
+  byChannel: Map<string, ChAgg>;
 };
 
 /**
@@ -69,9 +78,9 @@ async function loadDays(b: Business, fromDay: string, toDay: string) {
   const ads = await db.select({ id: schema.ads.id, campaignId: schema.ads.campaignId, externalId: schema.ads.externalId }).from(schema.ads).where(eq(schema.ads.businessId, b.id));
   const rows = await db.select().from(schema.statsDaily).where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, fromDay), lte(schema.statsDaily.day, toDay)));
   const leads = await db
-    .select({ createdAt: schema.leads.createdAt, source: schema.leads.source, adExt: schema.leads.adExt, campaignExt: schema.leads.campaignExt })
+    .select({ createdAt: schema.leads.createdAt, source: schema.leads.source, adExt: schema.leads.adExt, campaignExt: schema.leads.campaignExt, status: schema.leads.status })
     .from(schema.leads)
-    .where(and(eq(schema.leads.businessId, b.id), ne(schema.leads.kind, "suspect"), gte(schema.leads.createdAt, new Date(new Date(fromDay + "T00:00:00Z").getTime() - shift)), lte(schema.leads.createdAt, new Date(new Date(toDay + "T23:59:59.999Z").getTime() - shift))));
+    .where(and(eq(schema.leads.businessId, b.id), ne(schema.leads.kind, "suspect"), or(isNull(schema.leads.status), ne(schema.leads.status, "spam")), gte(schema.leads.createdAt, new Date(new Date(fromDay + "T00:00:00Z").getTime() - shift)), lte(schema.leads.createdAt, new Date(new Date(toDay + "T23:59:59.999Z").getTime() - shift))));
 
   const campById = new Map(camps.map((c) => [c.id, c]));
   const campByExt = new Map(camps.filter((c) => c.externalId).map((c) => [c.externalId!, c]));
@@ -79,12 +88,12 @@ async function loadDays(b: Business, fromDay: string, toDay: string) {
   const days = new Map<string, DayAgg>();
   const dayOf = (d: string) => {
     let x = days.get(d);
-    if (!x) days.set(d, (x = { impressions: 0, clicks: 0, cost: 0, adLeads: 0, otherLeads: 0, byChannel: new Map() }));
+    if (!x) days.set(d, (x = { impressions: 0, clicks: 0, cost: 0, adLeads: 0, otherLeads: 0, adBooked: 0, adDone: 0, otherBooked: 0, otherDone: 0, byChannel: new Map() }));
     return x;
   };
   const chOf = (x: DayAgg, ch: string) => {
     let c = x.byChannel.get(ch);
-    if (!c) x.byChannel.set(ch, (c = { impressions: 0, clicks: 0, cost: 0, leads: 0 }));
+    if (!c) x.byChannel.set(ch, (c = { impressions: 0, clicks: 0, cost: 0, leads: 0, booked: 0, done: 0 }));
     return c;
   };
 
@@ -108,16 +117,25 @@ async function loadDays(b: Business, fromDay: string, toDay: string) {
     const day = isoDay(new Date(l.createdAt.getTime() + shift));
     const x = dayOf(day);
     const ad = l.adExt ? adByExt.get(l.adExt) : undefined;
-    // Уже вошла в статистику площадки (sync подмешивает такие заявки в conversions объявления за день)
-    if (ad && statKeys.has(`${ad.id}|${day}`)) continue;
     const camp: Campaign | undefined = (ad ? campById.get(ad.campaignId) : undefined) ?? (l.campaignExt ? campByExt.get(l.campaignExt) : undefined);
     const fromAds = !!(ad || camp || l.adExt || l.campaignExt || (l.source && AD_SOURCES.has(l.source)));
+    const booked = l.status === "booked" ? 1 : 0;
+    const done = booked || l.status === "no_answer" ? 1 : 0;
     if (!fromAds) {
       x.otherLeads += 1;
+      x.otherBooked += booked;
+      x.otherDone += done;
       continue;
     }
+    const ch = chOf(x, camp?.channel ?? (l.source === "vk" ? "vk" : "unknown"));
+    x.adBooked += booked;
+    x.adDone += done;
+    ch.booked += booked;
+    ch.done += done;
+    // Уже вошла в статистику площадки (sync подмешивает такие заявки в conversions объявления за день) — второй раз не считаем
+    if (ad && statKeys.has(`${ad.id}|${day}`)) continue;
     x.adLeads += 1;
-    chOf(x, camp?.channel ?? (l.source === "vk" ? "vk" : "unknown")).leads += 1;
+    ch.leads += 1;
   }
   return { days, camps };
 }
@@ -178,9 +196,19 @@ export async function report(b: Business, days: number) {
     t.cost += x.cost;
     t.leads += x.adLeads;
     t.otherLeads += x.otherLeads;
-    raw.clients += x.adLeads * w.k;
-    raw.other += x.otherLeads * w.k;
-    if ((x.adLeads || x.otherLeads) && !w.marked) t.clientsEstimated = true;
+    t.adMarked += x.adDone;
+    t.adBooked += x.adBooked;
+    if (w.marked) {
+      // Неделя с отметкой «сколько клиентов» — доля недели, как раньше
+      raw.clients += x.adLeads * w.k;
+      raw.other += x.otherLeads * w.k;
+    } else {
+      // По статусам заявок: «Записался» — клиент, «Не дозвонились» — нет, остальное — по обычной доле
+      const adOpen = Math.max(0, x.adLeads - x.adDone), otherOpen = Math.max(0, x.otherLeads - x.otherDone);
+      raw.clients += Math.min(x.adLeads, x.adBooked) + adOpen * w.k;
+      raw.other += Math.min(x.otherLeads, x.otherBooked) + otherOpen * w.k;
+      if (adOpen || otherOpen) t.clientsEstimated = true;
+    }
     if (!isCur) continue;
     const s = seriesOf.get(day);
     if (s) {
@@ -195,9 +223,12 @@ export async function report(b: Business, days: number) {
       bc.clicks += v.clicks;
       bc.cost += v.cost;
       bc.leads += v.leads;
-      if (v.leads && !w.marked) bc.clientsEstimated = true;
+      bc.adMarked += v.done;
+      bc.adBooked += v.booked;
+      const open = Math.max(0, v.leads - v.done);
+      if (open && !w.marked) bc.clientsEstimated = true;
       byChannel.set(ch, bc);
-      chRaw.set(ch, (chRaw.get(ch) ?? 0) + v.leads * w.k);
+      chRaw.set(ch, (chRaw.get(ch) ?? 0) + (w.marked ? v.leads * w.k : Math.min(v.leads, v.booked) + open * w.k));
     }
   }
   cur.clients = Math.round(curRaw.clients);

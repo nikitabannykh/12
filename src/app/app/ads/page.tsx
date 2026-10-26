@@ -7,14 +7,14 @@ import { adStats, reportNow, report, campaignStates, LEARNING_DAYS } from "@/lib
 import { getDb, schema } from "@/lib/db";
 import { LiveToggle } from "@/components/client";
 import { AdActions, AddChannelButton, BudgetInline } from "@/components/AdsControls";
-import { SearchAdPreview, ImageAdPreview } from "@/components/AdPreview";
+import { SearchAdPreview, ImageAdPreview, ResponsiveAssets } from "@/components/AdPreview";
 import { SerpScheme, AuctionTable } from "@/components/Serp";
 import { ceilingOf } from "@/lib/engine/ops";
 import { CHANNEL_HINT, CHANNEL_NAME, PLATFORM_NAME } from "@/lib/platforms";
 import { MAX_MONTHLY, MIN_WEEKLY, allocate } from "@/lib/engine/budget";
 import { ANGLES } from "@/lib/niches";
 import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
-import { adExtras, withPlanCallouts } from "@/lib/engine/extras";
+import { adExtras, responsiveAssets, withPlanCallouts } from "@/lib/engine/extras";
 import { placeName, scoreGroup, liftBy, addS, zeroS, ctrOf, VERDICT, type S, type AdScore } from "@/lib/engine/insights";
 import Link from "next/link";
 import { addDays, hostOf, isoDay, num, pl, plural, rub } from "@/lib/util";
@@ -344,7 +344,10 @@ export default async function AdsPage() {
       {/* ─── Каналы подробно ─── */}
       {camps.map((camp) => {
         const ch = camp.channel as Channel;
-        const cg = groups.filter((g) => g.campaignId === camp.id);
+        // Группы, перенесённые роботом в новые (в Директе кончилось место для объявлений), не показываем
+        const cg = groups.filter((g) => g.campaignId === camp.id && g.status !== "archived");
+        // Директ: объявления комбинаторные — Яндекс собирает показ из нескольких заголовков и текстов
+        const combinatorial = (ch === "search" || ch === "network") && camp.platform !== "vk";
         const row = chRows.find((r) => r.c.id === camp.id)!;
         const groupStats = cg.map((g) => ({ g, s: ads.filter((a) => a.adGroupId === g.id).reduce((acc, a) => addS(acc, st(a.id)), zeroS()) }));
         return (
@@ -499,6 +502,10 @@ export default async function AdsPage() {
                                     <ImageAdPreview channel={ch === "vk" ? "vk" : "network"} title={ad.title} text={ad.text} host={ch === "vk" ? b.name : host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={adExtras(b, { channel: ch, href: landing, text: ad.text })} logo={logoId ? `/api/images/${logoId}` : null} />
                                   )}
                                 </div>
+                                {combinatorial ? (() => {
+                                  const ra = responsiveAssets(b, ad, { service: ch === "search" ? g.name : null });
+                                  return <ResponsiveAssets titles={ra.titles} texts={ra.texts} className={ch === "search" ? "max-w-xl" : "max-w-sm"} />;
+                                })() : null}
                                 <div className="text-xs text-muted">{pl(s.impressions, "показ", "показа", "показов")} · потрачено {rub(s.cost)}{s.conversions ? ` · обращение по ${rub(s.cost / s.conversions)}` : ""}</div>
                                 <AdActions ad={{ id: ad.id, title: ad.title, title2: ad.title2, text: ad.text, status: ad.status }} channel={ch} canTest={!inTest && camp.status === "active"} />
                               </div>

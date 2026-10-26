@@ -4,8 +4,8 @@ import { getDb, schema } from "../db";
 import type { AdAccount, Business, Campaign, UndoOp } from "../db/schema";
 import { allocate, MAX_MONTHLY } from "./budget";
 import { generateCopyPlan, type CopyPlan } from "../ai/copy";
-import { generatePhotos, listPhotos, makeCreative, getImage, ensureLogo } from "./images";
-import { adExtras, withPlanCallouts } from "./extras";
+import { generatePhotos, listPhotos, makeCreative, getImage, ensureLogo, imageSet } from "./images";
+import { adExtras, responsiveAssets, timeTargeting, withPlanCallouts } from "./extras";
 import { availableLayouts, type Layout } from "../creative/render";
 import type { Channel, CampaignSpec, PlatformClient } from "../platforms/types";
 import { clientFor, CHANNEL_NAME } from "../platforms";
@@ -110,7 +110,15 @@ export function landingUrl(b: Business) {
   return b.siteUrl || `${appUrl()}/p/${b.publicKey}`;
 }
 
-function withUtm(href: string, platform: string) {
+/** Каналы Директа: комбинаторные объявления, лимит 3 неархивных объявления в группе */
+export const isDirectChannel = (channel: string) => channel === "search" || channel === "network";
+export const DIRECT_ADS_PER_GROUP = 3;
+
+/**
+ * Ссылка объявления с UTM-метками площадки. Одна функция для запуска и робота: VK требует один и тот же URL
+ * в плане и всех баннерах группы, а разные написания (`site.ru?utm…` и `site.ru/?utm…`) — это разные url-объекты.
+ */
+export function withUtm(href: string, platform: string) {
   const u = new URL(href);
   const tags: Record<string, string> =
     platform === "yandex"
@@ -135,7 +143,8 @@ function channelFromCopy(b: Business, copy: CopyPlan, channel: Channel, acc: AdA
     ageFrom: g.ageFrom ?? n.audience.ageFrom,
     ageTo: g.ageTo ?? n.audience.ageTo,
     sex: n.audience.sex,
-    ads: g.ads.map((ad) => ({ id: uid("a_"), angle: ad.angle, title: ad.title, title2: ad.title2 ?? null, text: ad.text, enabled: true })),
+    // Директ: в группе не больше 3 неархивных объявлений — больше в план не берём
+    ads: g.ads.slice(0, isDirectChannel(channel) ? DIRECT_ADS_PER_GROUP : undefined).map((ad) => ({ id: uid("a_"), angle: ad.angle, title: ad.title, title2: ad.title2 ?? null, text: ad.text, enabled: true })),
   }));
   return { channel, accountId: acc.id, platform: acc.platform, weekly, enabled: true, groups };
 }
@@ -226,6 +235,19 @@ export async function prepareImages(b: Business, plan: LaunchPlan): Promise<Laun
       groups.push({ ...g, ads });
     }
     channels.push({ ...ch, groups });
+  }
+  // Директ: та же картинка в других пропорциях для комбинаторных объявлений (1:1, 16:9, 4:3, 3:4) — готовим заранее,
+  // чтобы запуск не тратил на это время
+  for (const ch of channels.filter((c) => isDirectChannel(c.channel) && c.platform !== "vk")) {
+    const done = new Set<string>();
+    for (const g of ch.groups) {
+      const service = ch.channel === "search" ? b.services?.find((x) => x.name === g.name) ?? svc : svc;
+      for (const ad of g.ads) {
+        if (!ad.imageId || done.has(ad.imageId)) continue;
+        done.add(ad.imageId);
+        await imageSet(b, ad.imageId, { headline: ch.channel === "search" ? service?.name ?? g.name : svc?.name, price: service?.price }).catch(() => []);
+      }
+    }
   }
   return { ...plan, channels, photoIds, stage: "ready", warnings };
 }
@@ -337,21 +359,46 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
     tag: launchTag(launchId),
     deadline,
   };
+  const direct = isDirectChannel(ch.channel) && account.platform !== "vk";
+  if (direct) {
+    // Профиль организации (BusinessId, Карты) и расписание показов по часам работы
+    spec.orgId = b.orgId ?? null;
+    spec.timeTargeting = timeTargeting(b);
+  }
+  const svc0 = b.services?.[0];
+  const toInput = (img: NonNullable<Awaited<ReturnType<typeof getImage>>>) => ({ imageId: img.id, data: img.data, mime: img.mime, width: img.width, height: img.height, cachedRef: img.platformRefs?.[account.platform] });
   for (const g of ch.groups) {
     const ads = [];
-    for (const ad of g.ads.filter(publishable)) {
+    // Директ: не больше 3 объявлений в группе (уже созданные в прошлых попытках тоже считаются)
+    const already = Object.keys(build.groups[g.id]?.ads ?? {}).length;
+    const pub = g.ads.filter(publishable);
+    const allowed = direct ? pub.filter((a) => build.groups[g.id]?.ads[a.id]).length + Math.max(0, DIRECT_ADS_PER_GROUP - already) : Infinity;
+    const list = direct ? [...pub.filter((a) => build.groups[g.id]?.ads[a.id]), ...pub.filter((a) => !build.groups[g.id]?.ads[a.id])].slice(0, allowed) : pub;
+    if (direct && pub.length > list.length) warnings.push(`${CHANNEL_NAME[ch.channel]}: в группе «${g.name}» включено ${pub.length} объявлений, а Директ принимает не больше ${DIRECT_ADS_PER_GROUP} — отправили первые ${DIRECT_ADS_PER_GROUP}`);
+    for (const ad of list) {
       if (build.failedAds.includes(ad.id)) continue;
       let image = null;
+      let images: ReturnType<typeof toInput>[] = [];
       if (ad.imageId) {
         const img = imageCache.get(ad.imageId) ?? (await getImage(ad.imageId));
         imageCache.set(ad.imageId, img);
-        if (img) image = { imageId: img.id, data: img.data, mime: img.mime, width: img.width, height: img.height, cachedRef: img.platformRefs?.[account.platform] };
+        if (img) image = toInput(img);
+        if (img && direct) {
+          const service = ch.channel === "search" ? b.services?.find((x) => x.name === g.name) ?? svc0 : svc0;
+          const set = await imageSet(b, img.id, { headline: ch.channel === "search" ? service?.name ?? g.name : svc0?.name, price: service?.price }).catch(() => []);
+          for (const x of set) imageCache.set(x.id, x);
+          images = set.map(toInput);
+        }
       }
+      const assets = direct ? responsiveAssets(b, ad, { service: ch.channel === "search" ? g.name : null }) : null;
       ads.push({
         localId: ad.id,
         title: ad.title.trim(),
         title2: ad.title2?.trim() || null,
         text: ad.text.trim(),
+        titles: assets?.titles,
+        texts: assets?.texts,
+        images,
         href: withUtm(href, account.platform),
         image,
         extras: withPlanCallouts(adExtras(b, { channel: ch.channel, href, service: ch.channel === "search" ? g.name : null, text: ad.text }), plan.callouts),

@@ -1,3 +1,5 @@
+import { vkPixelCounterId } from "@/lib/engine/regions";
+import { vkPixelSnippet } from "@/lib/platforms/vk-formats";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { eq } from "drizzle-orm";
@@ -37,6 +39,9 @@ export default async function Landing({ params, searchParams }: { params: Promis
   const ft = one(sp.utm_source) ? signFirstTouch(b.publicKey, { source: one(sp.utm_source), campaign: one(sp.utm_campaign), ad: one(sp.utm_content) }) : null;
   const n = nicheById(b.niche);
   const photos = (await listPhotos(b.id)).slice(0, 6);
+  const vkPixel = await vkPixelCounterId(b.id).catch(() => null);
+  // Код пикселя VK: берём только JS (скрипты из innerHTML React не выполняет)
+  const vkJs = vkPixel ? (vkPixelSnippet(vkPixel).match(/<script[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? "") : "";
   const c = landingColors(n.palette);
   const { bg, ink, accent } = c;
   const wa = b.whatsapp ? `https://wa.me/${digits(b.whatsapp).replace("+", "")}` : null;
@@ -51,6 +56,7 @@ export default async function Landing({ params, searchParams }: { params: Promis
           }}
         />
       ) : null}
+      {vkJs ? <script dangerouslySetInnerHTML={{ __html: vkJs }} /> : null}
       <script async src="/t.js" data-key={b.publicKey} {...(b.counterId ? { "data-ym": String(b.counterId) } : {})} />
 
       <main className="mx-auto max-w-5xl px-4 sm:px-6 py-8 sm:py-14">
@@ -68,7 +74,7 @@ export default async function Landing({ params, searchParams }: { params: Promis
             </div>
           </div>
           <div id="form" style={{ background: accent }} className="rounded-3xl p-1.5 scroll-mt-6">
-            <LeadForm publicKey={b.publicKey} services={b.services.map((s) => s.name)} accent={accent} onAccent={c.onAccent} ink={c.cardInk} ts={ts} ft={ft} counterId={b.counterId ?? null} privacyUrl={`/privacy?b=${encodeURIComponent(b.publicKey)}`} />
+            <LeadForm publicKey={b.publicKey} services={b.services.map((s) => s.name)} accent={accent} onAccent={c.onAccent} ink={c.cardInk} ts={ts} ft={ft} counterId={b.counterId ?? null} vkPixel={vkPixel} privacyUrl={`/privacy?b=${encodeURIComponent(b.publicKey)}`} />
           </div>
         </div>
 
