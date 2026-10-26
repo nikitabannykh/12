@@ -1,0 +1,443 @@
+import { redirect } from "next/navigation";
+import { and, eq, inArray } from "drizzle-orm";
+import { FlaskConical, Trophy, Lightbulb, Image as ImageIcon, Eye, ChevronDown } from "lucide-react";
+import { requireUser } from "@/lib/auth";
+import { getBusinessForUser, landingUrl } from "@/lib/engine/launch";
+import { adStats, reportNow } from "@/lib/engine/report";
+import { getDb, schema } from "@/lib/db";
+import { LiveToggle } from "@/components/client";
+import { AdActions, BudgetInline } from "@/components/AdsControls";
+import { SearchAdPreview, ImageAdPreview } from "@/components/AdPreview";
+import { SerpScheme, AuctionTable } from "@/components/Serp";
+import { ceilingOf } from "@/lib/engine/ops";
+import { CHANNEL_HINT, CHANNEL_NAME, PLATFORM_NAME } from "@/lib/platforms";
+import { MIN_WEEKLY } from "@/lib/engine/budget";
+import { ANGLES } from "@/lib/niches";
+import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
+import { adExtras, withPlanCallouts } from "@/lib/engine/extras";
+import { placeName, scoreGroup, liftBy, addS, zeroS, ctrOf, VERDICT, type S, type AdScore } from "@/lib/engine/insights";
+import { addDays, hostOf, isoDay, num, rub } from "@/lib/util";
+import type { Channel } from "@/lib/platforms/types";
+
+const STATUS: Record<string, { text: string; cls: string }> = {
+  moderation: { text: "На модерации", cls: "bg-info-soft text-ink-2" },
+  paused: { text: "Остановлено", cls: "bg-paper text-muted" },
+  rejected: { text: "Отклонено", cls: "bg-bad-soft text-bad" },
+};
+
+const pct = (x: number) => `${(x * 100).toFixed(x < 0.01 ? 2 : 1).replace(".", ",")}%`;
+const liftText = (index: number) => {
+  const d = Math.round((index - 1) * 100);
+  return d >= 0 ? `+${d}%` : `${d}%`;
+};
+const SHORT: Record<string, string> = { search: "Поиск", network: "Сайты (РСЯ)", vk: "ВКонтакте" };
+
+export default async function AdsPage() {
+  const user = await requireUser();
+  const b = await getBusinessForUser(user.id);
+  if (!b) redirect("/app/start");
+  if (b.status !== "active") redirect("/app/launch");
+  const db = await getDb();
+  const camps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused"])));
+  const ids = camps.map((c) => c.id);
+  const groups = ids.length ? await db.select().from(schema.adGroups).where(inArray(schema.adGroups.campaignId, ids)) : [];
+  const ads = ids.length ? await db.select().from(schema.ads).where(inArray(schema.ads.campaignId, ids)) : [];
+  const exps = await db.select().from(schema.experiments).where(eq(schema.experiments.businessId, b.id));
+  const imgIds = [...new Set(ads.map((a) => a.imageId).filter(Boolean) as string[])];
+  const imgs = imgIds.length ? await db.select({ id: schema.images.id, layout: schema.images.layout }).from(schema.images).where(inArray(schema.images.id, imgIds)) : [];
+  const layoutOf = new Map(imgs.map((i) => [i.id, i.layout as Layout | null]));
+  const now = await reportNow(b);
+  const stats = await adStats(b.id, isoDay(addDays(now, -13)));
+  const st = (id: string): S => stats.get(id) ?? zeroS();
+  const landing = landingUrl(b);
+  const host = hostOf(landing);
+  const planCallouts = ((b.launchPlan as { callouts?: string[] } | null)?.callouts) ?? [];
+  const [logoRow] = await db.select({ id: schema.images.id }).from(schema.images).where(and(eq(schema.images.businessId, b.id), eq(schema.images.layout, "logo")));
+  const logoId = logoRow?.id ?? null;
+  const running = exps.filter((e) => e.status === "running");
+  const order: Channel[] = ["search", "network", "vk"];
+  camps.sort((a, b) => order.indexOf(a.channel as Channel) - order.indexOf(b.channel as Channel));
+  const chOf = new Map(camps.map((c) => [c.id, c.channel as Channel]));
+  const visible = ads.filter((a) => a.status !== "archived" && a.status !== "error");
+
+  // ─── Оценки объявлений внутри каждой группы ───
+  const scores = new Map<string, AdScore>();
+  for (const g of groups) {
+    const rows = visible.filter((a) => a.adGroupId === g.id).map((a) => ({ id: a.id, s: st(a.id), live: a.status === "active" && g.status === "active" }));
+    for (const sc of scoreGroup(rows, chOf.get(g.campaignId) ?? "search")) scores.set(sc.id, sc);
+  }
+
+  // ─── Место в выдаче (поиск) ───
+  const tvOf = (ids: string[]) => {
+    let w = 0, n = 0;
+    for (const id of ids) { const x = stats.get(id); if (x?.tvImpressions) { w += x.tvWeighted; n += x.tvImpressions; } }
+    return n ? w / n : null;
+  };
+  const groupTiers = (camp: (typeof camps)[number], groupId: string) =>
+    ((((camp.meta as any)?.auction?.groups ?? []) as { groupId: string; tiers: { trafficVolume: number; bid: number; price: number }[] }[]).find((x) => x.groupId === groupId)?.tiers) ?? [];
+
+  // ─── Каналы ───
+  const chRows = camps.map((c) => {
+    const s = ads.filter((a) => a.campaignId === c.id).reduce((acc, a) => addS(acc, st(a.id)), zeroS());
+    return { c, ch: c.channel as Channel, s, cpl: s.conversions ? s.cost / s.conversions : null };
+  });
+  const totalConv = chRows.reduce((x, r) => x + r.s.conversions, 0);
+  const withLeads = chRows.filter((r) => r.cpl !== null && r.s.conversions >= 2).sort((a, b) => a.cpl! - b.cpl!);
+  const bestCh = withLeads[0];
+
+  // ─── Идеи и картинки: во сколько раз кликают лучше среднего по своей группе ───
+  const all = ads.map((a) => ({ a, s: st(a.id) }));
+  const angleLift = liftBy(all.map(({ a, s }) => ({ key: a.angle, groupId: a.adGroupId, s })));
+  const layoutLift = liftBy(all.filter(({ a }) => a.imageId).map(({ a, s }) => ({ key: layoutOf.get(a.imageId!) ?? null, groupId: a.adGroupId, s })));
+  const bestAngle = angleLift.find((x) => x.ads >= 1 && x.impressions >= 300 && x.index > 1.05);
+  const worstAngle = [...angleLift].reverse().find((x) => x.impressions >= 300 && x.index < 0.9);
+  const bestLayout = layoutLift.length >= 2 && layoutLift[0].index > 1.05 ? layoutLift[0] : null;
+
+  // Лучшее объявление: лидер группы с наибольшим отрывом от следующего
+  const leaders = visible.filter((a) => scores.get(a.id)?.verdict === "leader");
+  const cpl = (id: string) => { const s = st(id); return s.conversions >= 2 ? s.cost / s.conversions : Infinity; };
+  const bestAd = leaders.sort((x, y) => cpl(x.id) - cpl(y.id) || ctrOf(st(y.id)) - ctrOf(st(x.id)))[0];
+  const weakCount = visible.filter((a) => scores.get(a.id)?.verdict === "weak").length;
+
+  return (
+    <div className="grid grid-cols-1 gap-6">
+      <div>
+        <h1 className="text-3xl font-extrabold tracking-tight">Реклама</h1>
+        <p className="text-muted mt-1 max-w-2xl">Что приносит клиентов, а что нет. Цифры за последние 14 дней. Можно менять всё вручную: робот учтёт ваши решения.</p>
+      </div>
+
+      {/* ─── Главное ─── */}
+      <section className="card p-5 sm:p-7">
+        <h2 className="text-lg font-bold">Что работает лучше</h2>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Tile icon={<Trophy size={16} />} label="Лучший канал">
+            {bestCh ? (
+              <>
+                <b>{SHORT[bestCh.ch]}</b>
+                <span className="text-muted"> — обращение по {rub(bestCh.cpl!)}{withLeads[1] ? `, это в ${(withLeads[1].cpl! / bestCh.cpl!).toFixed(1).replace(".", ",")} раза дешевле, чем ${SHORT[withLeads[1].ch]}` : ""}</span>
+              </>
+            ) : <span className="text-muted">Пока мало обращений, чтобы сравнить каналы</span>}
+          </Tile>
+          <Tile icon={<Trophy size={16} />} label="Лучшее объявление">
+            {bestAd ? (
+              <>
+                <b>«{bestAd.title}»</b>
+                <span className="text-muted"> — {SHORT[chOf.get(bestAd.campaignId)!]}. {scores.get(bestAd.id)!.why}</span>
+              </>
+            ) : <span className="text-muted">Копим показы — нужно ещё несколько дней</span>}
+          </Tile>
+          <Tile icon={<Lightbulb size={16} />} label="Лучшая идея в текстах">
+            {bestAngle ? (
+              <>
+                <b>{ANGLES[bestAngle.key]?.name ?? bestAngle.key}</b>
+                <span className="text-muted"> — кликают на {liftText(bestAngle.index).replace("+", "")} чаще среднего{worstAngle && worstAngle.key !== bestAngle.key ? `. Хуже всего — «${ANGLES[worstAngle.key]?.name}» (${liftText(worstAngle.index)})` : ""}</span>
+              </>
+            ) : <span className="text-muted">Явного победителя среди идей пока нет</span>}
+          </Tile>
+          <Tile icon={<ImageIcon size={16} />} label="Лучшая картинка">
+            {bestLayout ? (
+              <>
+                <b>{LAYOUT_NAME[bestLayout.key] ?? bestLayout.key}</b>
+                <span className="text-muted"> — кликают на {liftText(bestLayout.index).replace("+", "")} чаще среднего</span>
+              </>
+            ) : <span className="text-muted">Сравниваем макеты картинок</span>}
+          </Tile>
+        </div>
+        <p className="text-sm text-muted mt-4 leading-relaxed">
+          Как робот этим пользуется: новые объявления чаще пишет с удачными идеями, но иногда пробует новые — вдруг они ещё лучше.
+          Если идея выиграла в одной группе, её проверяют и в других. Слабые объявления выключаются, когда разница уже точно не случайна
+          {weakCount ? ` — сейчас таких ${weakCount}` : ""}.
+        </p>
+      </section>
+
+      {/* ─── Каналы рядом ─── */}
+      {chRows.length > 1 ? (
+        <section className="card p-5 sm:p-7">
+          <h2 className="text-lg font-bold">Каналы рядом</h2>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-sm min-w-[520px]">
+              <thead>
+                <tr className="text-left text-faint">
+                  <th className="font-medium py-2 px-1">Канал</th>
+                  <th className="font-medium py-2 px-1 text-right">Потрачено</th>
+                  <th className="font-medium py-2 px-1 text-right">Обращения</th>
+                  <th className="font-medium py-2 px-1 text-right">Цена обращения</th>
+                  <th className="font-medium py-2 px-1 w-[28%]">Доля обращений</th>
+                </tr>
+              </thead>
+              <tbody>
+                {chRows.map((r) => {
+                  const share = totalConv ? r.s.conversions / totalConv : 0;
+                  const best = bestCh && r.c.id === bestCh.c.id;
+                  const costly = bestCh && r.cpl !== null && r.cpl > bestCh.cpl! * 1.6;
+                  return (
+                    <tr key={r.c.id} className="border-t border-line">
+                      <td className="py-2.5 px-1 font-semibold">
+                        {SHORT[r.ch]}
+                        {r.c.status !== "active" ? <span className="pill bg-paper text-muted ml-2">пауза</span> : best ? <span className="pill bg-good text-white ml-2">дешевле всех</span> : costly ? <span className="pill bg-warn-soft text-warn ml-2">дорого</span> : null}
+                      </td>
+                      <td className="py-2.5 px-1 text-right tabular-nums">{rub(r.s.cost)}</td>
+                      <td className="py-2.5 px-1 text-right tabular-nums">{num(r.s.conversions)}</td>
+                      <td className="py-2.5 px-1 text-right tabular-nums font-semibold">{r.cpl !== null ? rub(r.cpl) : "—"}</td>
+                      <td className="py-2.5 px-1">
+                        <div className="flex items-center gap-2">
+                          <div className="h-2 flex-1 rounded-full bg-paper overflow-hidden"><div className={`h-full rounded-full ${best ? "bg-good" : "bg-ink-2"}`} style={{ width: `${Math.round(share * 100)}%` }} /></div>
+                          <span className="tabular-nums text-muted w-9 text-right">{Math.round(share * 100)}%</span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="hint mt-3">Раз в неделю робот переносит до четверти бюджета из дорогого канала в тот, где обращение дешевле.</p>
+        </section>
+      ) : null}
+
+      {/* ─── Идут проверки ─── */}
+      {running.length ? (
+        <section className="card p-5 sm:p-7">
+          <h2 className="text-lg font-bold flex items-center gap-2"><FlaskConical size={18} /> Сейчас проверяем</h2>
+          <p className="text-sm text-muted mt-1">Новый вариант показывается наравне со старым. Когда разница станет надёжной, робот оставит лучший — обычно через 1–2 недели.</p>
+          <ul className="mt-3 grid gap-4">
+            {running.slice(0, 3).map((e) => {
+              const v = ads.find((a) => a.id === e.variantId);
+              const c = ads.find((a) => a.id === e.controlId);
+              const sv = st(e.variantId), sc = st(e.controlId);
+              const cv = ctrOf(sv), cc = ctrOf(sc);
+              const enough = sv.impressions >= 100 && sc.impressions >= 100;
+              const lead = enough ? (cv > cc ? "new" : "old") : null;
+              return (
+                <li key={e.id} className="text-[0.95rem] leading-relaxed">
+                  <div>Проверяем, {e.hypothesis.replace(/\.$/, "")}</div>
+                  <div className="mt-1.5 grid sm:grid-cols-2 gap-2 text-sm">
+                    <Duel label="Было" title={c?.title} s={sc} ahead={lead === "old"} />
+                    <Duel label={e.kind === "creative" ? "Новая картинка" : "Новый вариант"} title={v?.title} s={sv} ahead={lead === "new"} />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          {running.length > 3 ? (
+            <details className="mt-3 group/more">
+              <summary className="cursor-pointer text-sm font-semibold text-ink-2 list-none">Ещё {running.length - 3} {running.length - 3 === 1 ? "проверка" : running.length - 3 < 5 ? "проверки" : "проверок"} <ChevronDown size={14} className="inline transition group-open/more:rotate-180" /></summary>
+              <ul className="mt-3 grid gap-4">
+                {running.slice(3).map((e) => {
+                  const v = ads.find((a) => a.id === e.variantId);
+                  const c = ads.find((a) => a.id === e.controlId);
+                  const sv = st(e.variantId), sc = st(e.controlId);
+                  const enough = sv.impressions >= 100 && sc.impressions >= 100;
+                  const lead = enough ? (ctrOf(sv) > ctrOf(sc) ? "new" : "old") : null;
+                  return (
+                    <li key={e.id} className="text-[0.95rem] leading-relaxed">
+                      <div>Проверяем, {e.hypothesis.replace(/\.$/, "")}</div>
+                      <div className="mt-1.5 grid sm:grid-cols-2 gap-2 text-sm">
+                        <Duel label="Было" title={c?.title} s={sc} ahead={lead === "old"} />
+                        <Duel label={e.kind === "creative" ? "Новая картинка" : "Новый вариант"} title={v?.title} s={sv} ahead={lead === "new"} />
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </details>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* ─── Каналы подробно ─── */}
+      {camps.map((camp) => {
+        const ch = camp.channel as Channel;
+        const cg = groups.filter((g) => g.campaignId === camp.id);
+        const row = chRows.find((r) => r.c.id === camp.id)!;
+        const groupStats = cg.map((g) => ({ g, s: ads.filter((a) => a.adGroupId === g.id).reduce((acc, a) => addS(acc, st(a.id)), zeroS()) }));
+        return (
+          <section key={camp.id} className="card overflow-hidden">
+            <div className="p-5 sm:p-7 border-b border-line">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-xl font-bold">{CHANNEL_NAME[ch]}</h2>
+                    <span className={`pill ${camp.status === "active" ? "bg-good-soft text-good" : "bg-paper text-muted"}`}>{camp.status === "active" ? "Идёт" : "На паузе"}</span>
+                  </div>
+                  <p className="text-sm text-muted mt-1">{CHANNEL_HINT[ch]}. {PLATFORM_NAME[camp.platform]}.</p>
+                </div>
+                <label className="flex items-center gap-2 text-sm font-semibold">
+                  {camp.status === "active" ? "Включён" : "Выключен"}
+                  <LiveToggle url={`/api/campaigns/${camp.id}`} on={camp.status === "active"} label={`Канал ${CHANNEL_NAME[ch]}`} confirmOff="Остановить показы в этом канале? Настройки и статистика сохранятся." />
+                </label>
+              </div>
+              <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
+                <div><div className="text-muted">Лимит</div><BudgetInline campaignId={camp.id} weekly={camp.weeklyBudget} min={MIN_WEEKLY[ch]} /></div>
+                <div><div className="text-muted">Как тратится</div><div className="font-semibold">{camp.strategy === "conversions" ? "Ищем тех, кто чаще записывается" : "Ищем больше переходов за бюджет"}</div></div>
+                <div><div className="text-muted">Потрачено</div><div className="font-semibold">{rub(row.s.cost)}</div></div>
+                <div><div className="text-muted">Обращения</div><div className="font-semibold">{num(row.s.conversions)}{row.cpl !== null ? ` · по ${rub(row.cpl)}` : ""}</div></div>
+              </div>
+              {camp.negativeKeywords?.length && ch !== "vk" ? (
+                <details className="mt-3 text-sm">
+                  <summary className="cursor-pointer text-ink-2 font-medium">Не показываем по {camp.negativeKeywords.length} нецелевым словам</summary>
+                  <p className="text-muted mt-1.5 leading-relaxed">{camp.negativeKeywords.join(", ")}</p>
+                </details>
+              ) : null}
+              {ch === "search" ? (() => {
+                const tv = tvOf(ads.filter((a) => a.campaignId === camp.id).map((a) => a.id));
+                const ceiling = ceilingOf(camp);
+                if (tv === null) return <p className="hint mt-3">Место в выдаче появится после первых показов.</p>;
+                return (
+                  <div className="mt-4 rounded-xl bg-paper p-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+                    <div><span className="text-muted">Где вы в выдаче: </span><b>{placeName(tv)}</b> <span className="text-faint">(объём трафика {Math.round(tv)} из 100)</span></div>
+                    <div><span className="text-muted">Цена клика: </span><b>{row.s.clicks ? rub(row.s.cost / row.s.clicks) : "—"}</b></div>
+                    <div><span className="text-muted">Предел ставки: </span><b>{ceiling ? rub(ceiling) : "нет — Директ решает сам"}</b></div>
+                  </div>
+                );
+              })() : null}
+            </div>
+
+            {groupStats
+              .sort((x, y) => (y.g.status === "active" ? 1 : 0) - (x.g.status === "active" ? 1 : 0) || y.s.conversions - x.s.conversions || ctrOf(y.s) - ctrOf(x.s))
+              .map(({ g, s: gs }) => {
+                const gAds = visible
+                  .filter((a) => a.adGroupId === g.id)
+                  .sort((x, y) => rankKey(scores.get(x.id)) - rankKey(scores.get(y.id)));
+                const hidden = ads.filter((a) => a.adGroupId === g.id && (a.status === "archived" || a.status === "error")).length;
+                const gTv = ch === "search" ? tvOf(ads.filter((a) => a.adGroupId === g.id).map((a) => a.id)) : null;
+                return (
+                  <div key={g.id} className={`p-5 sm:p-7 border-b border-line last:border-b-0 ${g.status !== "active" ? "bg-paper/60" : ""}`}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-bold">{ch === "search" ? "Услуга" : "Аудитория"}: {g.name}</div>
+                        <div className="text-sm text-muted">
+                          {g.audience ? `${g.audience} · ` : ""}{rub(gs.cost)}, {num(gs.conversions)} {gs.conversions === 1 ? "обращение" : gs.conversions >= 2 && gs.conversions <= 4 ? "обращения" : "обращений"}{gs.conversions ? ` по ${rub(gs.cost / gs.conversions)}` : ""}
+                        </div>
+                        {g.keywords?.length && ch === "search" ? <div className="text-sm text-faint mt-1 line-clamp-1">Запросы: {g.keywords.join(", ")}</div> : null}
+                        {ch === "search" && gTv !== null ? (
+                          <div className="mt-1.5 flex flex-wrap gap-1.5">
+                            <span className="pill bg-mark-soft text-ink">≈ {placeName(gTv)}</span>
+                            {gs.clicks ? <span className="pill bg-paper text-ink-2">клик ≈ {rub(gs.cost / gs.clicks)}</span> : null}
+                          </div>
+                        ) : null}
+                      </div>
+                      {cg.length > 1 ? (
+                        <label className="flex items-center gap-2 text-sm font-semibold">
+                          <LiveToggle url={`/api/groups/${g.id}`} on={g.status === "active"} label={`${ch === "search" ? "Услуга" : "Аудитория"} ${g.name}`} />
+                        </label>
+                      ) : null}
+                    </div>
+
+                    {ch === "search" && gTv !== null && gAds[0] ? (
+                      <details className="mt-3 group/serp">
+                        <summary className="cursor-pointer list-none text-sm font-semibold text-ink-2 inline-flex items-center gap-1.5"><Eye size={15} /> Как это выглядит в выдаче и сколько стоит каждое место <ChevronDown size={14} className="transition group-open/serp:rotate-180" /></summary>
+                        <div className="mt-3 grid lg:grid-cols-[1fr_20rem] gap-4 items-start">
+                          <SerpScheme
+                            query={g.keywords?.[0] ?? g.name.toLowerCase()}
+                            tv={gTv}
+                            tiers={groupTiers(camp, g.id)}
+                            yourCpc={gs.clicks ? gs.cost / gs.clicks : null}
+                            ad={<SearchAdPreview title={gAds[0].title} title2={gAds[0].title2} text={gAds[0].text} host={host} image={gAds[0].imageId ? `/api/images/${gAds[0].imageId}` : null} full={false} extras={withPlanCallouts(adExtras(b, { channel: ch, href: landing, service: g.name, text: gAds[0].text }), planCallouts)} />}
+                          />
+                          <div className="rounded-xl border border-line p-4">
+                            <div className="font-semibold">Цена клика за место</div>
+                            <p className="text-xs text-muted mt-0.5 mb-3">Медиана по фразам этой услуги, по данным аукциона Директа</p>
+                            {groupTiers(camp, g.id).length ? <AuctionTable tiers={groupTiers(camp, g.id)} tv={gTv} ceiling={ceilingOf(camp)} /> : <p className="text-sm text-muted">Аукцион обновится при следующей проверке.</p>}
+                          </div>
+                        </div>
+                      </details>
+                    ) : null}
+
+                    <ol className="mt-4 grid gap-2">
+                      {gAds.map((ad) => {
+                        const sc = scores.get(ad.id)!;
+                        const s = sc.s;
+                        const inTest = running.some((e) => e.controlId === ad.id || e.variantId === ad.id);
+                        const V = VERDICT[sc.verdict];
+                        const special = STATUS[ad.status];
+                        const layout = ad.imageId ? layoutOf.get(ad.imageId) : null;
+                        return (
+                          <li key={ad.id} className={`rounded-xl border ${sc.verdict === "leader" ? "border-good/40 bg-good-soft/40" : "border-line"} ${ad.status === "paused" ? "opacity-60" : ""}`}>
+                            <details className="group">
+                              <summary className="list-none cursor-pointer p-3 sm:p-4 grid grid-cols-[2rem_1fr] sm:grid-cols-[2rem_1fr_15rem] gap-x-3 gap-y-2 items-center">
+                                <div className={`w-8 h-8 rounded-full grid place-items-center text-sm font-extrabold ${sc.verdict === "leader" ? "bg-good text-white" : sc.rank ? "bg-paper text-ink-2" : "bg-paper text-faint"}`}>
+                                  {sc.rank ?? "·"}
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="font-semibold line-clamp-2 sm:line-clamp-1">{ad.title}</span>
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                    {special ? <span className={`pill ${special.cls}`}>{special.text}</span> : <span className={`pill ${V.cls}`}>{V.label}</span>}
+                                    {inTest ? <span className="pill bg-mark-soft text-ink">Проверяется</span> : null}
+                                    <span className="pill bg-paper text-muted">Идея: {ANGLES[ad.angle]?.name ?? ad.angle}</span>
+                                    {layout && ch !== "search" ? <span className="pill bg-paper text-muted">Картинка: {LAYOUT_NAME[layout] ?? layout}</span> : null}
+                                    {ch === "search" && tvOf([ad.id]) !== null ? <span className="pill bg-paper text-muted">Место: {placeName(tvOf([ad.id])!).replace(" над результатами", "")}</span> : null}
+                                  </div>
+                                  <p className="text-sm text-muted mt-1.5 leading-snug">
+                                    {ad.statusNote && (ad.status === "rejected") ? <span className="text-bad">{ad.statusNote}</span> : sc.why}
+                                  </p>
+                                </div>
+                                <div className="col-start-2 sm:col-start-3 sm:row-start-1 grid gap-1.5">
+                                  {sc.rank ? (
+                                    <div className="h-2 rounded-full bg-paper overflow-hidden" title="Насколько хорошо по сравнению с лучшим в группе">
+                                      <div className={`h-full rounded-full ${sc.verdict === "leader" || sc.verdict === "good" ? "bg-good" : sc.verdict === "weak" ? "bg-bad" : "bg-ink-2"}`} style={{ width: `${Math.max(6, Math.round(sc.rel * 100))}%` }} />
+                                    </div>
+                                  ) : null}
+                                  <div className="grid grid-cols-3 gap-1 text-xs text-center">
+                                    <div><div className="text-faint">Клики</div><div className="font-semibold tabular-nums">{num(s.clicks)}</div></div>
+                                    <div><div className="text-faint">Кликают</div><div className="font-semibold tabular-nums">{s.impressions ? pct(ctrOf(s)) : "—"}</div></div>
+                                    <div><div className="text-faint">Обращения</div><div className="font-semibold tabular-nums">{num(s.conversions)}</div></div>
+                                  </div>
+                                  <div className="flex items-center justify-end gap-1 text-xs text-ink-2 font-medium">
+                                    <Eye size={13} /> Как выглядит <ChevronDown size={13} className="transition group-open:rotate-180" />
+                                  </div>
+                                </div>
+                              </summary>
+                              <div className="px-3 pb-4 sm:px-4 sm:pl-[3.75rem] grid gap-3">
+                                <div className={ch === "search" ? "max-w-xl" : "max-w-sm"}>
+                                  {ch === "search" ? (
+                                    <SearchAdPreview title={ad.title} title2={ad.title2} text={ad.text} host={host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={withPlanCallouts(adExtras(b, { channel: ch, href: landing, service: g.name, text: ad.text }), planCallouts)} />
+                                  ) : (
+                                    <ImageAdPreview channel={ch === "vk" ? "vk" : "network"} title={ad.title} text={ad.text} host={ch === "vk" ? b.name : host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={adExtras(b, { channel: ch, href: landing, text: ad.text })} logo={logoId ? `/api/images/${logoId}` : null} />
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted">{num(s.impressions)} показов · потрачено {rub(s.cost)}{s.conversions ? ` · обращение по ${rub(s.cost / s.conversions)}` : ""}</div>
+                                <AdActions ad={{ id: ad.id, title: ad.title, title2: ad.title2, text: ad.text, status: ad.status }} channel={ch} canTest={!inTest && camp.status === "active"} />
+                              </div>
+                            </details>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                    {hidden ? <p className="hint mt-3">Ещё {hidden} — заменены более удачными вариантами или не приняты площадкой. Вся история — в «Истории».</p> : null}
+                  </div>
+                );
+              })}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function rankKey(sc?: AdScore) {
+  if (!sc) return 999;
+  if (sc.rank) return sc.rank;
+  return sc.verdict === "learning" ? 100 : 200;
+}
+
+function Tile({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl bg-paper p-4">
+      <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-faint">{icon}{label}</div>
+      <div className="mt-2 text-[0.95rem] leading-snug">{children}</div>
+    </div>
+  );
+}
+
+function Duel({ label, title, s, ahead }: { label: string; title?: string; s: S; ahead: boolean }) {
+  return (
+    <div className={`rounded-lg p-3 ${ahead ? "bg-good-soft" : "bg-paper"}`}>
+      <div className="text-xs text-faint flex justify-between"><span>{label}</span>{ahead ? <span className="text-good font-semibold">пока впереди</span> : null}</div>
+      <div className="font-medium truncate">«{title ?? "—"}»</div>
+      <div className="text-xs text-muted mt-0.5">{s.impressions ? `${num(s.clicks)} кликов из ${num(s.impressions)} показов · ${pct(ctrOf(s))}` : "копим показы"}</div>
+    </div>
+  );
+}

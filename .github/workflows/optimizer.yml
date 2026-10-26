@@ -1,0 +1,16 @@
+# Бесплатный планировщик: каждые 2 часа запускает робота-оптимизатора.
+# В репозитории: Settings → Secrets and variables → Actions → добавьте
+#   APP_URL      — адрес сервиса, например https://polny-zal.vercel.app
+#   CRON_SECRET  — то же значение, что в переменных окружения сервиса
+name: optimizer
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch: {}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run optimizer
+        run: |
+          curl -fsS --max-time 70 "${{ secrets.APP_URL }}/api/cron/run?key=${{ secrets.CRON_SECRET }}" | head -c 2000
