@@ -4,7 +4,7 @@ import "server-only";
  *
  * 1. Каждую ссылку читает свой адаптер (sources/*) — параллельно, через safeFetch (защита от SSRF, таймауты, лимиты).
  * 2. Ссылки, найденные внутри (сайт и онлайн-запись из карточки Карт), читаем тоже — до 3 штук.
- * 3. У сайта дочитываем до 2 внутренних страниц («Цены», «Услуги», «Контакты»).
+ * 3. У сайта дочитываем до 4 внутренних страниц (цены/услуги, контакты, «О нас», галерея).
  * 4. Склеиваем по полям с приоритетами (merge.ts), определяем сферу и город.
  * 5. Если подключён YandexGPT — заполняем пробелы (услуги, преимущества, описание) по собранному тексту,
  *    оставляя только то, что подтверждается текстом источников. Без YandexGPT — только правила.
@@ -18,8 +18,9 @@ import { isDgis, readDgis } from "./sources/dgis";
 import { isDikidi, readDikidi } from "./sources/dikidi";
 import { isTaplink, isVk, isYclients, readTaplink, readVk, readYclients } from "./sources/social";
 import { mergeFound, missingOf, report, summarize } from "./merge";
-import { cleanAdvantage, cleanDescription, cleanServiceName, normalizePrice, uniq } from "./normalize";
-import { aiConfigured } from "../ai/yandex";
+import { addressKey, categoryFromName, dedupeAdvantages, finalizeCategories, cleanAdvantage, cleanDescription, cleanServiceName, normalizePrice, uniq } from "./normalize";
+import { photoKey } from "./html";
+import { aiConfigured, gptJson } from "../ai/yandex";
 import { extractFromSite, supportedBy } from "../ai/copy";
 
 export type { Draft, ImportEvent } from "./types";
@@ -68,8 +69,12 @@ const siteError = (url: string, e: unknown): Found => {
   return { kind: "site", url, status: "error", message: msg };
 };
 
-/** Сайт: главная (или присланная) страница + до maxNext внутренних страниц с ценами/контактами */
-async function readSite(url: string, maxNext = 2): Promise<Found> {
+/**
+ * Сайт: присланная страница + до maxNext внутренних (цены/услуги, контакты, «О нас», галерея).
+ * Услуги — с присланной страницы, если там настоящий прайс (≥5 цен): владелец дал ссылку на нужный раздел;
+ * иначе — со страницы, где цен больше всего. Адреса, преимущества, фото и реквизиты — со всех страниц.
+ */
+async function readSite(url: string, maxNext = 4): Promise<Found> {
   let page;
   try {
     page = await fetchPage(url, { timeoutMs: 9000 });
@@ -87,27 +92,41 @@ async function readSite(url: string, maxNext = 2): Promise<Found> {
       ),
     )
   ).filter(Boolean) as ReturnType<typeof parseSite>[];
+  return combinePages(main, subs, url);
+}
+
+/** Склейка страниц одного сайта (вынесено отдельно — проверяется тестами без сети) */
+export function combinePages(main: Found & { next?: string[] }, subs: Found[], url = main.url): Found {
   const priced = (f: Found) => (f.services ?? []).filter((s) => s.price).length;
   let best: Found = main;
-  for (const s of subs) if (priced(s) > priced(best) || (s.servicesStructured && !best.servicesStructured && priced(s) >= 2)) best = s;
-  const pickStr = (k: "address" | "city" | "phone" | "whatsapp" | "telegram" | "hours") => main[k] || subs.map((s) => s[k]).find(Boolean) || "";
+  if (priced(main) < 5) for (const s of subs) if (priced(s) > priced(best) || (s.servicesStructured && !best.servicesStructured && priced(s) >= 2)) best = s;
+  const pages = [main, ...subs];
+  const pickStr = (k: "address" | "city" | "phone" | "whatsapp" | "telegram" | "hours" | "offer" | "orgUrl") => main[k] || subs.map((s) => s[k]).find(Boolean) || "";
+  // Реквизиты: самые полные (с ФИО/названием)
+  const legal = pages.map((p) => p.legalInfo ?? "").filter(Boolean).sort((a, b) => b.length - a.length)[0] ?? "";
+  const addresses = uniq(pages.flatMap((p) => p.addresses ?? []), (a) => addressKey(a.address, a.city));
   const { next: _n, ...rest } = main; // eslint-disable-line @typescript-eslint/no-unused-vars
   return {
     ...rest,
     url,
-    address: pickStr("address"),
+    address: pickStr("address") || addresses[0]?.address || "",
+    addresses,
     city: pickStr("city"),
     phone: pickStr("phone"),
     whatsapp: pickStr("whatsapp"),
     telegram: pickStr("telegram"),
     hours: pickStr("hours"),
+    offer: pickStr("offer"),
+    orgUrl: pickStr("orgUrl") || undefined,
+    legalInfo: legal,
     services: best.services,
     servicesStructured: best.servicesStructured,
+    advantages: dedupeAdvantages(pages.flatMap((p) => p.advantages ?? [])).slice(0, 15),
     rating: main.rating ?? subs.find((s) => s.rating)?.rating,
     review: main.review ?? subs.find((s) => s.review)?.review,
-    photos: uniq([...(main.photos ?? []), ...subs.flatMap((s) => s.photos ?? [])]).slice(0, 10),
-    text: [main.text, ...subs.map((s) => s.text)].filter(Boolean).join("\n").slice(0, 60000),
-    links: uniq([...(main.links ?? []), ...subs.flatMap((s) => s.links ?? [])]).slice(0, 3),
+    photos: uniq(pages.flatMap((p) => p.photos ?? []), photoKey).slice(0, 40),
+    text: pages.map((p) => p.text).filter(Boolean).join("\n").slice(0, 80000),
+    links: uniq(pages.flatMap((p) => p.links ?? []), (h) => h.replace(/[?#].*$/, "")).slice(0, 3),
   };
 }
 
@@ -126,7 +145,7 @@ export function readOne(url: string, kind: SourceKind = kindOf(url), opts: { max
     case "vk":
       return readVk(url);
     default:
-      return readSite(url, opts.maxNext ?? 2);
+      return readSite(url, opts.maxNext ?? 4);
   }
 }
 
@@ -166,7 +185,8 @@ async function aiFill(draft: Draft, found: Found[]): Promise<boolean> {
       .map((s) => ({ name: cleanServiceName(String(s.name ?? "")), price: s.price ? normalizePrice(s.price) : "" }))
       .filter((s) => s.name && s.name.toLowerCase().replace(/ё/g, "е").split(/\s+/).filter((w) => w.length >= 4).every((w) => lower.includes(w.slice(0, Math.max(4, w.length - 2)))))
       .map((s): ImportService => (s.price && digits.includes(s.price.replace(/\D/g, "").slice(0, 6)) ? s : { name: s.name }))
-      .slice(0, 15);
+      .map((s) => ({ ...s, ...(categoryFromName(s.name) ? { category: categoryFromName(s.name) } : {}) }))
+      .slice(0, 40);
     if (ok.filter((s) => s.price).length > draft.services.filter((s) => s.price).length) {
       draft.services = ok;
       draft.sources.services = "по тексту сайта (YandexGPT)";
@@ -177,6 +197,7 @@ async function aiFill(draft: Draft, found: Found[]): Promise<boolean> {
     const add = r.advantages.map(cleanAdvantage).filter((a) => a && supportedBy(a, text));
     if (add.length) {
       draft.advantages = uniq([...draft.advantages, ...add]).slice(0, 5);
+      draft.advantagesFound = uniq([...draft.advantagesFound, ...add]).slice(0, 15);
       draft.sources.advantages ??= "по тексту сайта (YandexGPT)";
       used = true;
     }
@@ -191,6 +212,27 @@ async function aiFill(draft: Draft, found: Found[]): Promise<boolean> {
     }
   }
   return used;
+}
+
+/**
+ * YandexGPT только раскладывает уже найденные услуги по разделам прайса (если разделов на сайте не нашли).
+ * Услуги не добавляет и не переименовывает: принимаем только номера существующих услуг и короткие названия разделов.
+ */
+async function aiCategorize(draft: Draft): Promise<boolean> {
+  const list = draft.services;
+  if (list.length < 6 || list.some((s) => s.category)) return false;
+  const r = await gptJson<{ groups?: { name?: string; items?: number[] }[] }>(
+    "Ты раскладываешь прайс салона по разделам. Ничего не придумывай: только номера услуг из списка. Ответ — JSON.",
+    `Услуги:\n${list.map((s, i) => `${i + 1}. ${s.name}`).join("\n")}\n\nРазложи на 2–6 разделов («Маникюр», «Педикюр», «Стрижки»…). JSON: {"groups":[{"name":"","items":[номера]}]}`,
+    { temperature: 0, maxTokens: 800 },
+  ).catch(() => null);
+  const groups = (r?.groups ?? []).filter((g) => g && typeof g.name === "string" && /^[\p{L}\s«»"-]{3,30}$/u.test(g.name.trim()) && Array.isArray(g.items));
+  if (groups.length < 2) return false;
+  const cat = new Map<number, string>();
+  for (const g of groups) for (const n of g.items ?? []) if (Number.isInteger(n) && n >= 1 && n <= list.length && !cat.has(n - 1)) cat.set(n - 1, g.name!.trim());
+  if (cat.size < list.length * 0.7) return false;
+  draft.services = finalizeCategories(list.map((s, i) => ({ ...s, category: cat.get(i) })));
+  return draft.services.some((s) => s.category);
 }
 
 /**
@@ -230,6 +272,7 @@ export async function importFromUrls(rawUrls: string[], onEvent: (e: ImportEvent
   if (aiConfigured() && Date.now() - started < 35000) {
     onEvent({ type: "progress", text: "Уточняем услуги и преимущества…" });
     draft.ai = await aiFill(draft, found).catch(() => false);
+    if (await aiCategorize(draft).catch(() => false)) draft.ai = true;
     draft.missing = missingOf(draft);
   }
 

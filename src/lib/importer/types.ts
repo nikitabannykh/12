@@ -2,7 +2,7 @@
  * Общие типы автозаполнения «по ссылке». Модуль без серверных зависимостей — его импортирует и форма.
  */
 
-export type ImportService = { name: string; price?: string };
+export type ImportService = { name: string; price?: string; category?: string; note?: string };
 
 /** Откуда пришли данные */
 export type SourceKind = "site" | "yandex" | "dgis" | "dikidi" | "yclients" | "taplink" | "vk";
@@ -31,6 +31,8 @@ export const SOURCE_NAME: Record<SourceKind, string> = {
 
 export type Rating = { value: number; count: number };
 
+export type AddressOption = { address: string; city: string };
+
 /** Что нашёл один источник (адаптер). Пустые поля — не нашли. */
 export type Found = {
   kind: SourceKind;
@@ -42,6 +44,8 @@ export type Found = {
   categories?: string[];
   city?: string;
   address?: string;
+  /** Все найденные адреса (филиалы) — владелец выберет основной */
+  addresses?: AddressOption[];
   phone?: string;
   whatsapp?: string;
   telegram?: string;
@@ -52,6 +56,10 @@ export type Found = {
   /** Услуги из структурированных данных (schema.org, прайс площадки), а не из угадывания по тексту */
   servicesStructured?: boolean;
   advantages?: string[];
+  /** «ИП Иванова А. С., ИНН …» — если на сайте есть реквизиты */
+  legalInfo?: string;
+  /** Предложение для новых клиентов, если оно написано на странице */
+  offer?: string;
   description?: string;
   review?: string;
   rating?: Rating;
@@ -64,7 +72,7 @@ export type Found = {
 
 export type DraftField =
   | "name" | "niche" | "city" | "address" | "phone" | "whatsapp" | "telegram" | "hours" | "siteUrl" | "orgUrl"
-  | "services" | "advantages" | "description" | "review" | "rating" | "photos";
+  | "services" | "advantages" | "description" | "review" | "rating" | "photos" | "legalInfo" | "offer";
 
 /** Отчёт по одной ссылке — для строки прогресса и подсказок */
 export type ImportReport = { url: string; kind: SourceKind; status: Found["status"]; message?: string; summary: string };
@@ -74,6 +82,8 @@ export type Draft = {
   niche: string | null;
   city: string;
   address: string;
+  /** Несколько адресов (филиалы): основной — address, остальные можно выбрать */
+  addresses: AddressOption[];
   phone: string;
   whatsapp: string;
   telegram: string;
@@ -81,7 +91,12 @@ export type Draft = {
   siteUrl: string;
   orgUrl: string;
   services: ImportService[];
+  /** Выбранные преимущества (первые) — в анкету */
   advantages: string[];
+  /** Все найденные преимущества — владелец отметит нужные */
+  advantagesFound: string[];
+  legalInfo: string;
+  offer: string;
   description: string;
   review: string | null;
   rating: Rating | null;

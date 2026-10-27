@@ -4,7 +4,7 @@ import { route, json, fail } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { normalizeUrl, plural, rub, uid } from "@/lib/util";
 import { firstChannel, minMonthlyFor } from "@/lib/engine/budget";
-import { accountsFor, channelsFor } from "@/lib/engine/launch";
+import { accountsFor, channelsFor, listProjects, projectLimit, setCurrentProject } from "@/lib/engine/launch";
 import { CHANNEL_NAME } from "@/lib/platforms";
 import type { Channel } from "@/lib/platforms/types";
 import { NICHES } from "@/lib/niches";
@@ -24,7 +24,7 @@ const Body = z.object({
   orgUrl: z.string().trim().max(500).optional().nullable(),
   legalInfo: z.string().trim().max(200).optional().nullable(),
   description: z.string().trim().max(1500).optional().default(""),
-  services: z.array(z.object({ name: z.string().trim().min(1).max(80), price: z.string().trim().max(40).optional(), note: z.string().trim().max(120).optional() })).max(15).default([]),
+  services: z.array(z.object({ name: z.string().trim().min(1).max(80), price: z.string().trim().max(40).optional(), note: z.string().trim().max(120).optional(), category: z.string().trim().max(40).optional() })).max(40).default([]),
   advantages: z.array(z.string().trim().min(1).max(100)).max(8).default([]),
   audience: z.string().trim().max(300).optional().nullable(),
   offer: z.string().trim().max(80).optional().nullable(),
@@ -97,7 +97,7 @@ function ruIssue(iss: z.core.$ZodIssue): string {
   if (/[а-яё]/i.test(iss.message)) return iss.message; // своё сообщение из схемы
   const [key, idx, sub] = iss.path as (string | number)[];
   let label = FIELD[String(key)] ?? "Поле";
-  if (key === "services" && typeof idx === "number") label = `Услуга ${idx + 1}${sub === "price" ? " — цена" : sub === "note" ? " — примечание" : ""}`;
+  if (key === "services" && typeof idx === "number") label = `Услуга ${idx + 1}${sub === "price" ? " — цена" : sub === "note" ? " — примечание" : sub === "category" ? " — раздел" : ""}`;
   if (key === "advantages" && typeof idx === "number") label = `Преимущество ${idx + 1}`;
   const x = iss as unknown as { origin?: string; maximum?: number | bigint; minimum?: number | bigint; expected?: string };
   const n = Number(x.maximum ?? x.minimum ?? 0);
@@ -129,7 +129,7 @@ export const POST = route(async ({ user, business, req }) => {
   const d = {
     ...raw,
     name: se(raw.name), address: se(raw.address), hours: se(raw.hours), offer: se(raw.offer), review: se(raw.review),
-    services: raw.services.map((s) => ({ ...s, name: se(s.name), price: se(s.price), note: se(s.note) })),
+    services: raw.services.map((s) => ({ ...s, name: se(s.name), price: se(s.price), note: se(s.note), category: se(s.category) })),
     advantages: raw.advantages.map((a) => se(a)),
   };
   if (!d.name) return fail("Название: напишите буквами, без одних эмодзи");
@@ -157,7 +157,7 @@ export const POST = route(async ({ user, business, req }) => {
     siteUrl: normalizeUrl(d.siteUrl),
     ...org,
     legalInfo,
-    services: d.services.filter((s) => s.name).map((s) => ({ name: s.name, ...(s.price ? { price: s.price } : {}), ...(s.note ? { note: s.note } : {}) })),
+    services: d.services.filter((s) => s.name).map((s) => ({ name: s.name, ...(s.price ? { price: s.price } : {}), ...(s.note ? { note: s.note } : {}), ...(s.category ? { category: s.category } : {}) })),
     advantages: d.advantages.filter(Boolean),
     updatedAt: new Date(),
   };
@@ -179,7 +179,11 @@ export const POST = route(async ({ user, business, req }) => {
     }
     return json({ id: business.id, planReset: Boolean(nicheChanged && plan) });
   }
+  // Новый проект: не больше лимита, и сразу делаем его текущим
+  const count = (await listProjects(user.id)).length;
+  if (count >= projectLimit(user.email)) return fail(`Можно вести до ${projectLimit(user.email)} проектов в одном аккаунте`);
   const id = uid("b_");
   await db.insert(schema.businesses).values({ id, userId: user.id, publicKey: uid().replace(/[-_]/g, "").slice(0, 10).toLowerCase(), ...values });
-  return json({ id });
+  await setCurrentProject(user.id, id);
+  return json({ id, created: true });
 });

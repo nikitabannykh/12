@@ -3,7 +3,8 @@ import { Logo } from "@/components/Logo";
 import { Nav } from "@/components/Nav";
 import { ToastProvider, UrlNotice } from "@/components/client";
 import { requireUser } from "@/lib/auth";
-import { getBusinessForUser } from "@/lib/engine/launch";
+import { getBusinessForUser, listProjects, projectLimit } from "@/lib/engine/launch";
+import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { and, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { familyOf } from "@/lib/channels";
@@ -13,6 +14,8 @@ export const dynamic = "force-dynamic";
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
   const b = await getBusinessForUser(user.id);
+  const projects = await listProjects(user.id);
+  const limit = projectLimit(user.email);
   const launched = b?.status === "active";
   // Подпункты «Рекламы»: сколько кампаний на каждой площадке
   let ads: { yandex: number; vk: number } | undefined;
@@ -30,10 +33,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         {/* Белый фон и граница — на всю высоту колонки, а меню внутри прилипает к верху экрана */}
         <aside className="hidden md:block border-r border-line bg-card">
           <div className="flex flex-col gap-8 px-4 py-5 sticky top-0 h-dvh overflow-y-auto">
-          <Link href="/app" className="px-2"><Logo size={26} /></Link>
+          <div className="grid gap-4">
+            <Link href="/app" className="px-2"><Logo size={26} /></Link>
+            <ProjectSwitcher projects={projects} current={b?.id ?? null} limit={limit} variant="side" />
+          </div>
           <Nav launched={launched} variant="side" ads={ads} />
           <div className="mt-auto px-2 text-sm">
-            {b ? <div className="font-semibold truncate">{b.name}</div> : null}
             <div className="text-muted truncate">{user.email.includes("@demo.") ? "Демо-аккаунт" : user.email}</div>
             <form action="/api/auth/logout" method="post" className="mt-2">
               <button className="text-muted hover:text-ink underline underline-offset-2">Выйти</button>
@@ -44,7 +49,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <div className="min-w-0">
           <header className="md:hidden flex items-center justify-between px-4 h-14 border-b border-line bg-card">
             <Link href="/app"><Logo size={24} /></Link>
-            {b ? <span className="text-sm font-semibold truncate max-w-[45%]">{b.name}</span> : null}
+            <ProjectSwitcher projects={projects} current={b?.id ?? null} limit={limit} variant="top" />
           </header>
           <main className="mx-auto max-w-[1040px] px-4 sm:px-8 py-6 sm:py-10 pb-28 md:pb-12">{children}</main>
         </div>

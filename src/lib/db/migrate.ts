@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash text,
   email_verified_at timestamptz,
   session_version integer NOT NULL DEFAULT 0,
+  current_business_id text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email);
@@ -253,4 +254,5 @@ ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS client_secret text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at timestamptz;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version integer NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS current_business_id text;
 `;

@@ -10,6 +10,7 @@ import { nicheById } from "@/lib/niches";
 import { LeadForm } from "@/components/LeadForm";
 import { formToken, signFirstTouch } from "@/lib/ratelimit";
 import { landingColors } from "./colors";
+import { groupServices, hasCategories } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
@@ -87,15 +88,22 @@ export default async function Landing({ params, searchParams }: { params: Promis
         {b.services.length ? (
           <section id="services" className="mt-12 scroll-mt-6">
             <h2 className="text-2xl font-extrabold">Услуги и цены</h2>
-            <ul className="mt-5 rounded-2xl bg-white" style={{ color: c.cardInk }}>
-              {b.services.map((s, i) => (
-                <li key={s.name} id={`s${i + 1}`} className="flex items-baseline gap-3 px-4 sm:px-5 py-4 text-base sm:text-lg scroll-mt-6" style={i ? { borderTop: `1px solid ${bg}` } : undefined}>
-                  <span className="font-medium min-w-0 break-words">{s.name}</span>
-                  <span className="flex-1 min-w-4 border-b border-dashed opacity-30 translate-y-[-4px]" />
-                  <span className="font-extrabold whitespace-nowrap shrink-0" style={{ color: c.accentOnCard }}>{s.price || "по записи"}</span>
-                </li>
-              ))}
-            </ul>
+            {/* Разделы прайса («Маникюр», «Педикюр») — подзаголовками; якоря #s1, #s2… по исходному порядку (на них ведут быстрые ссылки) */}
+            {(hasCategories(b.services) ? groupServices(b.services) : [{ category: "", items: b.services.map((s, i) => ({ s, i })) }]).map((g) => (
+              <div key={g.category || "all"}>
+                {g.category ? <h3 className="mt-6 text-lg font-bold">{g.category}</h3> : null}
+                <ul className={`${g.category ? "mt-3" : "mt-5"} rounded-2xl bg-white`} style={{ color: c.cardInk }}>
+                  {g.items.map(({ s, i }, k) => (
+                    <li key={s.name} id={`s${i + 1}`} className="flex flex-wrap items-baseline gap-x-3 px-4 sm:px-5 py-4 text-base sm:text-lg scroll-mt-6" style={k ? { borderTop: `1px solid ${bg}` } : undefined}>
+                      <span className="font-medium min-w-0 break-words max-w-[70%]">{s.name}</span>
+                      <span className="flex-1 min-w-4 border-b border-dashed opacity-30 translate-y-[-4px]" />
+                      <span className="font-extrabold whitespace-nowrap shrink-0" style={{ color: c.accentOnCard }}>{s.price || "по записи"}</span>
+                      {s.note ? <span className="basis-full text-sm opacity-70 mt-1">{s.note}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </section>
         ) : null}
 

@@ -20,10 +20,13 @@ export const users = pgTable("users", {
   emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
   // Входит в cookie сессии; увеличивается при смене/сбросе пароля — старые сессии перестают действовать
   sessionVersion: integer("session_version").notNull().default(0),
+  // Выбранный проект (бизнес) — у одного владельца их может быть несколько; "new" — заполняет анкету нового
+  currentBusinessId: text("current_business_id"),
   createdAt: createdAt(),
 }, (t) => [uniqueIndex("users_email").on(t.email)]);
 
-export type Service = { name: string; price?: string; note?: string };
+/** Услуга анкеты; category — раздел прайса («Маникюр», «Педикюр»), необязательно */
+export type Service = { name: string; price?: string; note?: string; category?: string };
 
 export const businesses = pgTable("businesses", {
   id: id(),

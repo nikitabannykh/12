@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, inArray, notInArray } from "drizzle-orm";
+import { and, asc, eq, inArray, notInArray } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { AdAccount, Business, Campaign, UndoOp } from "../db/schema";
 import { allocate, MAX_MONTHLY } from "./budget";
@@ -81,10 +81,48 @@ export function rebalancePlan(plan: LaunchPlan, monthly: number, exclude: Channe
   return plan;
 }
 
+/** Выбор «нового проекта»: анкета пустая, остальные проекты остаются в переключателе */
+export const NEW_PROJECT = "new";
+
+/**
+ * Текущий проект (бизнес) владельца. У одного владельца может быть несколько проектов: выбранный хранится
+ * в users.current_business_id. Чужой или удалённый id не вернётся — берём только из своих (проверка владельца).
+ * NEW_PROJECT → null: страницы ведут на анкету, а POST /api/business создаст новый проект.
+ */
 export async function getBusinessForUser(userId: string, businessId?: string) {
   const db = await getDb();
-  const rows = await db.select().from(schema.businesses).where(eq(schema.businesses.userId, userId));
-  return (businessId ? rows.find((r) => r.id === businessId) : rows[0]) ?? null;
+  const rows = await db.select().from(schema.businesses).where(eq(schema.businesses.userId, userId)).orderBy(asc(schema.businesses.createdAt));
+  if (businessId) return rows.find((r) => r.id === businessId) ?? null;
+  if (!rows.length) return null;
+  const [u] = await db.select({ cur: schema.users.currentBusinessId }).from(schema.users).where(eq(schema.users.id, userId));
+  if (u?.cur === NEW_PROJECT) return null;
+  return rows.find((r) => r.id === u?.cur) ?? rows[0];
+}
+
+export type ProjectItem = { id: string; name: string; status: string; city: string };
+
+/** Проекты владельца для переключателя: старые первыми */
+export async function listProjects(userId: string): Promise<ProjectItem[]> {
+  const db = await getDb();
+  return db
+    .select({ id: schema.businesses.id, name: schema.businesses.name, status: schema.businesses.status, city: schema.businesses.city })
+    .from(schema.businesses)
+    .where(eq(schema.businesses.userId, userId))
+    .orderBy(asc(schema.businesses.createdAt));
+}
+
+/** Сколько проектов можно завести: демо — 3, обычный аккаунт — 10 */
+export const projectLimit = (email: string) => (email.endsWith("@demo.polny-zal.local") ? 3 : 10);
+
+/** Переключить проект: id своего бизнеса или NEW_PROJECT. Возвращает false, если проект чужой. */
+export async function setCurrentProject(userId: string, id: string): Promise<boolean> {
+  const db = await getDb();
+  if (id !== NEW_PROJECT) {
+    const [b] = await db.select({ id: schema.businesses.id }).from(schema.businesses).where(and(eq(schema.businesses.id, id), eq(schema.businesses.userId, userId)));
+    if (!b) return false;
+  }
+  await db.update(schema.users).set({ currentBusinessId: id }).where(eq(schema.users.id, userId));
+  return true;
 }
 
 export async function accountsFor(userId: string) {

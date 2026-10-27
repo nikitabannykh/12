@@ -7,9 +7,10 @@
  */
 import type { Draft, DraftField, Found, ImportReport, ImportService, SourceKind } from "./types";
 import { SOURCE_CHIP } from "./types";
-import { cityFromAddress, cleanAdvantage, detectNiche, stripCity, uniq } from "./normalize";
+import { addressKey, cityFromAddress, cleanAdvantage, dedupeAdvantages, detectNiche, stripCity, uniq } from "./normalize";
+import { photoKey } from "./html";
 
-type ScalarField = "name" | "city" | "address" | "phone" | "whatsapp" | "telegram" | "hours" | "siteUrl" | "orgUrl" | "description" | "review";
+type ScalarField = "name" | "city" | "address" | "phone" | "whatsapp" | "telegram" | "hours" | "siteUrl" | "orgUrl" | "description" | "review" | "legalInfo" | "offer";
 
 const PRIORITY: Record<ScalarField, SourceKind[]> = {
   name: ["yandex", "dgis", "site", "dikidi", "taplink", "yclients", "vk"],
@@ -23,6 +24,8 @@ const PRIORITY: Record<ScalarField, SourceKind[]> = {
   orgUrl: ["yandex", "site"],
   description: ["site", "taplink", "vk", "dikidi"],
   review: ["site", "yandex"],
+  legalInfo: ["site", "taplink", "vk"],
+  offer: ["site", "taplink", "vk", "yandex", "dgis"],
 };
 
 /** Порядок источников услуг: сайт владельца → онлайн-запись → карты → визитки */
@@ -48,7 +51,7 @@ export function pickServices(found: Found[]): { services: ImportService[]; from:
   const priceOf = new Map<string, string>();
   for (const f of withServices) for (const s of f.services ?? []) if (s.price) priceOf.set(s.name.toLowerCase(), s.price);
   const services = (best.services ?? []).map((s) => (s.price ? s : priceOf.has(s.name.toLowerCase()) ? { ...s, price: priceOf.get(s.name.toLowerCase()) } : s));
-  return { services: uniq(services, (s) => s.name.toLowerCase()).slice(0, 15), from: best };
+  return { services: uniq(services, (s) => s.name.toLowerCase()).slice(0, 40), from: best };
 }
 
 const ratingText = (v: number) => v.toFixed(1).replace(".", ",");
@@ -65,7 +68,11 @@ export function summarize(f: Found): string {
   const n = f.services?.length ?? 0;
   if (n) parts.push(p ? `${n} ${plural(n, "услуга", "услуги", "услуг")} ${p === n ? "с ценами" : `(${p} с ценами)`}` : `${n} ${plural(n, "услуга", "услуги", "услуг")}`);
   if (f.rating) parts.push(`рейтинг ${ratingText(f.rating.value)}`);
+  const cats = new Set((f.services ?? []).map((s) => s.category).filter(Boolean));
+  if (cats.size >= 2) parts.push(`${cats.size} ${plural(cats.size, "раздел", "раздела", "разделов")} прайса`);
+  if (f.advantages?.length) parts.push(`${f.advantages.length} ${plural(f.advantages.length, "преимущество", "преимущества", "преимуществ")}`);
   if (f.photos?.length) parts.push(`${f.photos.length} фото`);
+  if (f.legalInfo) parts.push("реквизиты");
   return parts.join(", ");
 }
 
@@ -126,10 +133,11 @@ export function mergeFound(found: Found[]): Draft {
     const c = cleanAdvantage(a);
     if (c) advantages.push(c);
   }
-  const adv = uniq(advantages).slice(0, 5);
+  const advFound = dedupeAdvantages(advantages).slice(0, 15);
+  const adv = advFound.slice(0, 5);
   if (adv.length) sources.advantages = SOURCE_CHIP[(found.find((f) => f.advantages?.length) ?? ratingFrom ?? found[0]).kind];
 
-  const photos = uniq(byKind(found, PHOTO_ORDER).flatMap((f) => f.photos ?? []), (u) => u.replace(/[?#].*$/, "")).slice(0, 10);
+  const photos = uniq(byKind(found, PHOTO_ORDER).flatMap((f) => f.photos ?? []), (u) => photoKey(u)).slice(0, 40);
   if (photos.length) sources.photos = SOURCE_CHIP[byKind(found, PHOTO_ORDER).find((f) => f.photos?.length)!.kind];
 
   const phone = pick("phone");
@@ -144,11 +152,32 @@ export function mergeFound(found: Found[]): Draft {
   });
   if (niche) sources.niche = SOURCE_CHIP[(byKind(found.filter((f) => f.categories?.length), ["yandex", "dgis", "site", "dikidi", "taplink"])[0] ?? found[0])?.kind ?? "site"];
 
+  // Все адреса из всех источников (филиалы) — основной первым
+  const addresses: Draft["addresses"] = [];
+  const seenAddr = new Set<string>();
+  const pushAddr = (a: string, c: string) => {
+    const k = addressKey(a, c || city);
+    if (!a || !k || seenAddr.has(k)) return;
+    seenAddr.add(k);
+    addresses.push({ address: stripCity(a, c || city), city: c || city });
+  };
+  if (address) pushAddr(address, city);
+  for (const f of byKind(found, PRIORITY.address)) {
+    if (f.address) pushAddr(f.address, f.city || cityFromAddress(f.address));
+    for (const a of f.addresses ?? []) pushAddr(a.address, a.city);
+  }
+  if (!address && addresses[0]) {
+    address = addresses[0].address;
+    if (!city) city = addresses[0].city;
+    sources.address = SOURCE_CHIP[byKind(found, PRIORITY.address).find((f) => f.addresses?.length)?.kind ?? "site"];
+  }
+
   const draft: Draft = {
     name,
     niche,
     city,
     address,
+    addresses: addresses.slice(0, 8),
     phone,
     whatsapp,
     telegram,
@@ -157,6 +186,9 @@ export function mergeFound(found: Found[]): Draft {
     orgUrl: pick("orgUrl"),
     services,
     advantages: adv,
+    advantagesFound: advFound,
+    legalInfo: pick("legalInfo"),
+    offer: pick("offer"),
     description: pick("description"),
     review: pick("review") || null,
     rating,

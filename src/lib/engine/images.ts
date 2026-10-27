@@ -1,4 +1,5 @@
 import "server-only";
+import { spreadServices } from "../services";
 import { and, asc, count, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import { uid } from "../util";
@@ -66,7 +67,7 @@ export async function ownerPhotoCreative(b: Business, photoId: string, size: { w
  */
 export function photoPrompts(b: Business, ideas: string[] = []) {
   const n = nicheById(b.niche);
-  const services = (b.services ?? []).map((s) => s.name).filter(Boolean);
+  const services = spreadServices((b.services ?? []).filter((s) => s.name), 3).map((s) => s.name);
   const scene = n.visuals[0];
   const fromServices = services.slice(0, 3).map(
     (svc, i) =>

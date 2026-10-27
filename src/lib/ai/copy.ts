@@ -1,5 +1,6 @@
 import "server-only";
-import type { Business } from "../db/schema";
+import type { Business, Service } from "../db/schema";
+import { groupServices, hasCategories, spreadServices } from "../services";
 import { ANGLES, nicheById } from "../niches";
 import { badChars, cleanText, factCallouts, hasSuperlative, SUPERLATIVE as SUPERLATIVE_ONE, withoutSuperlatives } from "../engine/extras";
 import { plural } from "../util";
@@ -214,7 +215,11 @@ function factCheckAd(a: AdDraft, facts: string): AdDraft | null {
 
 function bizBrief(b: Business) {
   const n = nicheById(b.niche);
-  const services = (b.services ?? []).map((s) => `- ${s.name}${s.price ? ` — ${priceText(s.price)}` : ""}${s.note ? ` (${s.note})` : ""}`).join("\n");
+  const line = (s: Service) => `- ${s.name}${s.price ? ` — ${priceText(s.price)}` : ""}${s.note ? ` (${s.note})` : ""}`;
+  // Разделы прайса — заголовками: модели проще сделать по группе на раздел («Маникюр», «Педикюр»)
+  const services = hasCategories(b.services ?? [])
+    ? groupServices(b.services ?? []).map((g) => `${g.category || "Другое"}:\n${g.items.map((x) => line(x.s)).join("\n")}`).join("\n")
+    : (b.services ?? []).map(line).join("\n");
   return [
     `Бизнес: ${b.name} (${n.label}), город ${b.city}${b.address ? `, адрес: ${b.address}` : ""}.`,
     b.description ? `Описание от владельца: ${b.description}` : "",
@@ -256,7 +261,7 @@ export async function generateCopyPlan(b: Business, channels: { search: boolean;
 
 Подготовь рекламу. Верни JSON:
 {
- "search": [ // 2–4 группы для поиска Яндекса: по одной на основную услугу
+ "search": [ // 2–4 группы для поиска Яндекса: по одной на основную услугу (если есть разделы прайса — из разных разделов); name группы — точное название услуги из описания
    {"name": "название группы (услуга)", "audience": "кто ищет, простыми словами", "keywords": ["8–15 коротких запросов 2–4 слова (не больше 7), как люди реально ищут, с городом/районом и без, без знаков + ! -"],
     "ads": [3 объявления: {"angle": "price|offer|proof|convenience|result|emotion", "title": "до 56 символов", "title2": "до 30 символов", "text": "до 81 символа"}]}
  ],
@@ -551,7 +556,8 @@ function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string,
 
 export function templatePlan(b: Business): CopyPlan {
   const n = nicheById(b.niche);
-  const services = b.services?.length ? b.services.slice(0, 3) : [{ name: genericService(b), price: undefined as string | undefined }];
+  // По услуге из каждого раздела прайса (маникюр, педикюр…), а не первые три подряд
+  const services = b.services?.length ? spreadServices(b.services, 3) : [{ name: genericService(b), price: undefined as string | undefined }];
   const city = cleanKeyword(b.city);
   const search: GroupDraft[] = services.map((s) => {
     const base = keywordBase(s.name) || cleanKeyword(genericService(b));

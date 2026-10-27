@@ -13,7 +13,9 @@ import { parseDgisHtml, dgisFromUrl } from "./sources/dgis";
 import { dikidiId, dikidiServices, parseDikidiHtml } from "./sources/dikidi";
 import { parseTaplinkHtml, isVkWall } from "./sources/social";
 import { mergeFound, missingOf } from "./merge";
+import { blocks } from "./html";
 import {
+  addressKey, addressesFromBlocks, categoryFromName, categoryOf, cleanAddress, hoursFromText, legalFromText, pricesFromBlocks,
   cityFromAddress, detectNiche, formatPhone, formatWeek, hoursFromSchema, normalizePrice, pricesFromText, servicesFromJson, telegramFrom, whatsappFrom,
 } from "./normalize";
 import { checkUrl, decodeText, FetchError, isPrivateIp, safeFetch, safeLookup } from "./fetch";
@@ -34,11 +36,12 @@ test("JSON-LD салона: адрес, часы, услуги с ценами, 
   assert.equal(f.hours, "Пн–Пт 10:00–21:00, Сб–Вс 11:00–19:00");
   assert.deepEqual(parseWeekHours(f.hours)?.[0], { open: 10, close: 21 }); // формат понимает расписание показов
   assert.equal(f.servicesStructured, true);
+  // Вложенные каталоги schema.org («Маникюр», «Педикюр», «Брови») — категории услуг
   assert.deepEqual(f.services, [
-    { name: "Маникюр с покрытием гель-лаком", price: "1 900 ₽" },
-    { name: "Снятие и укрепление", price: "от 700 ₽" },
-    { name: "Педикюр", price: "2 200–2 800 ₽" },
-    { name: "Архитектура бровей", price: "1 200 ₽" },
+    { name: "Маникюр с покрытием гель-лаком", price: "1 900 ₽", category: "Маникюр" },
+    { name: "Снятие и укрепление", price: "от 700 ₽", category: "Маникюр" },
+    { name: "Педикюр", price: "2 200–2 800 ₽", category: "Педикюр" },
+    { name: "Архитектура бровей", price: "1 200 ₽", category: "Брови" },
   ]);
   assert.deepEqual(f.rating, { value: 4.9, count: 87 });
   assert.match(f.review ?? "", /второй год/);
@@ -55,14 +58,15 @@ test("Прайс в тексте страницы (таблица, точки-з
   const page = decodeText({ body: fx("price-page-cp1251.html"), contentType: "text/html" });
   assert.match(page, /Барбершоп Борода/);
   const f = parseSite(page, "https://boroda.example/");
-  const names = f.services?.map((s) => `${s.name}: ${s.price}`);
+  const names = f.services?.map((s) => `${s.category}: ${s.name}: ${s.price}`);
+  // Без заголовков разделов — группы по названиям услуг («стрижка» → «Стрижки», «борода/бритьё» → «Борода и бритьё»)
   assert.deepEqual(names, [
-    "Тонирование бороды: 1 000 ₽", // карточка конструктора: название из .t-name, а не строка описания над ценой
-    "Мужская стрижка: 1 500 ₽",
-    "Стрижка + борода: 2 300 ₽",
-    "Детская стрижка (до 12 лет): от 900 ₽",
-    "Королевское бритьё: 1 800 ₽",
-    "Камуфляж седины: 1 200–1 500 ₽",
+    "Борода и бритьё: Тонирование бороды: 1 000 ₽", // карточка конструктора: название из .t-name, а не строка описания над ценой
+    "Борода и бритьё: Королевское бритьё: 1 800 ₽",
+    "Стрижки: Мужская стрижка: 1 500 ₽",
+    "Стрижки: Стрижка + борода: 2 300 ₽",
+    "Стрижки: Детская стрижка (до 12 лет): от 900 ₽",
+    "Другое: Камуфляж седины: 1 200–1 500 ₽",
   ]);
   assert.equal(f.servicesStructured, false);
   assert.equal(f.phone, "+7 846 300-40-50");
@@ -222,4 +226,74 @@ test("Защита от SSRF: схемы, порты, частные адрес�
     assert.ok(err && (err as NodeJS.ErrnoException).code === "EBLOCKED");
     resolve();
   }));
+});
+
+test("Реальный сайт (Flexbe, 8marta.me/manicure): адрес из подвала, часы, все фото, преимущества, разделы прайса", () => {
+  // Сохранённая страница; телефоны и реквизиты заменены
+  const f = parseSite(html("8marta-manicure.html"), "https://8marta.me/manicure/");
+  assert.equal(f.city, "Екатеринбург");
+  assert.equal(f.address, "ул. Шейнкмана, 111"); // «Ждем Вас по адресу / Екатеринбург, ул. Шейнкмана, 111»
+  assert.equal(f.phone, "+7 900 555-01-23");
+  assert.equal(f.whatsapp, "+7 900 555-01-23");
+  assert.equal(f.hours, "Ежедневно 09:00–21:00"); // «С 9:00 до 21:00»
+  assert.equal(f.legalInfo, "ИП, ИНН 770000000156"); // ИНН + ОГРНИП → ИП
+  // Фото: галерея (data-lightbox), картинки прайса, фоны — без иконок и дублей размеров
+  assert.ok((f.photos?.length ?? 0) >= 10, `фото ${f.photos?.length}`);
+  assert.ok(f.photos?.some((p) => /53238969/.test(p)), "фото из галереи «Примеры маникюра»");
+  assert.ok(!f.photos?.some((p) => /51302861|favicon|%optimalWidth%/.test(p)), "без иконок");
+  assert.equal(new Set(f.photos?.map((p) => p.replace(/_\d+_q\d+(?=\.)/, ""))).size, f.photos?.length, "один размер каждой картинки");
+  // Преимущества: факты со страницы
+  const adv = f.advantages ?? [];
+  assert.ok(adv.length >= 4, `преимуществ ${adv.length}: ${adv.join(" / ")}`);
+  assert.ok(adv.some((a) => /автоклав/i.test(a)));
+  assert.ok(adv.some((a) => /в 4 руки/i.test(a)));
+  assert.ok(adv.some((a) => /93\+ вида процедур/i.test(a)));
+  assert.ok(!adv.some((a) => /лучш|самый/i.test(a)), "без превосходных степеней");
+  // Прайс: разделы «Маникюр» и «Педикюр», диапазоны цен (проф-мастер | топ-мастер), примечания в скобках
+  const s = f.services ?? [];
+  assert.ok(s.length >= 20, `услуг ${s.length}`);
+  assert.deepEqual([...new Set(s.map((x) => x.category))], ["Маникюр", "Педикюр"]);
+  assert.equal(s.filter((x) => x.category === "Педикюр").length, 11);
+  assert.deepEqual(s[0], { name: "Маникюр без покрытия", price: "1 700–1 900 ₽", category: "Маникюр" });
+  assert.ok(s.some((x) => x.name === "Маникюр + Покрытие (Просто Лак)" && x.price === "2 100–2 300 ₽"));
+  assert.ok(s.some((x) => x.name === "Пилочный маникюр Christina Fitzgerald" && x.price === "2 900 ₽"));
+  assert.match(s.find((x) => x.name === "Маникюр «Стандарт»")?.note ?? "", /^Снятие, комбинированный маникюр/);
+  assert.ok(s.every((x) => (x.note ?? "").length <= 120));
+  assert.equal(detectNiche({ categories: f.categories, name: f.name, services: s.map((x) => x.name), text: f.text }), "nails");
+});
+
+test("Адреса, часы, юр. данные, вкладки прайса — по тексту", () => {
+  assert.equal(cleanAddress("Адрес: Екатеринбург, ул. Шейнкмана, 111"), "Екатеринбург, ул. Шейнкмана, 111");
+  assert.equal(cleanAddress("Рязанский проспект-1 (филиал переехал)"), "", "номер филиала — не дом");
+  assert.equal(cleanAddress("40.7127837"), "", "координаты — не адрес");
+  assert.equal(cleanAddress("Ленинский проспект, 30 — вход со двора"), "Ленинский проспект, 30");
+  assert.equal(addressKey("ул. Малышева, 7", "Екатеринбург"), addressKey("Екатеринбург, ул. Малышева, дом 7"));
+  // Реквизиты (юр. адрес рядом с ИНН) — не адрес салона
+  const legalBlocks = blocks("<p>Реквизиты</p><p>ИП Иванова Анна Сергеевна</p><p>ИНН 770000000156</p><p>пос. Растущий, ул. Жемчужная 77</p>");
+  assert.deepEqual(addressesFromBlocks(legalBlocks), []);
+  assert.equal(hoursFromText("Работаем с 9 утра до 21 вечера. Без выходных!"), "Ежедневно 09:00–21:00");
+  assert.equal(hoursFromText("Пн–Пт 10:00–20:00, Сб–Вс 11:00–18:00"), "Пн–Пт 10:00–20:00, Сб–Вс 11:00–18:00");
+  assert.equal(hoursFromText("В период с 11:00 до 16:00 свободных мест на парковке достаточно"), "");
+  assert.equal(legalFromText("Реквизиты\nИП Иванова Анна Сергеевна\nОГРНИП 300000000000001\nИНН 770000000156\nИНН банка: 7728168971"), "ИП Иванова Анна Сергеевна, ИНН 770000000156");
+  assert.equal(legalFromText("ИНН 123456789012"), "", "ИНН с неверной контрольной суммой не берём");
+  // Вкладки Tilda: «Маникюр | Педикюр» над секциями с ценами
+  const tabs = blocks(`<section><ul><li><h2>Маникюр</h2></li><li><h2>Педикюр</h2></li></ul></section>
+    <section><p>Маникюр классический</p><p>1 200 ₽</p><p>Снятие</p><p>300 ₽</p></section>
+    <section><p>Педикюр полный</p><p>2 000 | 2 400 руб.</p></section>`);
+  assert.deepEqual(pricesFromBlocks(tabs), [
+    { name: "Маникюр классический", price: "1 200 ₽", category: "Маникюр" },
+    { name: "Снятие", price: "300 ₽", category: "Маникюр" },
+    { name: "Педикюр полный", price: "2 000–2 400 ₽", category: "Педикюр" },
+  ]);
+  assert.equal(categoryOf("Педикюр SMART Профи Топ"), "Педикюр");
+  assert.equal(categoryOf("Проф-мастер | Топ-мастер"), "");
+  assert.equal(categoryFromName("Пилинговый педикюр полный"), "Педикюр");
+});
+
+test("Склейка: филиалы и найденные преимущества", () => {
+  const a: Found = { kind: "site", url: "https://a.example", status: "ok", name: "Сеть", city: "Новосибирск", address: "ул. Кошурникова, 2/1", addresses: [{ address: "ул. Кошурникова, 2/1", city: "Новосибирск" }, { address: "ул. Дуси Ковальчук, 179/4", city: "Новосибирск" }], advantages: ["Одноразовые инструменты", "Медицинская лицензия", "Медицинская лицензия ЛО-54-01-000000"], legalInfo: "ИП Иванова Анна Сергеевна, ИНН 770000000156" };
+  const d = mergeFound([a]);
+  assert.deepEqual(d.addresses.map((x) => x.address), ["ул. Кошурникова, 2/1", "ул. Дуси Ковальчук, 179/4"]);
+  assert.deepEqual(d.advantagesFound, ["Одноразовые инструменты", "Медицинская лицензия ЛО-54-01-000000"]);
+  assert.equal(d.legalInfo, "ИП Иванова Анна Сергеевна, ИНН 770000000156");
 });

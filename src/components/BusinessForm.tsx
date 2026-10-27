@@ -17,7 +17,7 @@ export type BusinessInput = {
 export function businessPayload(f: BusinessInput) {
   return {
     ...f,
-    services: f.services.filter((s) => s.name.trim()).map((s) => ({ name: s.name.trim(), price: s.price?.trim() || undefined })),
+    services: f.services.filter((s) => s.name.trim()).slice(0, 40).map((s) => ({ name: s.name.trim(), price: s.price?.trim() || undefined, note: s.note?.trim() || undefined, category: s.category?.trim() || undefined })),
     advantages: f.advantages.map((a) => a.trim()).filter(Boolean),
     address: f.address || null, phone: f.phone || null, whatsapp: f.whatsapp || null, telegram: f.telegram || null, hours: f.hours || null,
     siteUrl: f.siteUrl || null, orgUrl: f.orgUrl.trim() || null, legalInfo: f.legalInfo.trim() || null, audience: f.audience || null, offer: f.offer || null, review: f.review || null,
@@ -165,7 +165,7 @@ export function BusinessForm({ initial, niches, next, nicheLock = null, value, o
               </button>
             </div>
           ))}
-          {f.services.length < 15 ? (
+          {f.services.length < 40 ? (
             <button type="button" className="btn btn-ghost btn-sm justify-self-start" onClick={() => set("services", [...f.services, { name: "", price: "" }])}>
               <Plus size={16} /> Добавить услугу
             </button>
