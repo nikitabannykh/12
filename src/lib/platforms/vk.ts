@@ -1,5 +1,5 @@
 import "server-only";
-import type { AdSpec, AdState, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, StatRow, Strategy } from "./types";
+import type { AdSpec, AdState, AudienceSpec, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, StatRow, Strategy } from "./types";
 import { PlatformError } from "./types";
 import { sleep } from "../util";
 import { ctaValue, defaultFormat, fit, iconKey, imageKeyFor, legalAbout, parseBannerFormat, textKeys, type Fulltime, type VkFormat } from "./vk-formats";
@@ -233,6 +233,35 @@ export class VkAds implements PlatformClient {
     return hit?.goal ? { name: String(hit.goal), source_id: counterId } : null;
   }
 
+  /**
+   * Сегмент ретаргетинга «были на сайте, но не оставили заявку» — POST v2/remarketing/segments.json
+   * (https://ads.vk.ru/en/doc/api/resource/Segments): связь remarketing_counter с пикселем (goal_id "uss" — все посетители
+   * сайта по счётчику Top@Mail.ru, как в примере документации), type positive, за последние N дней (left — сколько дней
+   * назад начало окна, right — конец), и, если есть событие «заявка», та же связь с type negative.
+   * pass_condition — сколько связей должно выполниться: все. Сегмент с тем же именем используем повторно.
+   */
+  async ensureAudience(a: AudienceSpec): Promise<string> {
+    if (!a.pixelId) throw new PlatformError("vk", "Ретаргетинг: нет пикселя VK на сайте");
+    const name = a.name.slice(0, 200);
+    const list = await this.req("GET", "v2/remarketing/segments.json", { query: { limit: 100, _name: name } }).catch(() => null);
+    const found = ((list?.items ?? []) as any[]).find((x) => x.name === name);
+    if (found) return String(found.id);
+    const left = Math.max(1, Math.min(365, a.days));
+    const relations: Record<string, unknown>[] = [
+      { object_type: "remarketing_counter", params: { counter_id: a.pixelId, goal_id: "uss", type: "positive", left, right: 0 } },
+    ];
+    if (a.leadGoal) relations.push({ object_type: "remarketing_counter", params: { counter_id: a.pixelId, goal_id: a.leadGoal, type: "negative", left, right: 0 } });
+    try {
+      const j = await this.req("POST", "v2/remarketing/segments.json", { body: { name, pass_condition: relations.length, relations } });
+      return String(j.id);
+    } catch (e) {
+      // Событие «заявка» не создано в пикселе — сегмент без исключения, только посетители
+      if (relations.length < 2 || !VkAds.isValidation(e)) throw e;
+      const j = await this.req("POST", "v2/remarketing/segments.json", { body: { name, pass_condition: 1, relations: relations.slice(0, 1) } });
+      return String(j.id);
+    }
+  }
+
   async createUrl(href: string): Promise<number> {
     const j = await this.req("POST", "v2/urls.json", { body: { url: href } });
     return Number(j.id);
@@ -375,9 +404,11 @@ export class VkAds implements PlatformClient {
               if (level === 0) warnings.push(`Объявление «${ad.title}»: ${(e as Error).message}`);
             }
           }
-          // geo: либо точка с радиусом, либо регионы — вместе нельзя (GeoTargeting)
-          const geo = level < 2 && biz.localGeo?.locations.length ? { local_geo: biz.localGeo } : { regions: g.regionIds.length ? g.regionIds : [188] };
+          // geo: либо точка с радиусом, либо регионы — вместе нельзя (GeoTargeting).
+          // Ретаргетинг: аудитория — сегмент посетителей сайта (targetings.segments), радиус не нужен — показываем в городе
+          const geo = level < 2 && !g.retargetingId && biz.localGeo?.locations.length ? { local_geo: biz.localGeo } : { regions: g.regionIds.length ? g.regionIds : [188] };
           const targetings: Record<string, unknown> = { geo, age: { age_list: this.age(g.ageFrom, g.ageTo) } };
+          if (g.retargetingId) targetings.segments = [Number(g.retargetingId)];
           if (g.sex && g.sex !== "any") targetings.sex = [g.sex];
           if (level < 2 && biz.fulltime) targetings.fulltime = biz.fulltime;
           const group: Record<string, unknown> = { name: g.name.slice(0, 120), package_id: packageId, targetings, budget_limit_day: daily, date_start: spec.startDate, banners };

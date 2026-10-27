@@ -3,6 +3,7 @@ import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { act, applyBudgetTrims, assertFitsBudget } from "@/lib/engine/ops";
 import { CHANNEL_NAME } from "@/lib/platforms";
+import { audienceMeta, isRetarget } from "@/lib/channels";
 
 /** «Включить» с главной: владелец возвращает все каналы на паузе (или выбранные) */
 export const POST = route(async ({ business, req }) => {
@@ -12,6 +13,8 @@ export const POST = route(async ({ business, req }) => {
   const db = await getDb();
   let paused = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, business.id), inArray(schema.campaigns.status, ["paused"])));
   if (only) paused = paused.filter((c) => only.includes(c.id));
+  // Ретаргетинг, который ещё не включался (копит аудиторию), включает робот — когда аудитории хватит
+  paused = paused.filter((c) => !(isRetarget(c.channel) && audienceMeta(c)?.state !== "on"));
   if (!paused.length) return fail("Все каналы уже работают");
   const accounts = await db.select().from(schema.adAccounts).where(inArray(schema.adAccounts.id, [...new Set(paused.map((c) => c.accountId))]));
   const okAcc = new Set(accounts.filter((a) => a.status === "ok").map((a) => a.id));

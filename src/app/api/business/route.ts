@@ -1,8 +1,12 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { route, json, fail } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
-import { normalizeUrl, plural, uid } from "@/lib/util";
+import { normalizeUrl, plural, rub, uid } from "@/lib/util";
+import { firstChannel, minMonthlyFor } from "@/lib/engine/budget";
+import { accountsFor, channelsFor } from "@/lib/engine/launch";
+import { CHANNEL_NAME } from "@/lib/platforms";
+import type { Channel } from "@/lib/platforms/types";
 import { NICHES } from "@/lib/niches";
 import { logChange } from "@/lib/engine/ops";
 import { parseOrgId, stripEmoji } from "@/lib/engine/extras";
@@ -64,11 +68,28 @@ function innValid(inn: string) {
 
 /** «ИП Иванова А. С., ИНН 165012345678» — форма, название и ИНН. Возвращает текст ошибки или null. */
 function legalError(v: string): string | null {
-  if (!/(^|[^\p{L}])(ИП|ООО|АО|ПАО|ЗАО|НКО|АНО|самозанят[\p{L}]*|индивидуальный предприниматель)([^\p{L}]|$)/iu.test(v)) return "Юр. данные: укажите форму — ИП, ООО или «самозанятый»";
+  const form = v.match(/(?:^|[^\p{L}])(ИП|ООО|АО|ПАО|ЗАО|НКО|АНО|самозанят[\p{L}]*|индивидуальн[\p{L}]* предпринимател[\p{L}]*)(?=[^\p{L}]|$)/iu)?.[1];
+  if (!form) return "Юр. данные: укажите форму — ИП, ООО или «самозанятый»";
+  // ИП и самозанятые — ИНН физлица (12 цифр), организации — 10 цифр
+  const person = /^(ИП|самозанят|индивидуальн)/i.test(form);
+  const need = person ? 12 : 10;
+  const who = person ? (/^самозанят/i.test(form) ? "самозанятого" : "ИП") : form.toUpperCase();
   const nums = v.match(/\d[\d\s]{8,14}\d/g)?.map((x) => x.replace(/\s/g, "")).filter((x) => x.length === 10 || x.length === 12) ?? [];
   if (!nums.length) return "Юр. данные: укажите ИНН — 12 цифр у ИП и самозанятых, 10 у ООО";
-  if (!nums.some(innValid)) return "Юр. данные: ИНН не сходится — проверьте цифры (ошибка в одной цифре — частая причина отказа в маркировке)";
+  const fit = nums.filter((x) => x.length === need);
+  if (!fit.length) return `Юр. данные: у ${who} ИНН из ${need} цифр, а указано ${nums[0].length}. ${person ? "10 цифр — это ИНН организации (ООО)." : "12 цифр — это ИНН ИП или физлица."}`;
+  if (!fit.some(innValid)) return "Юр. данные: ИНН не сходится — проверьте цифры (ошибка в одной цифре — частая причина отказа в маркировке)";
   return null;
+}
+
+/** Каналы для минимального бюджета — как в /api/budget: запущенные кампании, а до запуска — подключённые кабинеты */
+async function budgetChannels(businessId: string | null, userId: string): Promise<Channel[]> {
+  const db = await getDb();
+  const camps = businessId
+    ? await db.select({ channel: schema.campaigns.channel }).from(schema.campaigns).where(and(eq(schema.campaigns.businessId, businessId), inArray(schema.campaigns.status, ["active", "paused"])))
+    : [];
+  const list = camps.length ? camps.map((c) => c.channel as Channel) : channelsFor(await accountsFor(userId)).map((c) => c.channel);
+  return list.length ? list : ["search"];
 }
 
 /** Понятная ошибка по-русски: «Услуга 2 — название: не длиннее 80 символов» */
@@ -123,6 +144,12 @@ export const POST = route(async ({ user, business, req }) => {
   if (legalInfo) {
     const err = legalError(legalInfo);
     if (err) return fail(err);
+  }
+  // Бюджет сохраняем только до запуска (у запущенной рекламы он меняется через /api/budget) — минимум тот же, что там
+  if (d.monthlyBudget !== undefined && business?.status !== "active" && d.monthlyBudget !== business?.monthlyBudget) {
+    const channels = await budgetChannels(business?.id ?? null, user.id);
+    const min = minMonthlyFor(channels);
+    if (d.monthlyBudget < min) return fail(`Бюджет в месяц: минимум ${rub(min)} — меньше площадка «${CHANNEL_NAME[firstChannel(channels)]}» не принимает`);
   }
   const db = await getDb();
   const values = {

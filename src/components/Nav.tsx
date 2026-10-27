@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { Suspense } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
+import { PlatformMark } from "./CampaignNav";
 import { BarChart3, History, Home, Megaphone, Rocket, Settings } from "lucide-react";
 
 const FULL = [
@@ -16,7 +18,37 @@ const SETUP = [
   { href: "/app/settings", label: "Настройки", icon: Settings },
 ];
 
-export function Nav({ launched, variant }: { launched: boolean; variant: "side" | "bottom" }) {
+/** Кампании по площадкам — подпункты «Рекламы» в боковом меню */
+export type AdsCounts = { yandex: number; vk: number };
+
+function AdsSubLinks({ counts }: { counts: AdsCounts }) {
+  const path = usePathname();
+  const sp = useSearchParams();
+  const cur = path.startsWith("/app/ads") ? sp.get("p") : null;
+  const list = (["yandex", "vk"] as const).filter((f) => counts[f] > 0);
+  if (list.length < 1) return null;
+  return (
+    <div className="grid gap-0.5 pl-[2.6rem] -mt-0.5 mb-1">
+      {list.map((f) => {
+        const on = cur === f;
+        return (
+          <Link
+            key={f}
+            href={`/app/ads?p=${f}`}
+            aria-current={on ? "page" : undefined}
+            className={`flex items-center gap-2 h-8 px-2 rounded-md text-sm font-semibold ${on ? "bg-paper text-ink" : "text-muted hover:text-ink hover:bg-paper"}`}
+          >
+            <PlatformMark family={f} size={16} />
+            <span className="flex-1">{f === "yandex" ? "Яндекс" : "VK"}</span>
+            <span className="tabular-nums text-xs text-faint">{counts[f]}</span>
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+export function Nav({ launched, variant, ads }: { launched: boolean; variant: "side" | "bottom"; ads?: AdsCounts }) {
   const path = usePathname();
   const items = launched ? FULL : SETUP;
   const isActive = (href: string) => (href === "/app" ? path === "/app" : path.startsWith(href));
@@ -35,15 +67,21 @@ export function Nav({ launched, variant }: { launched: boolean; variant: "side" 
   return (
     <nav className="grid gap-1" aria-label="Разделы">
       {items.map(({ href, label, icon: Icon }) => (
-        <Link
-          key={href}
-          href={href}
-          aria-current={isActive(href) ? "page" : undefined}
-          className={`flex items-center gap-3 h-10 px-3 rounded-lg font-semibold text-[0.95rem] ${isActive(href) ? "bg-ink text-white" : "text-ink-2 hover:bg-paper"}`}
-        >
-          <Icon size={18} strokeWidth={isActive(href) ? 2.3 : 1.8} />
-          {label}
-        </Link>
+        <div key={href} className="contents">
+          <Link
+            href={href}
+            aria-current={isActive(href) ? "page" : undefined}
+            className={`flex items-center gap-3 h-10 px-3 rounded-lg font-semibold text-[0.95rem] ${isActive(href) ? "bg-ink text-white" : "text-ink-2 hover:bg-paper"}`}
+          >
+            <Icon size={18} strokeWidth={isActive(href) ? 2.3 : 1.8} />
+            {label}
+          </Link>
+          {href === "/app/ads" && ads ? (
+            <Suspense fallback={null}>
+              <AdsSubLinks counts={ads} />
+            </Suspense>
+          ) : null}
+        </div>
       ))}
     </nav>
   );

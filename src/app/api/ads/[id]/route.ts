@@ -3,6 +3,7 @@ import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { act } from "@/lib/engine/ops";
 import { validateAdText } from "@/lib/ai/copy";
+import { formatOf } from "@/lib/channels";
 
 const clean = (s: unknown) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim() : "");
 
@@ -23,7 +24,8 @@ export const PATCH = route<{ id: string }>(async ({ business, params, req }) => 
   }
 
   if (typeof body.title === "string" && typeof body.text === "string") {
-    const channel = camp?.channel ?? "search";
+    // Лимиты текста — по формату канала: ретаргетинг Яндекса как РСЯ, ретаргетинг VK как VK
+    const channel = formatOf(camp?.channel ?? "search");
     const title = clean(body.title), text = clean(body.text);
     // Второй заголовок есть у Поиска и РСЯ, у VK — нет
     const title2 = channel !== "vk" ? clean(body.title2) || null : ad.title2;

@@ -1,5 +1,5 @@
 import "server-only";
-import type { AuctionRow } from "./types";
+import type { AuctionRow, AudienceSpec } from "./types";
 import type { Sitelink } from "../engine/extras";
 import type {
   AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy,
@@ -420,13 +420,49 @@ export class YandexDirect implements PlatformClient {
     }
   }
 
-  /** Группа с ключевыми фразами и автотаргетингом (без брендов конкурентов и слишком широких запросов) */
-  private async createGroup(campaignExt: string, g: Pick<GroupSpec, "name" | "regionIds" | "keywords" | "autotargeting">, channel: Channel, warnings: string[]) {
+  /**
+   * Условие ретаргетинга «были на сайте, но не оставили заявку» (retargetinglists.add, https://yandex.ru/dev/direct/doc/ru/retargetinglists/add):
+   * правило ANY — цель Метрики «посетил сайт» за N дней, правило NONE — цель «обращение» за те же дни (MembershipLifeSpan 1–540).
+   * Пользователь попадает в аудиторию, если выполнены все правила. Условие с тем же именем используем повторно.
+   */
+  async ensureAudience(a: AudienceSpec): Promise<string> {
+    if (!a.visitGoalId || !a.leadGoalId) throw new PlatformError("yandex", "Ретаргетинг: нет целей Метрики «посетил сайт» и «обращение»");
+    const name = a.name.slice(0, 250);
+    const got = await this.call("retargetinglists", "get", { SelectionCriteria: {}, FieldNames: ["Id", "Name"] }).catch(() => null);
+    const found = ((got?.RetargetingLists ?? []) as { Id: number; Name: string }[]).find((x) => x.Name === name);
+    if (found) return String(found.Id);
+    const days = Math.max(1, Math.min(540, a.days));
+    const res = await this.call("retargetinglists", "add", {
+      RetargetingLists: [{
+        Type: "RETARGETING",
+        Name: name,
+        Description: "Полный зал: были на сайте или странице записи, но не оставили заявку",
+        Rules: [
+          { Operator: "ANY", Arguments: [{ ExternalId: a.visitGoalId, MembershipLifeSpan: days }] },
+          { Operator: "NONE", Arguments: [{ ExternalId: a.leadGoalId, MembershipLifeSpan: days }] },
+        ],
+      }],
+    });
+    const [r] = this.items(res.AddResults, "Условие ретаргетинга");
+    return String(r.Id);
+  }
+
+  /**
+   * Группа с ключевыми фразами и автотаргетингом (без брендов конкурентов и слишком широких запросов).
+   * Ретаргетинг (retargetingId): без фраз и автотаргетинга, только условие ретаргетинга — audiencetargets.add
+   * (https://yandex.ru/dev/direct/doc/ru/audiencetargets/add; при автостратегии ставка не нужна, приоритет — обычный).
+   */
+  private async createGroup(campaignExt: string, g: Pick<GroupSpec, "name" | "regionIds" | "keywords" | "autotargeting" | "retargetingId">, channel: Channel, warnings: string[]) {
     const gr = await this.call("adgroups", "add", {
       AdGroups: [{ Name: g.name.slice(0, 255), CampaignId: Number(campaignExt), RegionIds: g.regionIds, UnifiedAdGroup: { OfferRetargeting: "NO" } }],
     });
     const [gi] = this.items(gr.AddResults, `Группа «${g.name}»`, warnings);
     const groupExt = String(gi.Id);
+    if (g.retargetingId) {
+      const ar = await this.call("audiencetargets", "add", { AudienceTargets: [{ AdGroupId: Number(groupExt), RetargetingListId: Number(g.retargetingId), StrategyPriority: "NORMAL" }] });
+      this.items(ar.AddResults, `Аудитория группы «${g.name}»`, warnings);
+      return groupExt;
+    }
     const keywords = [...new Set(g.keywords.map((k) => k.trim()).filter(Boolean))].slice(0, 200);
     const items: Record<string, unknown>[] = keywords.map((Keyword) => ({ Keyword, AdGroupId: Number(groupExt) }));
     if (g.autotargeting) items.push({ Keyword: "---autotargeting", AdGroupId: Number(groupExt), AutotargetingSettings: autotargetingSettings(channel) });

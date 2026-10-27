@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { route, json, fail } from "@/lib/api";
 import { extractFromSite } from "@/lib/ai/copy";
 import { aiConfigured } from "@/lib/ai/yandex";
@@ -21,8 +22,18 @@ function htmlToText(html: string) {
 }
 
 /** Заполняем описание бизнеса по сайту владельца */
+const Body = z.object({
+  url: z.string().trim().max(300),
+  niche: z.string().trim().max(100).optional().nullable(),
+  city: z.string().trim().max(60).optional().nullable(),
+});
+
 export const POST = route(async ({ req }) => {
-  const { url, niche, city } = await req.json();
+  const body = await req.json().catch(() => undefined);
+  if (body === undefined) return fail("Не удалось прочитать запрос");
+  const parsed = Body.safeParse(body);
+  if (!parsed.success) return fail("Укажите адрес сайта строкой, например studio-lak.ru");
+  const { url, niche, city } = parsed.data;
   const href = normalizeUrl(url);
   if (!href) return fail("Укажите адрес сайта");
   if (!aiConfigured()) return fail("Автозаполнение по сайту работает, когда подключён YandexGPT. Заполните поля вручную — это займёт пару минут.");
@@ -35,6 +46,6 @@ export const POST = route(async ({ req }) => {
   }
   const text = htmlToText(html);
   if (text.length < 80) return fail("На странице почти нет текста — заполните поля вручную.");
-  const data = await extractFromSite(text, { niche, city });
+  const data = await extractFromSite(text, { niche: niche ?? undefined, city: city ?? undefined });
   return json(data ?? {});
 });

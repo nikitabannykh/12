@@ -16,9 +16,12 @@ import { rub, num, pl, isoDay } from "@/lib/util";
 import { monthStartDay, nextMonthStart } from "@/lib/engine/budget-plan";
 import { healthCheck, type Health } from "@/lib/engine/health";
 import { balanceText, LOW_DAYS, TOPUP_URL } from "@/lib/engine/balance";
+import { CHANNELS, CHANNEL_INFO, TYPE_INFO, adsHref, familyOf, typeOf } from "@/lib/channels";
+import { audiencesFor } from "@/lib/engine/retarget";
+import { PlatformMark, TypeBadge, AudienceBar } from "@/components/CampaignNav";
 
-const SHORT: Record<string, string> = { search: "Поиск", network: "Сайты и приложения", vk: "ВКонтакте" };
-const ORDER = ["search", "network", "vk"];
+const SHORT: Record<string, string> = Object.fromEntries(Object.entries(CHANNEL_INFO).map(([k, v]) => [k, v.short]));
+const ORDER: string[] = CHANNELS;
 
 export default async function Dashboard() {
   const user = await requireUser();
@@ -32,6 +35,7 @@ export default async function Dashboard() {
     .filter((c) => c.status !== "archived")
     .sort((x, y) => ORDER.indexOf(x.channel) - ORDER.indexOf(y.channel));
   const states = await campaignStates(b, camps, r.now);
+  const audiences = await audiencesFor(b, camps, r.now);
   const isDemo = camps.length > 0 && camps.every((c) => c.platform === "demo");
   const groups = camps.length ? await db.select({ id: schema.adGroups.id, status: schema.adGroups.status }).from(schema.adGroups).where(inArray(schema.adGroups.campaignId, camps.map((c) => c.id))) : [];
   const ads = await db
@@ -54,8 +58,10 @@ export default async function Dashboard() {
   const active = ads.filter((a) => a.status === "active" && showing(a)).length;
   const moderation = ads.filter((a) => a.status === "moderation" && showing(a)).length;
   const rejected = ads.filter((a) => a.status === "rejected").length;
-  const stopped = camps.filter((x) => states.get(x.id)?.stopped);
-  const allStopped = camps.length > 0 && stopped.length === camps.length;
+  // Ретаргетинг, который копит аудиторию, не «стоит»: он ещё не включался и включится сам
+  const runnable = camps.filter((x) => states.get(x.id)?.stopped !== "audience" && !(audiences.get(x.id) && x.status === "paused" && audiences.get(x.id)!.state === "off"));
+  const stopped = runnable.filter((x) => states.get(x.id)?.stopped);
+  const allStopped = runnable.length > 0 && stopped.length === runnable.length;
   const guardStopped = stopped.filter((x) => states.get(x.id)?.stopped === "guard");
   const ownerStopped = stopped.filter((x) => states.get(x.id)?.stopped === "owner" || states.get(x.id)?.stopped === "robot");
   const errorStopped = stopped.filter((x) => states.get(x.id)?.stopped === "error");
@@ -239,27 +245,65 @@ export default async function Dashboard() {
             </p>
           </div>
           <div className="card p-5 sm:p-6">
-            <h2 className="text-lg font-bold">Каналы</h2>
-            <ul className="mt-3 grid gap-2.5 text-sm">
+            <div className="flex items-baseline justify-between gap-3">
+              <h2 className="text-lg font-bold">Каналы</h2>
+              <span className="flex items-center gap-2 text-sm">
+                {(["yandex", "vk"] as const).filter((f) => camps.some((x) => familyOf(x.channel) === f)).map((f) => (
+                  <Link key={f} href={adsHref(f)} className="inline-flex items-center gap-1 font-semibold text-ink-2 hover:text-ink" title={`Кампании ${f === "yandex" ? "Яндекса" : "VK"}`}>
+                    <PlatformMark family={f} size={16} /> {f === "yandex" ? "Яндекс" : "VK"}
+                  </Link>
+                ))}
+              </span>
+            </div>
+            <ul className="mt-3 grid gap-1 text-sm -mx-2">
               {camps.map((x) => {
                 const s = states.get(x.id);
+                const aud = audiences.get(x.id);
+                const waiting = aud && x.status === "paused" && aud.state !== "on";
                 return (
-                  <li key={x.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                    <span className="font-semibold">{SHORT[x.channel] ?? x.channel}</span>
-                    {s?.stopped ? (
-                      <span className={`pill ${s.stopped === "guard" || s.stopped === "error" ? "bg-bad-soft text-bad" : "bg-paper text-muted"}`}>
-                        {s.stopped === "guard" ? (overBudget ? "стоит: кончился бюджет" : "стоит: не хватает бюджета") : s.stopped === "error" ? "ошибка площадки" : s.stopped === "owner" ? "на паузе — вы остановили" : "на паузе — остановил робот"}
+                  <li key={x.id}>
+                    <Link href={adsHref(familyOf(x.channel), typeOf(x.channel), `c-${x.id}`)} className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2.5 gap-y-1.5 rounded-lg px-2 py-2 hover:bg-paper">
+                      <span className="mt-0.5"><PlatformMark family={familyOf(x.channel)} size={20} /></span>
+                      <span className="min-w-0">
+                        <span className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-semibold">{SHORT[x.channel] ?? x.channel}</span>
+                          <TypeBadge type={typeOf(x.channel)} />
+                        </span>
+                        <span className="block text-xs text-muted truncate">{TYPE_INFO[typeOf(x.channel)].purpose}</span>
                       </span>
-                    ) : s && s.learningLeft > 0 ? (
-                      <span className="pill bg-info-soft text-ink-2" title={`Площадка подбирает аудиторию: после запуска до ${pl(LEARNING_DAYS[x.channel] ?? 14, "дня", "дней", "дней")}, после изменения бюджета — до 7. Робот в это время не трогает настройки`}>
-                        <GraduationCap size={13} /> обучается — не трогаем {pl(s.learningLeft, "день", "дня", "дней")}
+                      <span className="col-start-2">
+                        {waiting ? (
+                          aud!.state === "off" ? <span className="pill bg-paper text-muted">автозапуск выключен</span> : <AudienceBar size={aud!.size} need={aud!.need} compact />
+                        ) : s?.stopped ? (
+                          <span className={`pill ${s.stopped === "guard" || s.stopped === "error" ? "bg-bad-soft text-bad" : "bg-paper text-muted"}`}>
+                            {s.stopped === "guard" ? (overBudget ? "стоит: кончился бюджет" : "стоит: не хватает бюджета") : s.stopped === "error" ? "ошибка площадки" : s.stopped === "owner" ? "на паузе — вы остановили" : "на паузе — остановил робот"}
+                          </span>
+                        ) : s && s.learningLeft > 0 ? (
+                          <span className="pill bg-info-soft text-ink-2" title={`Площадка подбирает аудиторию: после запуска до ${pl(LEARNING_DAYS[x.channel] ?? 14, "дня", "дней", "дней")}, после изменения бюджета — до 7. Робот в это время не трогает настройки`}>
+                            <GraduationCap size={13} /> обучается — {pl(s.learningLeft, "день", "дня", "дней")}
+                          </span>
+                        ) : (
+                          <span className="pill bg-good-soft text-good">идёт</span>
+                        )}
                       </span>
-                    ) : (
-                      <span className="pill bg-good-soft text-good">идёт</span>
-                    )}
+                    </Link>
                   </li>
                 );
               })}
+              {camps.some((x) => x.channel === "search") ? (
+                <li>
+                  <Link href={adsHref("yandex", "maps", "maps")} className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2.5 gap-y-1.5 rounded-lg px-2 py-2 hover:bg-paper">
+                    <span className="mt-0.5"><PlatformMark family="yandex" size={20} /></span>
+                    <span className="min-w-0">
+                      <span className="flex flex-wrap items-center gap-1.5"><span className="font-semibold">Яндекс Карты</span><TypeBadge type="maps" /></span>
+                      <span className="block text-xs text-muted truncate">{TYPE_INFO.maps.purpose}</span>
+                    </span>
+                    <span className="col-start-2">
+                      {b.orgId ? <span className="pill bg-good-soft text-good">подключено</span> : <span className="pill bg-warn-soft text-warn">привяжите организацию</span>}
+                    </span>
+                  </Link>
+                </li>
+              ) : null}
             </ul>
             {learning.length ? (
               <p className="hint mt-3">Пока площадка обучается, цифры скачут — это нормально. Робот не меняет стратегию и бюджет, чтобы не сбить обучение.</p>

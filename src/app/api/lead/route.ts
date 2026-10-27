@@ -5,6 +5,7 @@ import { sameOrigin } from "@/lib/api";
 import { attribute, consumeFormToken, formToken, hit, ipKey, readFormToken, within } from "@/lib/ratelimit";
 import { formatPhone, notifyLead, notifySuspect } from "@/lib/notify";
 import { metrikaIds } from "@/lib/platforms/metrica";
+import { demoNow } from "@/lib/platforms/demo";
 
 const bad = (error: string, status = 400) => Response.json({ error }, { status });
 
@@ -78,11 +79,19 @@ export async function POST(req: Request) {
   // Токен — одноразовый: повтор того же запроса не создаст вторую заявку
   if (!(await consumeFormToken(ft0))) return Response.json({ error: "Эта заявка уже отправлена. Чтобы отправить ещё одну, обновите страницу.", code: "used" }, { status: 409 });
 
+  // Демо-бизнес живёт по своим (перематываемым) часам: заявка должна попасть в тот же «день», что и статистика
+  const [demoCamp] = await db
+    .select({ id: schema.campaigns.id })
+    .from(schema.campaigns)
+    .where(and(eq(schema.campaigns.businessId, b.id), eq(schema.campaigns.platform, "demo")))
+    .limit(1);
+  const now = demoCamp ? await demoNow({ businessId: b.id }) : new Date();
+
   // Тот же телефон за последние сутки — не дублируем заявку и не беспокоим владельца повторно
   const [dup] = await db
     .select({ id: schema.leads.id })
     .from(schema.leads)
-    .where(and(eq(schema.leads.businessId, b.id), eq(schema.leads.contact, phone), gte(schema.leads.createdAt, new Date(Date.now() - 864e5))));
+    .where(and(eq(schema.leads.businessId, b.id), eq(schema.leads.contact, phone), gte(schema.leads.createdAt, new Date(now.getTime() - 864e5))));
   if (dup) return Response.json({ ok: true, duplicate: true });
 
   // Всплеск заявок на бизнес — подозрительно. Заявку сохраняем (вдруг настоящая), но помечаем,
@@ -104,6 +113,7 @@ export async function POST(req: Request) {
     campaignExt: a.campaignExt,
     adExt: a.adExt,
     ...metrikaIds(d),
+    createdAt: now,
   });
 
   // Сразу сообщаем владельцу; ошибка уведомления не должна терять заявку

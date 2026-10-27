@@ -22,6 +22,8 @@ import { isDirectChannel, landingUrl, withUtm } from "./launch";
 import { VkAds } from "../platforms/vk";
 import { vkAdContext } from "./regions";
 import type { AdSpec, Channel, PlatformClient } from "../platforms/types";
+import { formatOf, isRetarget, waitingAudience } from "../channels";
+import { retargetStep } from "./retarget";
 
 /**
  * Робот-оптимизатор. Работает по расписанию (каждые несколько часов) и принимает решения
@@ -38,7 +40,8 @@ import type { AdSpec, Channel, PlatformClient } from "../platforms/types";
  *  - бюджет месяца — жёсткая граница.
  */
 
-const MIN_IMPR: Record<Channel, number> = { search: 150, network: 1500, vk: 1500 };
+// Ретаргетинг показывается маленькой аудитории — данных меньше, но люди «тёплые» и кликают чаще
+const MIN_IMPR: Record<Channel, number> = { search: 150, network: 1500, vk: 1500, retarget_yandex: 600, retarget_vk: 600 };
 const WINDOW_DAYS = 14;
 const MAX_NEW_ADS_PER_RUN = 4;
 const MAX_TEST_DAYS = 21;
@@ -177,7 +180,7 @@ const LEARNED_NOTE = "Настройки канала давно не менял
 
 /** Новое объявление-вариант в той же группе: тот же визуал, другой текст */
 async function logoFor(b: Business, channel: string) {
-  if (channel !== "vk") return null;
+  if (formatOf(channel) !== "vk") return null;
   const l = await ensureLogo(b).catch(() => null);
   return l ? { imageId: l.id, data: l.data, mime: l.mime, width: l.width, height: l.height } : null;
 }
@@ -243,7 +246,7 @@ async function adSpecFor(cx: Ctx, camp: Campaign, group: AdGroup, platform: stri
     image: img ? toInput(img) : null,
     // Площадка берёт до 5 картинок: основная, фото владельца, затем другие пропорции
     images: [...own, ...set].map(toInput),
-    extras: adExtras(cx.b, { channel: camp.channel, href, service: camp.channel === "search" ? group.name : null, text: a.text }),
+    extras: adExtras(cx.b, { channel: formatOf(camp.channel), href, service: camp.channel === "search" ? group.name : null, text: a.text }),
     logo: await logoFor(cx.b, camp.channel),
     marking: `${nicheById(cx.b.niche).label}: ${cx.b.name}`,
   };
@@ -342,9 +345,11 @@ async function rolloverGroup(cx: Ctx, client: PlatformClient, camp: Campaign, gr
   }
   const db = await getDb();
   const { acc } = await clientOf(camp);
-  const t = (group.targeting ?? {}) as { regionIds?: number[]; ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; autotargeting?: boolean };
+  const t = (group.targeting ?? {}) as { regionIds?: number[]; ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; autotargeting?: boolean; retargetingId?: string };
   const regionIds = t.regionIds ?? ((camp.meta as { regionIds?: number[] })?.regionIds ?? []);
-  const { groupExt, warnings } = await client.addGroup(camp.externalId, { name: group.name, keywords: group.keywords ?? [], autotargeting: t.autotargeting ?? true, regionIds, ageFrom: t.ageFrom, ageTo: t.ageTo, sex: t.sex }, { channel: camp.channel as Channel });
+  // Ретаргетинг: новая группа — с тем же условием ретаргетинга, без фраз и автотаргетинга
+  const rt = t.retargetingId ?? null;
+  const { groupExt, warnings } = await client.addGroup(camp.externalId, { name: group.name, keywords: rt ? [] : group.keywords ?? [], autotargeting: rt ? false : t.autotargeting ?? true, regionIds, ageFrom: t.ageFrom, ageTo: t.ageTo, sex: t.sex, retargetingId: rt }, { channel: camp.channel as Channel });
   const fresh: AdGroup = { ...group, id: uid("g_"), externalId: groupExt, status: "active", createdAt: new Date() };
   await db.insert(schema.adGroups).values(fresh);
   cx.groups.push(fresh);
@@ -396,7 +401,7 @@ async function createVariant(cx: Ctx, base: Ad, reason: string, opts: { experime
     .filter((a) => a.status === "active" && a.id !== base.id)
     .map((a) => ({ a, s: sumAd(cx, a.id) }))
     .sort((x, y) => ctr(y.s) - ctr(x.s))[0]?.a;
-  const ch = camp.channel as keyof typeof LIMITS;
+  const ch = formatOf(camp.channel) as keyof typeof LIMITS;
   const angle = opts.angle ?? chooseAngle(cx, camp.channel, group.id, [base.angle]);
   const ask = (a: string | undefined) => rewriteAd(cx.b, { channel: ch, angle: a, service: camp.channel === "search" ? group.name : undefined, base: { angle: base.angle, title: base.title, title2: base.title2, text: base.text }, tried, reason, winner: winner ? { angle: winner.angle, title: winner.title, title2: winner.title2, text: winner.text } : null });
   // Не повторяем объявление, которое уже было в группе и проиграло или выключено
@@ -626,7 +631,11 @@ async function fitLimits(cx: Ctx, list: Campaign[], plan: Plan, st: BudgetState,
   // Поднимаем, потому что площадки недотратили (а не возвращаем то, что робот снижал раньше)
   const restoring = up.every((m) => (normals.get(m.c.id) ?? restoreTarget(m.c)) >= m.next) && before < normalSum;
   const catchUp = !newMonth && !down.length && !restoring;
-  const title = newMonth
+  // Лимит ниже минимума площадки поднимаем до минимума — это не «возврат», робот его не снижал
+  const toMin = !newMonth && !down.length && up.every((m) => m.c.weeklyBudget < MIN_WEEKLY[m.c.channel as Channel] && m.next === MIN_WEEKLY[m.c.channel as Channel]);
+  const title = toMin
+    ? "Подняли лимит до минимума площадки"
+    : newMonth
     ? "Пересчитали недельные лимиты на новый месяц"
     : !up.length
       ? "Снизили недельные лимиты, чтобы уложиться в бюджет"
@@ -636,7 +645,9 @@ async function fitLimits(cx: Ctx, list: Campaign[], plan: Plan, st: BudgetState,
           ? "Вернули недельные лимиты"
           : "Пересчитали недельные лимиты под бюджет месяца";
   const days = pl(st.daysLeft, "день", "дня", "дней");
-  const why = newMonth
+  const why = toMin
+    ? `С недельным лимитом меньше минимума площадка не показывает рекламу. Подняли до минимума — бюджет месяца при этом соблюдается: робот следит за остатком.`
+    : newMonth
     ? `Начался новый месяц — бюджет ${rub(cx.b.monthlyBudget)} снова доступен целиком. Лимиты рассчитали заново от бюджета месяца с прежними долями каналов и подогнали под число дней в месяце.`
     : !up.length
       ? `С начала месяца потрачено ${rub(st.spent)} из ${rub(cx.b.monthlyBudget)}. При прежних лимитах (${rub(before)} в неделю) к концу месяца вышло бы около ${rub(projected)} — больше бюджета. Новые лимиты рассчитаны так, чтобы остатка ${rub(st.remaining)} точно хватило на ${days}.`
@@ -1093,7 +1104,8 @@ async function switchStrategy(cx: Ctx) {
 async function rebalance(cx: Ctx) {
   if (!(await jobDue(cx, "rebalance", 24 * 6.5))) return;
   const since = isoDay(addDays(cx.now, -WINDOW_DAYS));
-  const active = skipLearning(cx, cx.campaigns.filter((c) => c.status === "active" && !cx.protected.has(c.id)), "бюджет");
+  // Ретаргетинг в переносах не участвует: его аудитория маленькая, и больше денег он не потратит с пользой
+  const active = skipLearning(cx, cx.campaigns.filter((c) => c.status === "active" && !cx.protected.has(c.id) && !isRetarget(c.channel)), "бюджет");
   if (active.length < 2) return;
   const rows = active.map((c) => {
     const s = cx.ads.filter((a) => a.campaignId === c.id).reduce((acc, a) => add(acc, sumAd(cx, a.id, since)), zero());
@@ -1217,6 +1229,8 @@ export async function optimizeBusiness(b: Business) {
   if (!cx.campaigns.length) return { log: ["Нет кампаний"] };
   const steps: [string, (c: Ctx) => Promise<void>][] = [
     ["бюджет", budgetGuard],
+    // После защиты бюджета: включаем ретаргетинг, только если он помещается в остаток месяца
+    ["ретаргетинг", (c) => retargetStep({ b: c.b, now: c.now, campaigns: c.campaigns, log: c.log })],
     ["модерация", handleRejected],
     ["тесты", resolveExperiments],
     ["перенос идей", propagateWinners],
@@ -1251,7 +1265,8 @@ export async function applyMonthlyBudget(b: Business, monthly: number, opts: { a
   const st = await budgetState(b.id, monthly, now, camps);
   const active = camps.filter((c) => c.status === "active");
   const resumable = camps.filter((c) => pausedForBudget(c) && c.externalId);
-  const ownerPaused = camps.filter((c) => c.status === "paused" && !pausedForBudget(c));
+  // Ретаргетинг, который копит аудиторию, стоит не по решению владельца — в тексте про паузы его не упоминаем
+  const ownerPaused = camps.filter((c) => c.status === "paused" && !pausedForBudget(c) && !waitingAudience(c));
   const pool = [...active, ...resumable];
   // «Обычные» лимиты меняем пропорционально бюджету — у всех каналов, включая стоящие из-за бюджета,
   // чтобы доли каналов сохранились, когда бюджет снова вырастет

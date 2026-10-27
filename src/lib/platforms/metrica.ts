@@ -66,6 +66,40 @@ export async function ensureGoal(token: string, counterId: number, goal: { name:
   return Number(r.goal.id);
 }
 
+/**
+ * Цель «посетил сайт» (тип url, условие «содержит» домен страницы) — для ретаргетинга «были на сайте, но не оставили
+ * заявку». Такая цель срабатывает на любом просмотре страницы этого домена. Возвращает ID цели.
+ */
+export async function ensureVisitGoal(token: string, counterId: number, site: string) {
+  const host = hostOf(site);
+  const j = await call(token, `/counter/${counterId}/goals`);
+  const found = ((j.goals ?? []) as any[]).find((g) => g.type === "url" && g.conditions?.some((c: any) => String(c.url) === host));
+  if (found) return Number(found.id);
+  const r = await call(token, `/counter/${counterId}/goals`, {
+    method: "POST",
+    body: JSON.stringify({ goal: { name: "Посетил сайт (для ретаргетинга)", type: "url", conditions: [{ type: "contain", url: host }] } }),
+  });
+  return Number(r.goal.id);
+}
+
+/**
+ * Сколько разных людей заходило на сайт за период — Reporting API Метрики (/stat/v1/data, метрика ym:s:users).
+ * Это верхняя оценка аудитории ретаргетинга (из неё ещё вычитаются оставившие заявку). Ошибка — null.
+ */
+export async function metricaVisitors(token: string, counterId: number, from: string, to: string): Promise<number | null> {
+  const base = (process.env.METRIKA_STAT_URL || "https://api-metrika.yandex.net/stat/v1").replace(/\/$/, "");
+  try {
+    const q = new URLSearchParams({ ids: String(counterId), metrics: "ym:s:users", date1: from, date2: to, accuracy: "full" });
+    const res = await fetch(`${base}/data?${q}`, { headers: { Authorization: `OAuth ${token}` } });
+    if (!res.ok) return null;
+    const j = await res.json();
+    const n = Number(j?.totals?.[0]);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 /** ClientID Метрики и yclid Директа — только цифры (до 25), иначе не храним. Нужны для офлайн-конверсий «Записался». */
 export function metrikaIds(d: { cid?: unknown; yclid?: unknown }) {
   const ok = (v: unknown) => (typeof v === "string" || typeof v === "number") && /^\d{1,25}$/.test(String(v)) ? String(v) : null;

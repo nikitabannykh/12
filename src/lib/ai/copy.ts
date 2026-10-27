@@ -55,11 +55,37 @@ export function fit(s: string | null | undefined, max: number): string {
   const cut = t.slice(0, max + 1);
   const i = cut.lastIndexOf(" ");
   let r = (i > max * 0.5 ? cut.slice(0, i) : cut.slice(0, max)).trim();
-  // Не оставляем висящий предлог и тире: «Студия «Прана» на» → «Студия «Прана»»
-  for (let k = 0; k < 3; k++) r = r.replace(/\s+(и|в|во|на|для|с|со|по|от|до|к|у|из|или|а|о|за|—|–|-)$/i, "").replace(/[,\-–—:;]$/, "").trim();
+  // Не оставляем висящий предлог, тире и прилагательное без слова, к которому оно относится:
+  // «Студия «Прана» на» → «Студия «Прана»», «Йога — групповое» → «Йога»
+  for (let k = 0; k < 4; k++) {
+    const before = r;
+    r = r.replace(/\s+(и|в|во|на|для|с|со|по|от|до|к|у|из|или|а|о|об|за|при|без|—|–|-)$/i, "").replace(/[,\-–—:;(]$/, "").trim();
+    if (r.split(" ").length > 1 && DANGLING_ADJ.test(r)) r = r.replace(DANGLING_ADJ, "").trim();
+    if (r === before) break;
+  }
   // Незакрытая кавычка
   if ((r.match(/«/g) ?? []).length > (r.match(/»/g) ?? []).length) r += "»";
   return r;
+}
+
+/** Последнее слово — прилагательное («групповое», «детский», «ногтевой»): без существительного фраза оборвана.
+ *  Существительные на -ние/-тие/-рий и т. п. («занятие», «покрытие», «санаторий») не трогаем. */
+const DANGLING_ADJ = /\s+(?!\p{L}*(?:[нт]ие|чие|рий|лий|ций|зий|сий)$)\p{L}{3,}(ое|ый|ий|ой|ая|яя|ые|ие|ого|его|ому|ему|ых|их|ым|им|ую|юю)$/iu;
+
+/**
+ * Цена владельца в едином виде: «1900» → «1 900 ₽», «от 1900 руб.» → «от 1 900 ₽», «1 900 ₽» — без изменений.
+ * Пробел обычный: неразрывный площадки иногда считают спецсимволом.
+ */
+export function priceText(s: string | null | undefined): string {
+  const t = (s ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  const groups = (n: string) => n.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  // Числа: «1900» и «1 900» → «1 900» (четырёхзначные тоже группируем — как в анкете Директа)
+  let r = t.replace(/\d{1,3}(?: \d{3})+(?!\d)|\d{4,}/g, (m) => groups(m.replace(/ /g, "")));
+  // Валюта: «руб.», «руб», «р.», «р» → «₽»; если валюты нет, а цена — число (с «от», «до», диапазоном) — добавляем «₽»
+  r = r.replace(/(\d)\s*(?:рублей|рубля|рубль|руб\.?|р\.|р)(?![\p{L}])/giu, "$1 ₽").replace(/(\d)₽/g, "$1 ₽");
+  if (!/₽|\$|€|usd|eur/i.test(r) && /^(от |до )?\d[\d ]*(?:\s*[-–—]\s*\d[\d ]*)?$/i.test(r)) r = `${r.trim()} ₽`;
+  return r.replace(/\s+/g, " ").trim();
 }
 
 /** Пробелы по краям и двойные пробелы — единственное, что мы меняем в тексте владельца без спроса */
@@ -188,7 +214,7 @@ function factCheckAd(a: AdDraft, facts: string): AdDraft | null {
 
 function bizBrief(b: Business) {
   const n = nicheById(b.niche);
-  const services = (b.services ?? []).map((s) => `- ${s.name}${s.price ? ` — ${s.price}` : ""}${s.note ? ` (${s.note})` : ""}`).join("\n");
+  const services = (b.services ?? []).map((s) => `- ${s.name}${s.price ? ` — ${priceText(s.price)}` : ""}${s.note ? ` (${s.note})` : ""}`).join("\n");
   return [
     `Бизнес: ${b.name} (${n.label}), город ${b.city}${b.address ? `, адрес: ${b.address}` : ""}.`,
     b.description ? `Описание от владельца: ${b.description}` : "",
@@ -214,6 +240,8 @@ const SYSTEM = `Ты — сильный директолог и копирайт
 - Пиши конкретно и по-человечески: услуга, цена, выгода, место. Без канцелярита и штампов («индивидуальный подход», «высокое качество»).
 - Заголовок 1 обязательно содержит услугу. В тексте — призыв записаться.
 - Используй место почти целиком: заголовок 35–56 символов, второй заголовок 20–30, текст 65–81 (VK — 70–90). Короткое объявление на поиске проигрывает соседям.
+- Название бизнеса пиши точно как у владельца, с теми же заглавными буквами. Цены — с пробелом в тысячах и знаком ₽: «1 900 ₽».
+- Заголовки объявлений в одной группе не повторяют друг друга.
 - Второй заголовок не повторяет первый: туда — факт из описания (преимущество, адрес, часы работы, предложение).
 - Город не склоняй вслепую: пиши «— Казань» или «, Казань», а не «в Казань».
 - Каждое объявление проверяет свою гипотезу (угол подачи): price, offer, proof, convenience, result, emotion.
@@ -262,7 +290,7 @@ export async function generateCopyPlan(b: Business, channels: { search: boolean;
             name: fit(g.name, 60),
             audience: fit(g.audience || "", 120),
             keywords: [...new Set((g.keywords ?? []).map(cleanKeyword).filter((k) => k.length > 2))].slice(0, 40),
-            ads: [...new Map(ads.filter((a): a is AdDraft => !!a && !!a.title && !!a.text).map((a) => [`${a.title}|${a.text}`, a])).values()],
+            ads: uniqueAds(ads.filter((a): a is AdDraft => !!a && !!a.title && !!a.text)),
           };
         })
         .filter((g) => g.ads.length);
@@ -387,15 +415,25 @@ function mainService(b: Business) {
   return cleanText(b.services?.[0]?.name) || genericService(b);
 }
 
-/** Первый вариант, который помещается целиком; иначе — аккуратно укороченный последний */
-function pick(cands: (string | null | undefined | false)[], max: number) {
+/** Первый вариант, который помещается целиком (и не занят другим объявлением — used); иначе — аккуратно укороченный */
+function pickTitle(cands: (string | null | undefined | false)[], max: number, used?: Set<string>) {
   const list = (cands.filter(Boolean) as string[]).map((c) => cleanText(c)).filter(Boolean);
+  const free = (t: string) => !used || !used.has(titleKey(t));
+  const take = (t: string) => {
+    used?.add(titleKey(t));
+    return t;
+  };
+  for (const t of list) if (t.length <= max && free(t)) return take(t);
+  for (const t of list) {
+    const f = fit(t, max);
+    if (f && free(f)) return take(f);
+  }
   for (const t of list) if (t.length <= max) return t;
   return fit(list[list.length - 1] ?? "", max);
 }
 
 /** Текст из предложений: добавляем, пока помещается, — без обрывков на полуслове */
-function sentences(parts: (string | null | undefined | false)[], max: number) {
+function joinSentences(parts: (string | null | undefined | false)[], max: number) {
   let out = "";
   for (const raw of parts) {
     if (!raw) continue;
@@ -411,13 +449,34 @@ function sentences(parts: (string | null | undefined | false)[], max: number) {
 }
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const low = (s: string) => (/^\p{Lu}{2}/u.test(s) ? s : s.charAt(0).toLowerCase() + s.slice(1));
+/**
+ * Строчная первая буква — только у обычных слов. Аббревиатуры («SPA»), названия с заглавными внутри
+ * («Студия Лак», «Маникюр Shellac») и название бизнеса оставляем как написал владелец.
+ */
+const low = (s: string, brand?: string) => {
+  if (/^\p{Lu}{2}/u.test(s) || /\s\p{Lu}/u.test(s)) return s;
+  const first = s.split(/\s/)[0];
+  if (brand && first && brand.split(/\s+/).some((w) => w === first && /^\p{Lu}/u.test(w))) return s;
+  return s.charAt(0).toLowerCase() + s.slice(1);
+};
+const titleKey = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+
+/** Объявления группы без повторяющихся заголовков (сравниваем без регистра, пробелов и знаков) */
+function uniqueAds(ads: AdDraft[]): AdDraft[] {
+  const seen = new Set<string>();
+  return ads.filter((a) => {
+    const k = titleKey(a.title);
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
 
 function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string, price?: string, set = 0): AdDraft[] {
   const L = LIMITS[ch];
   const svc = cleanText(serviceName) || mainService(b);
   const owned = b.services?.find((s) => cleanText(s.name) === svc);
-  const p = cleanText(price || owned?.price || (serviceName ? null : b.services?.[0]?.price)) || null;
+  const p = priceText(cleanText(price || owned?.price || (serviceName ? null : b.services?.[0]?.price))) || null;
   const street = b.address ? cleanText(b.address.split(/[,—–]/)[0]) : null;
   const where = street ? `${b.city}, ${street}` : b.city;
   const name = cleanText(b.name);
@@ -430,6 +489,13 @@ function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string,
   const review = rv ? (rv.length > rmax ? rv.slice(0, rmax).replace(/\s+\S*$/, "").replace(/[,—–-]$/, "").trim() + "..." : rv) : null;
 
   const brand = `${name} — ${b.city}`;
+  // Заголовки не повторяются между объявлениями группы: занятый вариант пропускаем и берём следующий
+  const used = new Set<string>();
+  // Услуга совпадает с названием («Студия Лак»): варианты вида «Студия Лак в Студия Лак» пропускаем
+  const nk = titleKey(name);
+  const twice = (x: string | null | undefined | false) => !!x && nk.length > 2 && titleKey(x).split(nk).length > 2;
+  const pick = (c: (string | null | undefined | false)[], max: number, u?: Set<string>) => pickTitle(c.map((x) => (twice(x) ? null : x)), max, u);
+  const sentences = (c: (string | null | undefined | false)[], max: number) => joinSentences(c.map((x) => (twice(x) ? null : x)), max);
   const hours = cleanText(b.hours) || null;
   const cta = "Запишитесь онлайн за минуту!";
   const fullOffer = b.offer ? cap(withoutSuperlatives(b.offer)) || null : null;
@@ -437,50 +503,50 @@ function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string,
 
   const price_: AdDraft = {
     angle: "price",
-    title: pick([p && `${svc} — ${p}, ${b.city}`, p && `${svc} — ${p}`, p && `${svc} за ${p}`, `${svc} — ${b.city}`, svc], L.title),
+    title: pick([p && `${svc} — ${p}, ${b.city}`, p && `${svc} — ${p}`, p && `${svc} за ${p}`, `${svc} — ${b.city}`, svc], L.title, used),
     title2: pick([adv[0], brand, name, "Онлайн-запись"], L.title2),
     text: sentences([`${svc}${p ? ` — ${p}` : ""}`, adv[0], adv[1], `${name}, ${where}`, fullOffer, cta, "Запись онлайн"], L.text),
   };
   const offer_: AdDraft = offerFull
     ? {
         angle: "offer",
-        title: pick([`${svc}: ${offerFull}`, offerFull, `${svc}: ${offer}`, offer], L.title),
+        title: pick([`${svc}: ${offerFull}`, offerFull, `${svc}: ${offer}`, offer], L.title, used),
         title2: pick([brand, firstVisit ? "Для новых клиентов" : name], L.title2),
         text: sentences([cap(offerFull), p && `${svc} — ${p}`, adv[0], `${name}, ${where}`, cta, "Запись онлайн"], L.text),
       }
     : {
         angle: "convenience",
-        title: pick([street ? `${svc} — ${b.city}, ${street}` : null, `${svc} в ${name} — ${b.city}`, `${svc} — ${b.city}`, svc], L.title),
+        title: pick([street ? `${svc} — ${b.city}, ${street}` : null, `${svc} в ${name} — ${b.city}`, `${svc} — ${b.city}`, svc], L.title, used),
         title2: pick([hours, street, "Онлайн-запись"], L.title2),
         text: sentences([`${name}: ${where}`, hours, adv[0], adv[1], cta, "Запись онлайн"], L.text),
       };
   const proof_: AdDraft = review
     ? {
         angle: "proof",
-        title: pick([`${svc} — отзыв клиента`, `${name}: отзыв клиента`, svc], L.title),
+        title: pick([`${svc} — отзыв клиента`, `${name}: отзыв клиента`, svc], L.title, used),
         title2: pick([adv[0], brand, "Отзыв клиента"], L.title2),
         text: sentences([`«${review}»`, adv[0], `${name}, ${where}`, cta, "Запись онлайн"], L.text),
       }
     : {
         angle: "result",
-        title: pick([`${svc} в ${name} — ${b.city}`, `${svc} в ${name}`, `${svc} — ${b.city}`, svc], L.title),
+        title: pick([`${svc} в ${name} — ${b.city}`, `${svc} в ${name}`, `${svc} — ${b.city}`, svc], L.title, used),
         title2: pick([adv[0], adv[1], brand, name], L.title2),
         text: sentences([adv[0], adv[1], adv[2], p && `${svc} — ${p}`, `${name}, ${where}`, cta, "Запись онлайн"], L.text),
       };
   const convenience_: AdDraft = {
     angle: "convenience",
-    title: pick([street ? `${svc} на ${street} — ${name}` : null, street ? `${svc} — ${street}` : null, `${svc} — ${name}, ${b.city}`, `${svc} — ${b.city}`, svc], L.title),
+    title: pick([street ? `${svc} — ${street}, ${name}` : null, street ? `${svc} — ${street}` : null, `${svc} — ${name}, ${b.city}`, `${svc} — ${b.city}`, svc], L.title, used),
     title2: pick([hours, "Онлайн-запись"], L.title2),
     text: sentences([`${name}, ${where}`, hours, adv[1] ?? adv[0], adv[0], "Выберите удобное время онлайн"], L.text),
   };
   const emotion_: AdDraft = {
     angle: "emotion",
-    title: pick([`Время для себя: ${low(svc)} в ${name}`, `Время для себя: ${low(svc)}`, `Время для себя в ${name}`, svc], L.title),
+    title: pick([`Время для себя: ${low(svc, name)} в ${name}`, `Время для себя: ${low(svc, name)}`, `Время для себя в ${name}`, svc], L.title, used),
     title2: pick([street ? `${name}, ${street}` : null, brand, name], L.title2),
     text: sentences(["Время только для себя", `${cap(svc)} — ${name}, ${where}`, adv[0], fullOffer, cta, "Запись онлайн"], L.text),
   };
   const sets = [[price_, offer_, proof_], [convenience_, emotion_, price_]];
-  return sets[set % 2].map((a) => normalizeAd(a, ch));
+  return uniqueAds(sets[set % 2].map((a) => normalizeAd(a, ch)));
 }
 
 export function templatePlan(b: Business): CopyPlan {
@@ -490,7 +556,7 @@ export function templatePlan(b: Business): CopyPlan {
   const search: GroupDraft[] = services.map((s) => {
     const base = keywordBase(s.name) || cleanKeyword(genericService(b));
     const kws = [base, `${base} ${city}`, `${base} рядом`, `${base} цена`, `${base} запись`].map(cleanKeyword);
-    return { name: s.name, audience: `Ищут «${cleanText(s.name).toLowerCase()}» в Яндексе`, keywords: [...new Set(kws)], ads: templateAds(b, "search", s.name, s.price) };
+    return { name: s.name, audience: `Ищут «${low(cleanText(s.name), b.name)}» в Яндексе`, keywords: [...new Set(kws)], ads: templateAds(b, "search", s.name, s.price) };
   });
   const seeds = n.searchSeeds.map((k) => cleanKeyword(k.replace("{city}", city)));
   // Общие запросы ниши — в первую группу, но без запросов про другие услуги (иначе группы конкурируют)

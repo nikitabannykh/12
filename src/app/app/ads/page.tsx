@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { and, eq, inArray } from "drizzle-orm";
-import { FlaskConical, Trophy, Lightbulb, Image as ImageIcon, Eye, ChevronDown, GraduationCap } from "lucide-react";
+import { FlaskConical, Trophy, Lightbulb, Image as ImageIcon, Eye, ChevronDown, GraduationCap, ExternalLink, MapPin, Users, ChevronRight } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { accountsFor, channelsFor, getBusinessForUser, landingUrl } from "@/lib/engine/launch";
 import { adStats, reportNow, report, campaignStates, LEARNING_DAYS } from "@/lib/engine/report";
@@ -21,6 +21,9 @@ import { placeName, scoreGroup, liftBy, addS, zeroS, ctrOf, VERDICT, type S, typ
 import Link from "next/link";
 import { addDays, hostOf, isoDay, num, pl, plural, rub } from "@/lib/util";
 import type { Channel } from "@/lib/platforms/types";
+import { CHANNELS, CHANNEL_INFO, TYPE_INFO, FAMILY_NAME, adsHref, cabinetUrl, familyOf, formatOf, isRetarget, typeOf, type CampaignType, type Family } from "@/lib/channels";
+import { audiencesFor } from "@/lib/engine/retarget";
+import { CampaignFilters, PlatformMark, TypeBadge, Purpose, AudienceBar } from "@/components/CampaignNav";
 
 const STATUS: Record<string, { text: string; cls: string }> = {
   moderation: { text: "На модерации", cls: "bg-info-soft text-ink-2" },
@@ -33,7 +36,9 @@ const liftText = (index: number) => {
   const d = Math.round((index - 1) * 100);
   return d >= 0 ? `+${d}%` : `${d}%`;
 };
-const SHORT: Record<string, string> = { search: "Поиск", network: "Сайты и приложения", vk: "ВКонтакте" };
+const SHORT: Record<string, string> = Object.fromEntries(Object.entries(CHANNEL_INFO).map(([k, v]) => [k, v.short]));
+const FAMILIES: Family[] = ["yandex", "vk"];
+const TYPES: CampaignType[] = ["search", "network", "feed", "retarget", "maps"];
 const DAYS = 14;
 /** Оценка без данных не должна выглядеть как «Лучшее» */
 function shown(sc: AdScore): AdScore {
@@ -44,7 +49,11 @@ function shown(sc: AdScore): AdScore {
   return sc;
 }
 
-export default async function AdsPage() {
+export default async function AdsPage({ searchParams }: { searchParams: Promise<{ p?: string; t?: string }> }) {
+  const sp = await searchParams;
+  const fp: Family | null = FAMILIES.includes(sp.p as Family) ? (sp.p as Family) : null;
+  const ft: CampaignType | null = TYPES.includes(sp.t as CampaignType) ? (sp.t as CampaignType) : null;
+  const filtered = Boolean(fp || ft);
   const user = await requireUser();
   const b = await getBusinessForUser(user.id);
   if (!b) redirect("/app/start");
@@ -70,8 +79,7 @@ export default async function AdsPage() {
   const running = exps.filter((e) => e.status === "running");
   // В тесте картинок заголовки одинаковые — различаем варианты по макету картинки
   const imgNote = (imageId?: string | null) => { const l = imageId ? layoutOf.get(imageId) : null; return l ? `картинка: ${LAYOUT_NAME[l] ?? l}` : "другая картинка"; };
-  const order: Channel[] = ["search", "network", "vk"];
-  camps.sort((a, b) => order.indexOf(a.channel as Channel) - order.indexOf(b.channel as Channel));
+  camps.sort((a, b) => CHANNELS.indexOf(a.channel as Channel) - CHANNELS.indexOf(b.channel as Channel));
   const chOf = new Map(camps.map((c) => [c.id, c.channel as Channel]));
   const visible = ads.filter((a) => a.status !== "archived" && a.status !== "error");
 
@@ -131,6 +139,26 @@ export default async function AdsPage() {
   }
   const hasImageChannels = camps.some((c) => c.channel !== "search");
 
+  // ─── Типы кампаний и фильтры ───
+  const audiences = await audiencesFor(b, camps, now);
+  const accRows = camps.length ? await db.select({ id: schema.adAccounts.id, login: schema.adAccounts.login, platform: schema.adAccounts.platform }).from(schema.adAccounts).where(inArray(schema.adAccounts.id, [...new Set(camps.map((c) => c.accountId))])) : [];
+  const loginOf = new Map(accRows.map((a) => [a.id, a.login]));
+  const searchCamp = camps.find((c) => c.channel === "search");
+  // «Карты» — не отдельная кампания: места показа поисковой ЕПК при привязанной организации
+  const mapsItem = searchCamp ? { on: Boolean(b.orgId), camp: searchCamp } : null;
+  type Item = { key: string; family: Family; type: CampaignType; camp: (typeof camps)[number] | null };
+  const items: Item[] = [
+    ...camps.map((c) => ({ key: c.id, family: familyOf(c.channel), type: typeOf(c.channel), camp: c })),
+    ...(mapsItem ? [{ key: "maps", family: "yandex" as Family, type: "maps" as CampaignType, camp: null }] : []),
+  ];
+  const famCount = { all: items.length, yandex: items.filter((i) => i.family === "yandex").length, vk: items.filter((i) => i.family === "vk").length };
+  const inFam = items.filter((i) => !fp || i.family === fp);
+  const typeCount: { all: number } & Partial<Record<CampaignType, number>> = { all: inFam.length };
+  for (const i of inFam) typeCount[i.type] = (typeCount[i.type] ?? 0) + 1;
+  const shownItems = inFam.filter((i) => !ft || i.type === ft);
+  const shownIds = new Set(shownItems.map((i) => i.key));
+  const shownCamps = camps.filter((c) => shownIds.has(c.id));
+
   // ─── Каналы, которые подключены, но ещё не запущены ───
   const allCamps = await db.select({ channel: schema.campaigns.channel, status: schema.campaigns.status }).from(schema.campaigns).where(eq(schema.campaigns.businessId, b.id));
   const launched = [...new Set(allCamps.filter((c) => ["active", "paused", "creating"].includes(c.status)).map((c) => c.channel as Channel))];
@@ -147,13 +175,112 @@ export default async function AdsPage() {
       return { ch, ok, need, weekly };
     });
 
+  const anchorOf = (key: string) => (key === "maps" ? "maps" : `c-${key}`);
+  const filterName = [fp ? FAMILY_NAME[fp] : null, ft ? TYPE_INFO[ft].label.toLowerCase() : null].filter(Boolean).join(" · ");
+
   return (
     <div className="grid grid-cols-1 gap-6">
       <div>
         <h1 className="text-3xl font-extrabold tracking-tight">Реклама</h1>
-        <p className="text-muted mt-1 max-w-2xl">Что приносит клиентов, а что нет. Цифры за последние {pl(DAYS, "день", "дня", "дней")} — так у сравнений больше данных. Можно менять всё вручную: робот учтёт ваши решения.</p>
+        <p className="text-muted mt-1 max-w-2xl">Все кампании по площадкам и типам. Цифры за последние {pl(DAYS, "день", "дня", "дней")}. Можно менять всё вручную: робот учтёт ваши решения.</p>
       </div>
 
+      <CampaignFilters p={fp} t={ft} families={famCount} types={typeCount} />
+
+      {/* ─── Кампании: обзор ─── */}
+      <section className="card p-4 sm:p-6" aria-labelledby="camps-title">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <h2 id="camps-title" className="text-lg font-bold">Кампании{filterName ? <span className="text-muted font-semibold"> · {filterName}</span> : null}</h2>
+          {filtered ? <Link href="/app/ads" scroll={false} className="text-sm font-semibold underline underline-offset-2 text-ink-2">Показать все</Link> : null}
+        </div>
+        {shownItems.length ? (
+          <>
+            {/* Телефон: строки-карточки */}
+            <ul className="mt-3 grid gap-2 md:hidden">
+              {shownItems.map((it) => {
+                const r = it.camp ? chRows.find((x) => x.c.id === it.camp!.id) : null;
+                return (
+                  <li key={it.key}>
+                    <a href={`#${anchorOf(it.key)}`} className="block rounded-xl border border-line p-3.5 hover:border-ink-2 active:bg-paper">
+                      <div className="flex items-start gap-2.5">
+                        <PlatformMark family={it.family} size={22} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-semibold leading-tight">{it.camp ? SHORT[it.camp.channel] : "Яндекс Карты"}</span>
+                            <TypeBadge type={it.type} />
+                          </div>
+                          <div className="text-xs text-muted mt-0.5">{TYPE_INFO[it.type].purpose}</div>
+                        </div>
+                        <ChevronRight size={18} className="text-faint shrink-0 mt-0.5" aria-hidden />
+                      </div>
+                      <div className="mt-2.5"><ItemStatus it={it} /></div>
+                      {r ? (
+                        <dl className="mt-2.5 grid grid-cols-3 gap-2 text-sm">
+                          <div><dt className="text-xs text-muted">Потрачено</dt><dd className="font-semibold tabular-nums">{rub(r.s.cost)}</dd></div>
+                          <div><dt className="text-xs text-muted">Обращения</dt><dd className="font-semibold tabular-nums">{num(r.s.conversions)}</dd></div>
+                          <div><dt className="text-xs text-muted">Обращение</dt><dd className="font-semibold tabular-nums">{r.cpl !== null ? rub(r.cpl) : "—"}</dd></div>
+                        </dl>
+                      ) : <p className="mt-2 text-xs text-muted">Без отдельного бюджета — часть кампании «Поиск»</p>}
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+            {/* Компьютер: таблица */}
+            <div className="mt-3 hidden md:block">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-faint">
+                    <th className="font-medium py-2 pr-2">Кампания</th>
+                    <th className="font-medium py-2 px-2">Статус</th>
+                    <th className="font-medium py-2 px-2 text-right">Потрачено</th>
+                    <th className="font-medium py-2 px-2 text-right">Обращения</th>
+                    <th className="font-medium py-2 px-2 text-right">Обращение</th>
+                    <th className="font-medium py-2 pl-2 text-right">Клиент</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shownItems.map((it) => {
+                    const r = it.camp ? chRows.find((x) => x.c.id === it.camp!.id) : null;
+                    const best = r && bestCh && r.c.id === bestCh.c.id && withLeads.length > 1;
+                    return (
+                      <tr key={it.key} className="border-t border-line align-middle group/row">
+                        <td className="py-2.5 pr-2">
+                          <a href={`#${anchorOf(it.key)}`} className="flex items-start gap-2.5 min-w-0 rounded-lg -m-1 p-1 hover:bg-paper">
+                            <span className="mt-0.5"><PlatformMark family={it.family} size={20} /></span>
+                            <span className="min-w-0">
+                              <span className="flex flex-wrap items-center gap-1.5">
+                                <span className="font-semibold group-hover/row:underline underline-offset-2">{it.camp ? SHORT[it.camp.channel] : "Яндекс Карты"}</span>
+                                <TypeBadge type={it.type} />
+                                {best ? <span className="pill bg-good text-white">дешевле всех</span> : null}
+                              </span>
+                              <span className="block text-xs text-muted mt-0.5">{TYPE_INFO[it.type].purpose}</span>
+                            </span>
+                          </a>
+                        </td>
+                        <td className="py-2.5 px-2 w-[11rem]"><ItemStatus it={it} /></td>
+                        <td className="py-2.5 px-2 text-right tabular-nums whitespace-nowrap">{r ? rub(r.s.cost) : "—"}</td>
+                        <td className="py-2.5 px-2 text-right tabular-nums">{r ? num(r.s.conversions) : "—"}</td>
+                        <td className="py-2.5 px-2 text-right tabular-nums whitespace-nowrap">{r?.cpl != null ? rub(r.cpl) : "—"}</td>
+                        <td className="py-2.5 pl-2 text-right tabular-nums font-semibold whitespace-nowrap">{r?.cac != null ? `${r.estimated ? "≈ " : ""}${rub(r.cac)}` : "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="hint mt-3">Нажмите на кампанию, чтобы перейти к её объявлениям. «Клиент» — сколько стоил один клиент{chRows.some((r) => r.estimated) ? " (≈ — оценка, пока вы не отметили клиентов за неделю в «Статистике»)" : ""}. Раз в неделю робот переносит до четверти бюджета туда, где обращение дешевле.</p>
+          </>
+        ) : (
+          <p className="text-muted mt-3">
+            {fp && !famCount[fp] ? <>Кабинет {FAMILY_NAME[fp]} не подключён или кампаний в нём пока нет. </> : <>Таких кампаний пока нет. </>}
+            <Link href="/app/ads" scroll={false} className="font-semibold underline">Показать все</Link>
+          </p>
+        )}
+      </section>
+
+      {!filtered ? (
+        <>
       {/* ─── Главное ─── */}
       <section className="card p-5 sm:p-7">
         <h2 className="text-lg font-bold">Что работает лучше</h2>
@@ -197,88 +324,6 @@ export default async function AdsPage() {
           {weakCount ? ` — сейчас таких ${weakCount}` : ""}.
         </p>
       </section>
-
-      {/* ─── Каналы рядом ─── */}
-      {chRows.length > 1 ? (
-        <section className="card p-5 sm:p-7">
-          <h2 className="text-lg font-bold">Каналы рядом</h2>
-          {/* Телефон: карточки вместо таблицы с прокруткой */}
-          <ul className="mt-3 grid gap-3 sm:hidden">
-            {chRows.map((r) => {
-              const share = totalConv ? r.s.conversions / totalConv : 0;
-              const best = bestCh && r.c.id === bestCh.c.id && withLeads.length > 1;
-              const ratio = bestCh && r.cpl !== null && !best ? r.cpl / bestCh.cpl! : 0;
-              const st8 = states.get(r.c.id);
-              return (
-                <li key={r.c.id} className="rounded-xl border border-line p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="font-semibold">{SHORT[r.ch]}</div>
-                      {st8?.stopped ? <span className="pill bg-paper text-muted mt-1">пауза</span> : best ? <span className="pill bg-good text-white mt-1">дешевле всех</span> : ratio >= 1.6 ? <span className="pill bg-warn-soft text-warn mt-1">в {ratio.toFixed(1).replace(".", ",")} раза дороже</span> : null}
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className="font-extrabold tabular-nums">{r.cac !== null ? `${r.estimated ? "≈ " : ""}${rub(r.cac)}` : "—"}</div>
-                      <div className="text-xs text-muted">клиент</div>
-                    </div>
-                  </div>
-                  <dl className="mt-3 grid grid-cols-3 gap-2 text-sm">
-                    <div><dt className="text-xs text-muted">Потрачено</dt><dd className="font-semibold tabular-nums">{rub(r.s.cost)}</dd></div>
-                    <div><dt className="text-xs text-muted">Обращения</dt><dd className="font-semibold tabular-nums">{num(r.s.conversions)}</dd></div>
-                    <div><dt className="text-xs text-muted">Обращение</dt><dd className="font-semibold tabular-nums">{r.cpl !== null ? rub(r.cpl) : "—"}</dd></div>
-                  </dl>
-                  {totalConv ? (
-                    <div className="mt-3 flex items-center gap-2 text-xs text-muted">
-                      <div className="h-1.5 flex-1 rounded-full bg-paper overflow-hidden"><div className={`h-full rounded-full ${best ? "bg-good" : "bg-ink-2"}`} style={{ width: `${Math.round(share * 100)}%` }} /></div>
-                      <span className="tabular-nums">{Math.round(share * 100)}% обращений</span>
-                    </div>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-          <div className="mt-3 overflow-x-auto hidden sm:block">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-faint">
-                  <th className="font-medium py-2 pr-2">Канал</th>
-                  <th className="font-medium py-2 px-1 text-right">Потрачено</th>
-                  <th className="font-medium py-2 px-1 text-right">Обращения</th>
-                  <th className="font-medium py-2 px-1 text-right hidden sm:table-cell">Цена обращения</th>
-                  <th className="font-medium py-2 pl-1 text-right">Клиент</th>
-                  <th className="font-medium py-2 pl-3 w-[24%] hidden md:table-cell">Доля обращений</th>
-                </tr>
-              </thead>
-              <tbody>
-                {chRows.map((r) => {
-                  const share = totalConv ? r.s.conversions / totalConv : 0;
-                  const best = bestCh && r.c.id === bestCh.c.id && withLeads.length > 1;
-                  const ratio = bestCh && r.cpl !== null && !best ? r.cpl / bestCh.cpl! : 0;
-                  const st8 = states.get(r.c.id);
-                  return (
-                    <tr key={r.c.id} className="border-t border-line align-top">
-                      <td className="py-2.5 pr-2 font-semibold">
-                        <div>{SHORT[r.ch]}</div>
-                        {st8?.stopped ? <span className="pill bg-paper text-muted mt-1">пауза</span> : best ? <span className="pill bg-good text-white mt-1 whitespace-normal">дешевле всех</span> : ratio >= 1.6 ? <span className="pill bg-warn-soft text-warn mt-1 whitespace-normal">в {ratio.toFixed(1).replace(".", ",")} раза дороже</span> : null}
-                      </td>
-                      <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap">{rub(r.s.cost)}</td>
-                      <td className="py-2.5 px-1 text-right tabular-nums">{num(r.s.conversions)}</td>
-                      <td className="py-2.5 px-1 text-right tabular-nums hidden sm:table-cell">{r.cpl !== null ? rub(r.cpl) : "—"}</td>
-                      <td className="py-2.5 pl-1 text-right tabular-nums font-semibold whitespace-nowrap">{r.cac !== null ? `${r.estimated ? "≈ " : ""}${rub(r.cac)}` : "—"}</td>
-                      <td className="py-2.5 pl-3 hidden md:table-cell">
-                        <div className="flex items-center gap-2">
-                          <div className="h-2 flex-1 rounded-full bg-paper overflow-hidden"><div className={`h-full rounded-full ${best ? "bg-good" : "bg-ink-2"}`} style={{ width: `${Math.round(share * 100)}%` }} /></div>
-                          <span className="tabular-nums text-muted w-9 text-right">{Math.round(share * 100)}%</span>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <p className="hint mt-3">«Клиент» — сколько стоил один клиент из этого канала{chRows.some((r) => r.estimated) ? " (≈ — оценка, пока вы не отметили клиентов за неделю в «Статистике»)" : ""}. Раз в неделю робот переносит до четверти бюджета из дорогого канала в тот, где обращение дешевле.</p>
-        </section>
-      ) : null}
 
       {/* ─── Добавить канал ─── */}
       {addable.length ? (
@@ -370,43 +415,82 @@ export default async function AdsPage() {
         </div>
       </section>
 
-      {/* ─── Каналы подробно ─── */}
-      {camps.map((camp) => {
+        </>
+      ) : null}
+
+      {/* ─── Кампании подробно ─── */}
+      {shownCamps.map((camp) => {
         const ch = camp.channel as Channel;
         // Группы, перенесённые роботом в новые (в Директе кончилось место для объявлений), не показываем
         const cg = groups.filter((g) => g.campaignId === camp.id && g.status !== "archived");
         // Директ: объявления комбинаторные — Яндекс собирает показ из нескольких заголовков и текстов
-        const combinatorial = (ch === "search" || ch === "network") && camp.platform !== "vk";
+        const combinatorial = formatOf(ch) !== "vk" && camp.platform !== "vk";
+        const fmt = formatOf(ch);
         const row = chRows.find((r) => r.c.id === camp.id)!;
+        const aud = audiences.get(camp.id);
+        const waiting = isRetarget(ch) && camp.status === "paused" && aud && aud.state !== "on";
+        const cab = cabinetUrl(camp.platform, camp.externalId, loginOf.get(camp.accountId));
+        // Лимит, который ретаргетинг получит при включении: доля от текущего бюджета вместе с работающими каналами
+        const planned = waiting ? allocate(b.monthlyBudget, [...new Set(camps.filter((x) => x.status === "active").map((x) => x.channel as Channel)), ch]) : null;
+        const plannedWeekly = planned?.allocation.find((x) => x.channel === ch)?.weekly ?? camp.weeklyBudget;
+        const plannedShort = Boolean(planned?.dropped.includes(ch));
         const groupStats = cg.map((g) => ({ g, s: ads.filter((a) => a.adGroupId === g.id).reduce((acc, a) => addS(acc, st(a.id)), zeroS()) }));
         return (
-          <section key={camp.id} className="card overflow-hidden">
+          <section key={camp.id} id={`c-${camp.id}`} className="card overflow-hidden scroll-mt-28">
             <div className="p-5 sm:p-7 border-b border-line">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                    <h2 className="text-xl font-bold">{CHANNEL_NAME[ch]}</h2>
-                    <CampaignPill s={states.get(camp.id)} ch={ch} />
-                  </div>
-                  <p className="text-sm text-muted mt-1">{CHANNEL_HINT[ch]}. {PLATFORM_NAME[camp.platform]}.</p>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2 min-w-0">
+                  <PlatformMark family={familyOf(ch)} label />
+                  <TypeBadge type={typeOf(ch)} />
                 </div>
                 <label className="flex items-center gap-2 text-sm font-semibold shrink-0">
-                  {camp.status === "active" ? "Включён" : "Выключен"}
-                  <LiveToggle url={`/api/campaigns/${camp.id}`} on={camp.status === "active"} label={`Канал ${CHANNEL_NAME[ch]}`} confirmOff="Остановить показы в этом канале? Настройки и статистика сохранятся." />
+                  {waiting ? (aud!.state === "off" ? "Не включать" : "Включится сам") : camp.status === "active" ? "Включён" : "Выключен"}
+                  {waiting ? (
+                    <LiveToggle url={`/api/campaigns/${camp.id}`} on={aud!.state !== "off"} label="Включить ретаргетинг сам, когда наберётся аудитория" confirmOff="Не включать ретаргетинг, даже когда наберётся аудитория? Вернуть можно здесь же." />
+                  ) : (
+                    <LiveToggle url={`/api/campaigns/${camp.id}`} on={camp.status === "active"} label={`Канал ${CHANNEL_NAME[ch]}`} confirmOff="Остановить показы в этом канале? Настройки и статистика сохранятся." />
+                  )}
                 </label>
               </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2">
+                <h2 className="text-xl font-bold">{CHANNEL_NAME[ch]}</h2>
+                {waiting ? (
+                  aud!.state === "off" ? <span className="pill bg-paper text-muted">автозапуск выключен</span> : <span className="pill bg-good-soft text-good"><Users size={13} /> копим аудиторию</span>
+                ) : <CampaignPill s={states.get(camp.id)} ch={ch} />}
+              </div>
+              <p className="text-sm text-muted mt-1 max-w-2xl"><Purpose type={typeOf(ch)} />. {CHANNEL_HINT[ch]}.</p>
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                {camp.platform === "demo" ? (
+                  <span className="text-faint">Демо-кабинет{camp.externalId ? ` · кампания № ${camp.externalId}` : ""}</span>
+                ) : cab ? (
+                  <>
+                    <a href={cab} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-ink-2 underline underline-offset-2 hover:text-ink">Открыть в кабинете {PLATFORM_NAME[camp.platform]} <ExternalLink size={13} /></a>
+                    <span className="text-faint">кампания № {camp.externalId}</span>
+                  </>
+                ) : <span className="text-faint">{PLATFORM_NAME[camp.platform]}</span>}
+              </div>
+              {waiting ? (
+                <div className="mt-4 rounded-xl bg-good-soft/50 border border-good/15 p-4">
+                  <AudienceBar size={aud!.size} need={aud!.need} />
+                  <p className="text-sm text-ink-2 mt-2.5 leading-relaxed max-w-2xl">
+                    Здесь собираются люди, которые заходили на {b.siteUrl ? "сайт" : "страницу записи"} за последние 30 дней, но не оставили заявку.
+                    Площадка начинает показы от {aud!.need} человек — {aud!.state === "off" ? "но вы отключили автозапуск, поэтому робот кампанию не включит." : <>как только наберётся, робот включит кампанию сам{plannedShort ? <>, если бюджета хватит на минимум площадки ({rub(MIN_WEEKLY[ch])} в неделю)</> : <> и выделит ей около {rub(plannedWeekly)} в неделю из общего бюджета</>}. До этого деньги не тратятся.</>}
+                  </p>
+                  {aud!.note ? <p className="text-sm text-warn mt-1.5">{aud!.note}{/бюджет/.test(aud!.note) ? <> · <Link href="/app/settings#budget" className="underline font-semibold">Изменить бюджет</Link></> : null}</p> : null}
+                </div>
+              ) : null}
               {(states.get(camp.id)?.learningLeft ?? 0) > 0 ? (
                 <p className="mt-3 text-sm text-ink-2 rounded-xl bg-info-soft px-4 py-3 leading-relaxed">
                   После запуска или крупных изменений площадка заново подбирает аудиторию — в это время цифры скачут, и это нормально. Робот не меняет стратегию, бюджет и цену клика ещё {pl(states.get(camp.id)!.learningLeft, "день", "дня", "дней")}, чтобы не сбить обучение.
                 </p>
               ) : null}
               <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
-                <div><div className="text-muted">Лимит</div><BudgetInline campaignId={camp.id} weekly={camp.weeklyBudget} min={MIN_WEEKLY[ch]} /></div>
+                <div><div className="text-muted">{waiting ? "Лимит после включения" : "Лимит"}</div>{waiting ? <div className="font-semibold">{plannedShort ? "не хватает бюджета" : `≈ ${rub(plannedWeekly)} в неделю`}</div> : <BudgetInline campaignId={camp.id} weekly={camp.weeklyBudget} min={MIN_WEEKLY[ch]} />}</div>
                 <div><div className="text-muted">Как тратится</div><div className="font-semibold">{camp.strategy === "conversions" ? "Ищем тех, кто чаще записывается" : "Ищем больше переходов за бюджет"}</div></div>
                 <div><div className="text-muted">Потрачено</div><div className="font-semibold">{rub(row.s.cost)}</div></div>
                 <div><div className="text-muted">Обращения</div><div className="font-semibold">{num(row.s.conversions)}{row.cpl !== null ? ` · по ${rub(row.cpl)}` : ""}</div>{row.cac !== null ? <div className="text-xs text-muted">клиент {row.estimated ? "≈ " : ""}{rub(row.cac)}</div> : null}</div>
               </div>
-              {camp.negativeKeywords?.length && ch !== "vk" ? (
+              {camp.negativeKeywords?.length && fmt !== "vk" ? (
                 <details className="mt-3 text-sm">
                   <summary className="cursor-pointer text-ink-2 font-medium">Не показываем по {num(camp.negativeKeywords.length)} {plural(camp.negativeKeywords.length, "нецелевому слову", "нецелевым словам", "нецелевым словам")}</summary>
                   <p className="text-muted mt-1.5 leading-relaxed">{camp.negativeKeywords.join(", ")}</p>
@@ -483,7 +567,7 @@ export default async function AdsPage() {
                         const s = sc.s;
                         const inTest = running.some((e) => e.controlId === ad.id || e.variantId === ad.id);
                         const V = VERDICT[sc.verdict];
-                        const special = STATUS[ad.status];
+                        const special = waiting && ad.status === "moderation" ? { text: "Ждёт включения", cls: "bg-paper text-muted" } : STATUS[ad.status];
                         const layout = ad.imageId ? layoutOf.get(ad.imageId) : null;
                         return (
                           <li key={ad.id} className={`rounded-xl border ${sc.verdict === "leader" ? "border-good/40 bg-good-soft/40" : "border-line"} ${ad.status === "paused" ? "opacity-60" : ""}`}>
@@ -528,7 +612,7 @@ export default async function AdsPage() {
                                   {ch === "search" ? (
                                     <SearchAdPreview title={ad.title} title2={ad.title2} text={ad.text} host={host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={withPlanCallouts(adExtras(b, { channel: ch, href: landing, service: g.name, text: ad.text }), planCallouts)} />
                                   ) : (
-                                    <ImageAdPreview channel={ch === "vk" ? "vk" : "network"} title={ad.title} text={ad.text} host={ch === "vk" ? b.name : host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={adExtras(b, { channel: ch, href: landing, text: ad.text })} logo={logoId ? `/api/images/${logoId}` : null} />
+                                    <ImageAdPreview channel={fmt === "vk" ? "vk" : "network"} title={ad.title} text={ad.text} host={fmt === "vk" ? b.name : host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={adExtras(b, { channel: fmt, href: landing, text: ad.text })} logo={logoId ? `/api/images/${logoId}` : null} />
                                   )}
                                 </div>
                                 {combinatorial ? (() => {
@@ -536,7 +620,7 @@ export default async function AdsPage() {
                                   return <ResponsiveAssets titles={ra.titles} texts={ra.texts} className={ch === "search" ? "max-w-xl" : "max-w-sm"} />;
                                 })() : null}
                                 <div className="text-xs text-muted">{pl(s.impressions, "показ", "показа", "показов")} · потрачено {rub(s.cost)}{s.conversions ? ` · обращение по ${rub(s.cost / s.conversions)}` : ""}</div>
-                                <AdActions ad={{ id: ad.id, title: ad.title, title2: ad.title2, text: ad.text, status: ad.status }} channel={ch} canTest={!inTest && camp.status === "active"} />
+                                <AdActions ad={{ id: ad.id, title: ad.title, title2: ad.title2, text: ad.text, status: ad.status }} channel={fmt} canTest={!inTest && camp.status === "active"} />
                               </div>
                             </details>
                           </li>
@@ -550,8 +634,45 @@ export default async function AdsPage() {
           </section>
         );
       })}
+
+      {/* ─── Яндекс Карты: не кампания, а места показа поиска ─── */}
+      {mapsItem && shownIds.has("maps") ? (
+        <section id="maps" className="card p-5 sm:p-7 scroll-mt-28">
+          <div className="flex flex-wrap items-center gap-2">
+            <PlatformMark family="yandex" label />
+            <TypeBadge type="maps" />
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2">
+            <h2 className="text-xl font-bold flex items-center gap-2"><MapPin size={20} /> Яндекс Карты</h2>
+            {mapsItem.on ? <span className="pill bg-good-soft text-good">подключено</span> : <span className="pill bg-warn-soft text-warn">привяжите организацию</span>}
+          </div>
+          <p className="text-sm text-muted mt-1 max-w-2xl"><Purpose type="maps" />.</p>
+          {mapsItem.on ? (
+            <p className="text-[0.95rem] mt-3 leading-relaxed max-w-2xl">
+              Объявления кампании <a href={`#c-${mapsItem.camp.id}`} className="font-semibold underline underline-offset-2">«Поиск»</a> показываются и на Яндекс Картах, и в списке организаций — рядом с вашей точкой, с адресом, часами работы и рейтингом.
+              Отдельного бюджета и отдельной кампании нет: это места показа поиска, расход и обращения входят в «Поиск».
+              {b.orgUrl ? <> <a href={b.orgUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-ink-2 underline underline-offset-2">Ваша организация на Картах <ExternalLink size={13} /></a></> : null}
+            </p>
+          ) : (
+            <div className="mt-3 rounded-xl bg-warn-soft/60 p-4 text-[0.95rem] leading-relaxed max-w-2xl">
+              Чтобы реклама показывалась на Яндекс Картах, нужна организация в Яндекс Бизнесе. Добавьте ссылку на неё — робот привяжет профиль к поиску, и объявления появятся на Картах рядом с вашей точкой, без отдельного бюджета.
+              <div className="mt-3"><Link href="/app/start#org" className="btn btn-primary btn-sm">Привязать организацию</Link></div>
+            </div>
+          )}
+        </section>
+      ) : null}
     </div>
   );
+
+  function ItemStatus({ it }: { it: Item }) {
+    if (!it.camp) return mapsItem?.on ? <span className="pill bg-good-soft text-good">подключено</span> : <span className="pill bg-warn-soft text-warn">привяжите организацию</span>;
+    const c = it.camp;
+    const a = audiences.get(c.id);
+    if (isRetarget(c.channel) && c.status === "paused" && a && a.state !== "on") {
+      return a.state === "off" ? <span className="pill bg-paper text-muted">автозапуск выключен</span> : <AudienceBar size={a.size} need={a.need} compact />;
+    }
+    return <CampaignPill s={states.get(c.id)} ch={c.channel} short />;
+  }
 }
 
 function rankKey(sc?: AdScore) {
@@ -580,15 +701,16 @@ function Duel({ label, title, note, s, ahead }: { label: string; title?: string;
   );
 }
 
-function CampaignPill({ s, ch }: { s?: { stopped: string | null; learningLeft: number }; ch: string }) {
-  if (s?.stopped === "guard") return <span className="pill bg-bad-soft text-bad">Стоит: кончился бюджет месяца</span>;
+function CampaignPill({ s, ch, short = false }: { s?: { stopped: string | null; learningLeft: number }; ch: string; short?: boolean }) {
+  if (s?.stopped === "guard") return <span className="pill bg-bad-soft text-bad">{short ? "Стоит: бюджет" : "Стоит: кончился бюджет месяца"}</span>;
   if (s?.stopped === "error") return <span className="pill bg-bad-soft text-bad">Ошибка площадки</span>;
-  if (s?.stopped === "robot") return <span className="pill bg-paper text-muted">На паузе — остановил робот</span>;
-  if (s?.stopped) return <span className="pill bg-paper text-muted">На паузе — вы остановили</span>;
+  if (s?.stopped === "audience") return <span className="pill bg-good-soft text-good">Копим аудиторию</span>;
+  if (s?.stopped === "robot") return <span className="pill bg-paper text-muted">{short ? "Пауза — робот" : "На паузе — остановил робот"}</span>;
+  if (s?.stopped) return <span className="pill bg-paper text-muted">{short ? "Пауза — вы" : "На паузе — вы остановили"}</span>;
   if (s && s.learningLeft > 0)
     return (
       <span className="pill bg-info-soft text-ink-2" title={`Обучение после запуска длится до ${pl(LEARNING_DAYS[ch] ?? 14, "дня", "дней", "дней")}, после изменения бюджета — до 7`}>
-        <GraduationCap size={13} /> обучается — не трогаем {pl(s.learningLeft, "день", "дня", "дней")}
+        <GraduationCap size={13} /> {short ? `обучается, ${pl(s.learningLeft, "день", "дня", "дней")}` : `обучается — не трогаем ${pl(s.learningLeft, "день", "дня", "дней")}`}
       </span>
     );
   return <span className="pill bg-good-soft text-good">Идёт</span>;

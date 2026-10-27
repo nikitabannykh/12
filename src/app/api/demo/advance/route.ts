@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { eq } from "drizzle-orm";
@@ -14,8 +15,19 @@ export const POST = route(async ({ business, req }) => {
   const camps = await db.select().from(schema.campaigns).where(eq(schema.campaigns.businessId, business.id));
   if (!camps.length || camps.some((c) => c.platform !== "demo")) return fail("Перемотка времени доступна только в демо-кабинете");
   const scope = { accountId: camps[0].accountId };
-  const { days } = await req.json().catch(() => ({ days: 3 }));
-  const d = Math.max(1, Math.min(14, Number(days) || 3));
+  // Пустое тело — по умолчанию 3 дня; null, строка, массив и т. п. — ошибка запроса
+  const text = await req.text();
+  let body: unknown = {};
+  if (text.trim()) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return fail("Не удалось прочитать запрос");
+    }
+  }
+  const parsed = z.object({ days: z.coerce.number().finite().optional() }).safeParse(body);
+  if (!parsed.success) return fail("Укажите, на сколько дней промотать время: от 1 до 14");
+  const d = Math.max(1, Math.min(14, Math.round(parsed.data.days ?? 3)));
   // Робот проверяет рекламу несколько раз в день — имитируем проверку раз в сутки.
   // Не дольше ~45 с: остаток дней можно промотать следующим нажатием.
   const started = Date.now();

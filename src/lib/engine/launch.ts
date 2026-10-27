@@ -11,12 +11,15 @@ import type { Channel, CampaignSpec, PlatformClient } from "../platforms/types";
 import { clientFor, CHANNEL_NAME } from "../platforms";
 import { YandexDirect } from "../platforms/yandex";
 import { VkAds } from "../platforms/vk";
-import { ensureCounter, ensureGoals } from "../platforms/metrica";
+import { ensureCounter, ensureGoals, ensureVisitGoal } from "../platforms/metrica";
 import { decrypt } from "../crypto";
-import { regionIdsFor } from "./regions";
+import { regionIdsFor, vkPixelCounterId } from "./regions";
 import { act, logChange } from "./ops";
 import { nicheById } from "../niches";
-import { appUrl, errorText, pl, rub, uid } from "../util";
+import { appUrl, errorText, isoDay, pl, rub, uid } from "../util";
+import { baseOf, formatOf, isRetarget, RETARGET_MIN_AUDIENCE, RETARGET_WINDOW_DAYS, retargetOf, waitingAudience, type AudienceMeta } from "../channels";
+import { VK_LEAD_GOAL } from "../platforms/vk-formats";
+import { businessNow } from "./budget-guard";
 
 export type PlanAd = { id: string; angle: string; title: string; title2?: string | null; text: string; imageId?: string | null; layout?: Layout | null; enabled: boolean };
 export type PlanGroup = { id: string; name: string; audience: string; keywords: string[]; autotargeting: boolean; ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; ads: PlanAd[] };
@@ -103,6 +106,9 @@ export function channelsFor(accounts: AdAccount[]): { channel: Channel; account:
     out.push({ channel: "network", account: yaAcc });
   }
   if (vkAcc) out.push({ channel: "vk", account: vkAcc });
+  // Ретаргетинг — отдельные кампании тех же кабинетов: Директ по Метрике, VK по пикселю
+  if (yaAcc) out.push({ channel: retargetOf("yandex"), account: yaAcc });
+  if (vkAcc) out.push({ channel: retargetOf("vk"), account: vkAcc });
   return out;
 }
 
@@ -111,7 +117,7 @@ export function landingUrl(b: Business) {
 }
 
 /** Каналы Директа: комбинаторные объявления, лимит 3 неархивных объявления в группе */
-export const isDirectChannel = (channel: string) => channel === "search" || channel === "network";
+export const isDirectChannel = (channel: string) => channel === "search" || channel === "network" || channel === "retarget_yandex";
 export const DIRECT_ADS_PER_GROUP = 3;
 
 /**
@@ -131,15 +137,43 @@ export function withUtm(href: string, platform: string) {
   return u.toString().replace(/%7B/g, "{").replace(/%7D/g, "}");
 }
 
+/** Какие тексты заказать у генератора: ретаргетинг пишется из объявлений основного канала той же площадки */
+export function copyWants(channels: Channel[]) {
+  const want = { search: false, network: false, vk: false };
+  for (const c of channels) want[baseOf(c) as keyof typeof want] = true;
+  return want;
+}
+
+/**
+ * Группа ретаргетинга: одна аудитория «были на сайте или странице записи за 30 дней, но не оставили заявку».
+ * Объявления — из основного канала той же площадки (лучшие идеи первыми: цена, предложение, доверие), без ключевых
+ * фраз и автотаргетинга. Возраст — по нише, как у основных кампаний.
+ */
+function retargetGroup(b: Business, copy: CopyPlan, channel: Channel): CopyPlan["network"] {
+  const src = copy[baseOf(channel) as "network" | "vk"] ?? [];
+  const ads = src.flatMap((g) => g.ads);
+  const order = ["offer", "price", "proof", "convenience", "result", "emotion"];
+  const picked = [...ads].sort((x, y) => order.indexOf(x.angle) - order.indexOf(y.angle)).filter((a, i, arr) => arr.findIndex((z) => z.title === a.title) === i).slice(0, channel === "retarget_vk" ? 2 : 3);
+  return [{
+    name: "Были на сайте, но не записались",
+    audience: `Заходили на ${b.siteUrl ? "сайт" : "страницу записи"} за ${RETARGET_WINDOW_DAYS} дней и не оставили заявку`,
+    keywords: [],
+    ads: picked,
+    autotargeting: false,
+  }];
+}
+
 /** Канал плана из сгенерированных текстов */
 function channelFromCopy(b: Business, copy: CopyPlan, channel: Channel, acc: AdAccount, weekly: number): PlanChannel {
   const n = nicheById(b.niche);
-  const groups = copy[channel].map((g) => ({
+  const fmt = formatOf(channel);
+  const drafts = isRetarget(channel) ? retargetGroup(b, copy, channel) : copy[channel as "search" | "network" | "vk"];
+  const groups = drafts.map((g) => ({
     id: uid("g_"),
     name: g.name,
     audience: g.audience,
     keywords: g.keywords,
-    autotargeting: channel !== "vk",
+    autotargeting: fmt !== "vk" && !isRetarget(channel),
     ageFrom: g.ageFrom ?? n.audience.ageFrom,
     ageTo: g.ageTo ?? n.audience.ageTo,
     sex: n.audience.sex,
@@ -154,9 +188,7 @@ export async function prepareCopy(b: Business, accounts: AdAccount[]): Promise<L
   const available = channelsFor(accounts);
   if (!available.length) throw new Error("Подключите хотя бы один рекламный кабинет");
   const { allocation, dropped } = allocate(b.monthlyBudget, available.map((a) => a.channel));
-  const want = { search: false, network: false, vk: false };
-  for (const a of allocation) want[a.channel] = true;
-  const copy: CopyPlan = await generateCopyPlan(b, want);
+  const copy: CopyPlan = await generateCopyPlan(b, copyWants(allocation.map((a) => a.channel)));
 
   const channels: PlanChannel[] = allocation.map((a) => channelFromCopy(b, copy, a.channel, available.find((x) => x.channel === a.channel)!.account, a.weekly));
 
@@ -218,12 +250,13 @@ export async function prepareImages(b: Business, plan: LaunchPlan): Promise<Laun
       const ads: PlanAd[] = [];
       for (const [i, ad] of g.ads.entries()) {
         // Директ: чистое фото и фото с ценником; VK: все макеты по кругу — так тест покажет, что работает
-        const pool: Layout[] = ch.channel === "network"
+        const net = formatOf(ch.channel) === "network";
+        const pool: Layout[] = net
           ? photoIds.length ? (["photo", "tag"] as Layout[]) : layouts
           : layouts.filter((l) => l !== "photo");
         const layout = pool[(i + groups.length) % pool.length] ?? "tag";
         const photoId = photoIds.length ? photoIds[k++ % photoIds.length] : null;
-        const wide = ch.channel === "network" && i % 2 === 1;
+        const wide = net && i % 2 === 1;
         try {
           const img = await makeCreative(b, { layout, photoId, width: 1080, height: wide ? 607 : 1080, headline: svc?.name, price: svc?.price });
           ads.push({ ...ad, imageId: img.id, layout });
@@ -344,7 +377,8 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
 
   const build: BuildProgress = mine ? { groups: {}, failedAds: [], ads: 0, errors: 0, ...(metaOf(mine).build ?? {}) } : { groups: {}, failedAds: [], ads: 0, errors: 0 };
   const imageCache = new Map<string, Awaited<ReturnType<typeof getImage>>>();
-  const logo = ch.channel === "vk" ? await ensureLogo(b).catch(() => null) : null;
+  const vkFormat = formatOf(ch.channel) === "vk";
+  const logo = vkFormat ? await ensureLogo(b).catch(() => null) : null;
   const spec: CampaignSpec = {
     name: `${b.name} — ${CHANNEL_NAME[ch.channel]}`,
     channel: ch.channel,
@@ -353,7 +387,7 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
     startDate: moscowDay(),
     counterId,
     goalId,
-    negativeKeywords: ch.channel === "vk" ? [] : plan.negatives,
+    negativeKeywords: vkFormat || isRetarget(ch.channel) ? [] : plan.negatives,
     siteUrl: withUtm(href, account.platform),
     groups: [],
     tag: launchTag(launchId),
@@ -364,6 +398,17 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
     // Профиль организации (BusinessId, Карты) и расписание показов по часам работы
     spec.orgId = b.orgId ?? null;
     spec.timeTargeting = timeTargeting(b);
+  }
+  // Ретаргетинг: аудитория «были на сайте, но не оставили заявку» (Директ — условие по целям Метрики, VK — сегмент пикселя)
+  let audienceId: string | null = null;
+  if (isRetarget(ch.channel)) {
+    try {
+      audienceId = await ensureAudienceFor(b, account, client, ch.channel);
+    } catch (e) {
+      warnings.push(`${CHANNEL_NAME[ch.channel]}: ${errorText(e)} — канал пропущен`);
+      if (mine) await cleanupCreating([mine], client, warnings);
+      return { state: "skipped" };
+    }
   }
   const svc0 = b.services?.[0];
   const toInput = (img: NonNullable<Awaited<ReturnType<typeof getImage>>>) => ({ imageId: img.id, data: img.data, mime: img.mime, width: img.width, height: img.height, cachedRef: img.platformRefs?.[account.platform] });
@@ -401,13 +446,13 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
         images,
         href: withUtm(href, account.platform),
         image,
-        extras: withPlanCallouts(adExtras(b, { channel: ch.channel, href, service: ch.channel === "search" ? g.name : null, text: ad.text }), plan.callouts),
-        logo: ch.channel === "vk" && logo ? { imageId: logo.id, data: logo.data, mime: logo.mime, width: logo.width, height: logo.height, cachedRef: logo.platformRefs?.[account.platform] } : null,
+        extras: withPlanCallouts(adExtras(b, { channel: formatOf(ch.channel), href, service: ch.channel === "search" ? g.name : null, text: ad.text }), plan.callouts),
+        logo: vkFormat && logo ? { imageId: logo.id, data: logo.data, mime: logo.mime, width: logo.width, height: logo.height, cachedRef: logo.platformRefs?.[account.platform] } : null,
         marking: `${n.label}: ${b.name}`,
       });
     }
     if (!ads.length && !build.groups[g.id]) continue;
-    spec.groups.push({ localId: g.id, name: g.name, keywords: ch.channel === "vk" ? [] : g.keywords, autotargeting: g.autotargeting, regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, ads });
+    spec.groups.push({ localId: g.id, name: g.name, keywords: vkFormat || audienceId ? [] : g.keywords, autotargeting: audienceId ? false : g.autotargeting, regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, retargetingId: audienceId, ads });
   }
   if (!spec.groups.length) {
     warnings.push(`${CHANNEL_NAME[ch.channel]}: нет ни одного объявления с заголовком и текстом — канал пропущен`);
@@ -418,7 +463,13 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
   // Имя на площадке — с меткой запуска: по нему находим свою кампанию, если ID сохранить не успели
   const extName = account.platform === "vk" ? VkAds.planName(spec) : spec.tag ? `${spec.name} #${spec.tag}` : spec.name;
   const campaignId = mine?.id ?? uid("c_");
-  const baseMeta = { ...(mine ? metaOf(mine) : {}), regionIds, launchId, extName, startedAt: (mine ? metaOf(mine).startedAt : null) ?? new Date().toISOString() };
+  const baseMeta: CampaignMeta = { ...(mine ? metaOf(mine) : {}), regionIds, launchId, extName, startedAt: (mine ? metaOf(mine).startedAt : null) ?? new Date().toISOString() };
+  if (isRetarget(ch.channel)) {
+    // Аудиторию считаем с запуска (по часам бизнеса: в демо они промотаны)
+    const since = (mine ? (metaOf(mine).audience as AudienceMeta | undefined)?.since : null) ?? isoDay(await businessNow(b.id));
+    baseMeta.audience = { state: "collecting", need: RETARGET_MIN_AUDIENCE, size: 0, since, at: new Date().toISOString() } satisfies AudienceMeta;
+    baseMeta.audienceId = audienceId;
+  }
   if (!mine) {
     await db.insert(schema.campaigns).values({
       id: campaignId,
@@ -450,7 +501,7 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
       name: g.name,
       audience: g.audience,
       keywords: g.keywords,
-      targeting: { regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, autotargeting: g.autotargeting },
+      targeting: { regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, autotargeting: audienceId ? false : g.autotargeting, ...(audienceId ? { retargetingId: audienceId } : {}) },
     });
     build.groups[localId] = { groupExt, dbId, ads: {} };
     return build.groups[localId];
@@ -516,6 +567,36 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
   return { state: "ready", campaignId, ads: build.ads, errors: build.errors };
 }
 
+/**
+ * Аудитория ретаргетинга на площадке: «были на сайте или странице записи за 30 дней, но не оставили заявку».
+ *  - Директ: цель Метрики «посетил сайт» (создаём, если нет) минус цель «обращение» → RetargetingLists;
+ *  - VK: пиксель бизнеса (его ставит prepareVk при запуске VK) минус событие «заявка» → remarketing/segments;
+ *  - демо: условная аудитория.
+ */
+async function ensureAudienceFor(b: Business, account: AdAccount, client: PlatformClient, channel: Channel): Promise<string> {
+  if (!client.ensureAudience) throw new Error("площадка не умеет собирать аудиторию через API");
+  const name = `${b.name.slice(0, 60)}: были на сайте, без заявки · pz-${b.publicKey}`;
+  if (account.platform === "yandex") {
+    if (!b.counterId || !b.goalIds?.lead) throw new Error("для ретаргетинга нужен счётчик Метрики с целью «обращение», а его настроить не удалось");
+    let visit = b.goalIds.visit;
+    if (!visit) {
+      visit = await ensureVisitGoal(decrypt(account.accessToken), b.counterId, landingUrl(b));
+      const goalIds = { ...(b.goalIds ?? {}), visit };
+      const db = await getDb();
+      await db.update(schema.businesses).set({ goalIds }).where(eq(schema.businesses.id, b.id));
+      b.goalIds = goalIds;
+    }
+    return client.ensureAudience({ name, counterId: b.counterId, visitGoalId: visit, leadGoalId: b.goalIds.lead, days: RETARGET_WINDOW_DAYS });
+  }
+  if (account.platform === "vk") {
+    const pixelId = await vkPixelCounterId(b.id);
+    if (!pixelId) throw new Error("для ретаргетинга нужен пиксель VK на сайте, а создать его не получилось");
+    return client.ensureAudience({ name, pixelId, leadGoal: VK_LEAD_GOAL, days: RETARGET_WINDOW_DAYS });
+  }
+  void channel;
+  return client.ensureAudience({ name, days: RETARGET_WINDOW_DAYS });
+}
+
 /** Ссылку на загруженную картинку сохраняем сразу — повтор запуска не грузит её второй раз */
 async function rememberImageRef(imageId: string, platform: string, ref: string, cache: Map<string, Awaited<ReturnType<typeof getImage>>>) {
   const db = await getDb();
@@ -539,7 +620,12 @@ async function activateLaunch(b: Business, launchId: string, warnings: string[],
   const ready = all.filter((c) => c.status === "ready" && metaOf(c).launchId === launchId);
   const live = all.filter((c) => c.status !== "ready");
   const channels = [...new Set([...ready, ...live].map((c) => c.channel as Channel))];
-  const { allocation, dropped } = allocate(b.monthlyBudget, channels);
+  // Ретаргетинг, который ещё копит аудиторию, не тратит: его доля остаётся работающим каналам, пока он не включится
+  // (включает его робот — engine/retarget.ts — и тогда же делит бюджет заново). Здесь его доля нужна только как план.
+  const waitingLive = live.filter((c) => waitingAudience(c));
+  const full = allocate(b.monthlyBudget, channels);
+  const runChannels = channels.filter((ch) => !isRetarget(ch) || live.some((c) => c.channel === ch && !waitingLive.includes(c)));
+  const { allocation, dropped } = runChannels.length ? allocate(b.monthlyBudget, runChannels) : full;
   const clients = new Map<string, PlatformClient>();
   const clientOf = async (c: Campaign) => {
     if (!clients.has(c.accountId)) {
@@ -553,7 +639,7 @@ async function activateLaunch(b: Business, launchId: string, warnings: string[],
   if (opts.rebudgetLive) {
     // Сначала уменьшаем лимиты работающих кампаний, потом включаем новую — чтобы сумма не выходила за бюджет
     const ops: UndoOp[] = [];
-    for (const c of live) {
+    for (const c of live.filter((x) => !waitingLive.includes(x))) {
       const a = allocation.find((x) => x.channel === c.channel);
       if (a && a.weekly < c.weeklyBudget) ops.push({ op: "campaignBudget", campaignId: c.id, weeklyBudget: a.weekly });
     }
@@ -570,6 +656,20 @@ async function activateLaunch(b: Business, launchId: string, warnings: string[],
   let retry = false;
   for (const c of ready) {
     const client = await clientOf(c).catch(() => null);
+    if (isRetarget(c.channel)) {
+      // Ретаргетинг создан выключенным и ждёт аудиторию. Доля — по полной раскладке; не помещается — убираем
+      const plan = full.allocation.find((x) => x.channel === c.channel);
+      if (full.dropped.includes(c.channel as Channel) || !plan) {
+        warnings.push(`Канал «${CHANNEL_NAME[c.channel]}» не включили: при бюджете ${rub(b.monthlyBudget)} в месяц на него не хватает минимума площадки`);
+        await cleanupCreating([c], client, warnings);
+        continue;
+      }
+      const meta: CampaignMeta = { ...metaOf(c), launchedAt: new Date().toISOString(), pausedBy: "robot", pausedByGuard: null };
+      delete meta.build;
+      await db.update(schema.campaigns).set({ status: "paused", statusNote: null, weeklyBudget: plan.weekly, meta }).where(eq(schema.campaigns.id, c.id));
+      activated.push({ ...c, status: "paused", weeklyBudget: plan.weekly, meta });
+      continue;
+    }
     const a = allocation.find((x) => x.channel === c.channel);
     if (dropped.includes(c.channel as Channel) || !a) {
       warnings.push(`Канал «${CHANNEL_NAME[c.channel]}» не включили: при бюджете ${rub(b.monthlyBudget)} в месяц на него не хватает минимума площадки`);
@@ -706,13 +806,18 @@ export async function publishStep(b: Business, plan: LaunchPlan, accounts: AdAcc
 
 async function logLaunch(businessId: string, created: { channel: Channel; campaignId: string; ads: number; errors: number }[], camps: Campaign[], warnings: string[]) {
   const total = created.reduce((s, c) => s + c.ads, 0);
-  const weekly = camps.reduce((s, c) => s + c.weeklyBudget, 0);
+  // Ретаргетинг стоит, пока копит аудиторию, — в недельный расход не входит
+  const waiting = camps.filter((c) => waitingAudience(c));
+  const weekly = camps.filter((c) => !waiting.includes(c)).reduce((s, c) => s + c.weeklyBudget, 0);
+  const waitNote = waiting.length
+    ? ` ${waiting.map((c) => `«${CHANNEL_NAME[c.channel]}»`).join(" и ")} ${waiting.length === 1 ? "включится" : "включатся"} сам${waiting.length === 1 ? "" : "и"}, когда наберётся ${RETARGET_MIN_AUDIENCE} человек, которые были на сайте, но не записались, — тогда робот выделит ${waiting.length === 1 ? "ему" : "им"} около ${rub(waiting.reduce((s, c) => s + c.weeklyBudget, 0))} в неделю из общего бюджета.`
+    : "";
   await logChange({
     businessId,
     actor: "owner",
     kind: "launch",
     title: `Запустили рекламу: ${created.map((c) => CHANNEL_NAME[c.channel]).join(", ")}`,
-    reason: `Создали ${pl(total, "объявление", "объявления", "объявлений")} в ${pl(created.length, "канале", "каналах", "каналах")} с бюджетом около ${rub(weekly)} в неделю. Объявления проходят модерацию — обычно это занимает от пары часов до суток. Первые выводы робот сделает через 3 дня, когда накопятся показы.`,
+    reason: `Создали ${pl(total, "объявление", "объявления", "объявлений")} в ${pl(created.length, "канале", "каналах", "каналах")} с бюджетом около ${rub(weekly)} в неделю. Объявления проходят модерацию — обычно это занимает от пары часов до суток. Первые выводы робот сделает через 3 дня, когда накопятся показы.${waitNote}`,
     details: { created, warnings },
     undo: created.map((c) => ({ op: "campaignStatus" as const, campaignId: c.campaignId, status: "paused" as const })),
   });
@@ -788,9 +893,7 @@ export async function addChannelStep(b: Business, accounts: AdAccount[], channel
       const min = minMonthlyWith(liveChannels, channel);
       throw Object.assign(new Error(`На канал «${CHANNEL_NAME[channel]}» не хватает бюджета${min ? `: нужно от ${rub(min)} в месяц` : ""}. Увеличьте бюджет и попробуйте снова.`), { status: 409 });
     }
-    const want = { search: false, network: false, vk: false };
-    want[channel] = true;
-    const copy = await generateCopyPlan(b, want);
+    const copy = await generateCopyPlan(b, copyWants([channel]));
     const weekly = allocation.find((a) => a.channel === channel)!.weekly;
     const plan: LaunchPlan = {
       createdAt: new Date().toISOString(),

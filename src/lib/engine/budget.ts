@@ -7,6 +7,9 @@ export const MIN_WEEKLY: Record<Channel, number> = {
   // Дневной бюджет VK — от 100 ₽ без НДС. Лимит уходит в VK за вычетом НДС (÷1,22), а расход считаем с НДС,
   // поэтому минимум — 100 × 1,22 = 122 ₽ в день, 854 ₽ в неделю
   vk: 854,
+  // Ретаргетинг — отдельные кампании с теми же минимумами площадок
+  retarget_yandex: 370,
+  retarget_vk: 854,
 };
 
 export const WEEKS_IN_MONTH = 30.4 / 7;
@@ -17,10 +20,12 @@ export const MAX_MONTHLY = 5_000_000;
 export const weeklyFromMonthly = (m: number) => Math.floor(m / WEEKS_IN_MONTH);
 
 // Доли по умолчанию: поиск ловит готовый спрос и обычно даёт самых дешёвых клиентов для услуг «рядом»,
-// картинки в РСЯ и VK — охват и узнаваемость, часть бюджета на проверку гипотез
-const WEIGHTS: Record<Channel, number> = { search: 0.5, network: 0.25, vk: 0.25 };
+// картинки в РСЯ и VK — охват и узнаваемость, часть бюджета на проверку гипотез.
+// Ретаргетинг — небольшая доля (≈ 6 % на площадку, 10–12 % вместе): аудитория «были, но не записались» маленькая,
+// и больше она не потратит. Он последний по важности — при нехватке бюджета отключается первым.
+const WEIGHTS: Record<Channel, number> = { search: 0.5, network: 0.25, vk: 0.25, retarget_yandex: 0.07, retarget_vk: 0.07 };
 /** Порядок важности каналов: при нехватке бюджета первым отключаем последний */
-export const PRIORITY: Channel[] = ["search", "network", "vk"];
+export const PRIORITY: Channel[] = ["search", "network", "vk", "retarget_yandex", "retarget_vk"];
 
 export type Allocation = { channel: Channel; weekly: number; share: number }[];
 

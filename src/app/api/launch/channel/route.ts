@@ -4,6 +4,7 @@ import { getDb, schema } from "@/lib/db";
 import { accountsFor, addableChannels, addChannelStep, PUBLISH_BUDGET_MS } from "@/lib/engine/launch";
 import { LAUNCH_LOCK, LAUNCH_LOCK_MS, releaseLock, runBusiness, tryLock } from "@/lib/engine/run";
 import type { Channel } from "@/lib/platforms/types";
+import { CHANNELS } from "@/lib/channels";
 
 /**
  * Добавить канал к работающей рекламе (например, VK после увеличения бюджета).
@@ -12,7 +13,7 @@ import type { Channel } from "@/lib/platforms/types";
  *   stage copy → images → publish → done. 409 — не хватает бюджета (в тексте — сколько нужно) или идёт другой запуск.
  */
 export const maxDuration = 60;
-const CHANNELS: Channel[] = ["search", "network", "vk"];
+
 
 export const GET = route(async ({ user, business }) => {
   needBusiness(business);

@@ -6,6 +6,7 @@ import { demoNow } from "../platforms/demo";
 import { addDays, isoDay, startOfWeek } from "../util";
 import { firstDays, learningLeft as learningLeftFor, LEARN_LOOKBACK_DAYS, LEARNING_DAYS } from "./budget-learning";
 import { pausedForBudget } from "./budget-guard";
+import { audienceMeta, isRetarget } from "../channels";
 
 /**
  * Цифры для владельца. Правила, общие для «Главного», «Статистики» и «Рекламы»:
@@ -41,7 +42,7 @@ export type Totals = {
 export type DayPoint = { day: string; cost: number; leads: number; clicks: number; other: number };
 
 const AD_SOURCES = new Set(["yandex", "vk", "demo"]);
-const CHANNEL_ORDER = ["search", "network", "vk", "unknown"];
+const CHANNEL_ORDER = ["search", "network", "vk", "retarget_yandex", "retarget_vk", "unknown"];
 
 const zero = (): Totals => ({ impressions: 0, clicks: 0, cost: 0, leads: 0, clients: 0, clientsEstimated: false, otherLeads: 0, otherClients: 0, adMarked: 0, adBooked: 0 });
 
@@ -299,8 +300,8 @@ export { LEARNING_DAYS };
 const PAUSE_KINDS = new Set(["pause", "resume", "revert"]);
 
 export type CampaignState = {
-  /** почему стоит (null — идёт) */
-  stopped: null | "guard" | "owner" | "robot" | "error";
+  /** почему стоит (null — идёт); audience — ретаргетинг копит аудиторию и включится сам */
+  stopped: null | "guard" | "owner" | "robot" | "error" | "audience";
   stoppedAt?: Date;
   note?: string | null;
   /** пауза пришла вместе с другим изменением (например, со снижением бюджета) — его заголовок */
@@ -328,6 +329,10 @@ export async function campaignStates(b: Business, camps: Campaign[], now: Date):
     }
     if (c.status !== "paused") {
       out.set(c.id, { stopped: null, learningLeft });
+      continue;
+    }
+    if (isRetarget(c.channel) && audienceMeta(c)?.state === "collecting") {
+      out.set(c.id, { stopped: "audience", note: audienceMeta(c)?.note ?? null, learningLeft: 0 });
       continue;
     }
     const mine = changes.filter((ch) => !ch.revertedAt && (ch.undo ?? []).some((u) => "campaignId" in u && u.campaignId === c.id));

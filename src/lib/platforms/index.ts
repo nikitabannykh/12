@@ -7,6 +7,7 @@ import { YandexDirect, yandexRefresh } from "./yandex";
 import { VkAds } from "./vk";
 import { DemoPlatform } from "./demo";
 import type { PlatformClient } from "./types";
+import { CHANNEL_INFO } from "../channels";
 
 export async function clientFor(account: AdAccount): Promise<PlatformClient> {
   const db = await getDb();
@@ -54,14 +55,6 @@ export const PLATFORM_NAME: Record<string, string> = {
   demo: "Демо-кабинет",
 };
 
-export const CHANNEL_NAME: Record<string, string> = {
-  search: "Поиск Яндекса",
-  network: "Сайты и приложения (РСЯ)",
-  vk: "ВКонтакте и Одноклассники",
-};
+export const CHANNEL_NAME: Record<string, string> = Object.fromEntries(Object.entries(CHANNEL_INFO).map(([k, v]) => [k, v.name]));
 
-export const CHANNEL_HINT: Record<string, string> = {
-  search: "Показываем тем, кто прямо сейчас ищет услугу в Яндексе",
-  network: "Показываем картинку тем, кто недавно интересовался услугой, — на сайтах, в Дзене и приложениях",
-  vk: "Показываем в ленте ВКонтакте и Одноклассников людям рядом с вами",
-};
+export const CHANNEL_HINT: Record<string, string> = Object.fromEntries(Object.entries(CHANNEL_INFO).map(([k, v]) => [k, v.hint]));

@@ -9,12 +9,17 @@ import { adExtras, responsiveAssets, withPlanCallouts, type ExtrasBiz } from "@/
 import { allocate, forecast, minMonthlyFor } from "@/lib/engine/budget";
 import type { LaunchPlan, PlanAd, PublishStep } from "@/lib/engine/launch";
 import type { Channel } from "@/lib/platforms/types";
+import { CHANNEL_INFO, formatOf, isRetarget, RETARGET_MIN_AUDIENCE, TYPE_INFO, type AdFormat } from "@/lib/channels";
+import { TypeBadge } from "./CampaignNav";
 
 const CH: Record<Channel, { name: string; hint: string }> = {
   search: { name: "Поиск Яндекса", hint: "Тем, кто прямо сейчас ищет услугу" },
   network: { name: "Сайты и приложения (РСЯ)", hint: "Картинки тем, кто недавно интересовался" },
   vk: { name: "ВКонтакте и Одноклассники", hint: "Лента соцсетей, люди рядом с вами" },
+  retarget_yandex: { name: "Ретаргетинг в Яндексе", hint: "Возвращаем тех, кто был на сайте и не записался" },
+  retarget_vk: { name: "Ретаргетинг ВКонтакте", hint: "Напоминаем в ленте тем, кто уже заходил" },
 };
+const RETARGET_NOTE = `Включится сам, когда наберётся ${RETARGET_MIN_AUDIENCE} человек, которые были на сайте, но не записались. До этого его доля работает в остальных каналах`;
 const PLATFORM: Record<string, string> = { yandex: "Яндекс Директ", vk: "VK Реклама", demo: "Демо-кабинет" };
 const rub = (n: number) => new Intl.NumberFormat("ru-RU").format(Math.round(n)) + " ₽";
 function plural(n: number, one: string, few: string, many: string) {
@@ -83,8 +88,12 @@ export function LaunchWizard(p: Props) {
   const usable = real.length ? real.filter((a) => a.status === "ok") : p.accounts;
   const channels: Channel[] = useMemo(() => {
     const out: Channel[] = [];
-    if (usable.some((a) => a.platform === "yandex" || a.platform === "demo")) out.push("search", "network");
-    if (usable.some((a) => a.platform === "vk" || a.platform === "demo")) out.push("vk");
+    const ya = usable.some((a) => a.platform === "yandex" || a.platform === "demo");
+    const vk = usable.some((a) => a.platform === "vk" || a.platform === "demo");
+    if (ya) out.push("search", "network");
+    if (vk) out.push("vk");
+    if (ya) out.push("retarget_yandex");
+    if (vk) out.push("retarget_vk");
     return out;
   }, [usable]);
   // Если в плане канал выключен, его доля уходит оставшимся — показываем ту же раскладку, что получит запуск
@@ -271,17 +280,18 @@ export function LaunchWizard(p: Props) {
             />
             <div className="mt-4 grid gap-2">
               {alloc.allocation.map((a) => (
-                <div key={a.channel} className="flex items-center gap-3 text-sm">
-                  <div className="w-48 sm:w-56 shrink-0">
-                    <div className="font-semibold">{CH[a.channel].name}</div>
+                <div key={a.channel} className="grid grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[14rem_minmax(0,1fr)_6rem] items-center gap-x-3 gap-y-1 text-sm">
+                  <div className="min-w-0">
+                    <div className="font-semibold flex flex-wrap items-center gap-1.5">{CH[a.channel].name} <TypeBadge type={CHANNEL_INFO[a.channel].type} /></div>
                     <div className="text-muted text-xs">{CH[a.channel].hint}</div>
                   </div>
-                  <div className="flex-1 h-2.5 rounded-full bg-paper overflow-hidden"><div className="h-full bg-ink" style={{ width: `${a.share * 100}%` }} /></div>
-                  <div className="w-24 text-right font-semibold">{rub(a.weekly)}/нед</div>
+                  <div className="col-span-2 sm:col-span-1 sm:col-start-2 row-start-2 sm:row-start-1 h-2.5 rounded-full bg-paper overflow-hidden"><div className={`h-full ${isRetarget(a.channel) ? "bg-good/70" : "bg-ink"}`} style={{ width: `${a.share * 100}%` }} /></div>
+                  <div className="text-right font-semibold whitespace-nowrap row-start-1 col-start-2 sm:col-start-3">{rub(a.weekly)}/нед</div>
+                  {isRetarget(a.channel) ? <div className="col-span-2 sm:col-span-3 text-xs text-good">{RETARGET_NOTE}.</div> : null}
                 </div>
               ))}
               {alloc.dropped.map((d) => (
-                <div key={d} className="text-sm text-warn">«{CH[d].name}» — не хватает бюджета, начнём без этого канала.</div>
+                <div key={d} className="text-sm text-warn">«{CH[d].name}» — {isRetarget(d) ? "на минимум площадки не хватает бюджета, ретаргетинг добавится при бюджете побольше." : "не хватает бюджета, начнём без этого канала."}</div>
               ))}
             </div>
           </div>
@@ -338,8 +348,9 @@ export function LaunchWizard(p: Props) {
               <div key={ch.channel}>
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2">
                   <div>
-                    <div className="font-bold text-lg">{CH[ch.channel].name}</div>
-                    <div className="text-sm text-muted">{PLATFORM[ch.platform]} · {rub(ch.weekly)} в неделю · {CH[ch.channel].hint.toLowerCase()}</div>
+                    <div className="font-bold text-lg flex flex-wrap items-center gap-2">{CH[ch.channel].name} <TypeBadge type={CHANNEL_INFO[ch.channel].type} /></div>
+                    <div className="text-sm text-muted">{PLATFORM[ch.platform]} · {rub(ch.weekly)} в неделю · {TYPE_INFO[CHANNEL_INFO[ch.channel].type].label} — {TYPE_INFO[CHANNEL_INFO[ch.channel].type].purpose}</div>
+                    {isRetarget(ch.channel) ? <div className="text-sm text-good mt-1">{RETARGET_NOTE}.</div> : null}
                   </div>
                   <label className="flex items-center gap-2 text-sm font-semibold">
                     {ch.enabled ? "Включён" : "Выключен"}
@@ -350,7 +361,7 @@ export function LaunchWizard(p: Props) {
                   <div key={g.id} className="mt-4">
                     <div className="font-semibold">{g.name}</div>
                     <div className="text-sm text-muted">{g.audience}</div>
-                    {ch.channel !== "vk" && g.ads.filter((a) => a.enabled).length > 3 ? (
+                    {formatOf(ch.channel) !== "vk" && g.ads.filter((a) => a.enabled).length > 3 ? (
                       <div className="text-sm text-warn mt-1">В группе Директа может работать не больше 3 объявлений — оставьте включёнными три, остальные не отправим.</div>
                     ) : null}
                     {g.keywords.length && ch.channel === "search" ? (
@@ -361,13 +372,13 @@ export function LaunchWizard(p: Props) {
                     ) : null}
                     <div className={`mt-3 grid gap-3 ${ch.channel === "search" ? "md:grid-cols-2" : "sm:grid-cols-2 lg:grid-cols-3"}`}>
                       {g.ads.map((ad) => (
-                        <div key={ad.id} className={`relative ${ad.enabled ? "" : "opacity-45"}`}>
+                        <div key={ad.id} className={`relative min-w-0 ${ad.enabled ? "" : "opacity-45"}`}>
                           {ch.channel === "search" ? (
                             <SearchAdPreview title={ad.title} title2={ad.title2} text={ad.text} host={p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={withPlanCallouts(adExtras(p.biz, { channel: "search", href: p.href, service: g.name, text: ad.text }), plan?.callouts ?? p.callouts)} />
                           ) : (
-                            <ImageAdPreview channel={ch.channel} title={ad.title} text={ad.text} host={ch.channel === "vk" ? p.business.name : p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={adExtras(p.biz, { channel: ch.channel, href: p.href, text: ad.text })} logo={p.logo} />
+                            <ImageAdPreview channel={formatOf(ch.channel) === "vk" ? "vk" : "network"} title={ad.title} text={ad.text} host={formatOf(ch.channel) === "vk" ? p.business.name : p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={adExtras(p.biz, { channel: formatOf(ch.channel), href: p.href, text: ad.text })} logo={p.logo} />
                           )}
-                          {ch.channel !== "vk" && ch.platform !== "vk" ? (() => {
+                          {formatOf(ch.channel) !== "vk" && ch.platform !== "vk" ? (() => {
                             const ra = responsiveAssets(p.biz, ad, { service: ch.channel === "search" ? g.name : null });
                             return <ResponsiveAssets titles={ra.titles} texts={ra.texts} className="mt-1.5" />;
                           })() : null}
@@ -399,6 +410,9 @@ export function LaunchWizard(p: Props) {
       <Step n={5} title="Запуск" done={false} active={ready}>
         <ul className="grid gap-2 text-[0.95rem]">
           <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> {enabledAds} {plural(enabledAds, "объявление", "объявления", "объявлений")} в {enabledChannels} {plural(enabledChannels, "канале", "каналах", "каналах")} {enabledAds === 1 ? "уйдёт" : "уйдут"} на модерацию — обычно это занимает несколько часов.</li>
+          {plan?.channels.some((c) => c.enabled && isRetarget(c.channel)) ? (
+            <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> Ретаргетинг создадим сразу, но показы он начнёт сам — когда наберётся {RETARGET_MIN_AUDIENCE} человек, которые были на сайте и не записались. До этого деньги на него не тратятся.</li>
+          ) : null}
           <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> Первые 3 дня робот только наблюдает и копит статистику. Потом начнёт отключать слабое и тестировать новое.</li>
           <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" />
             {p.business.siteUrl ? <span>Чтобы считать обращения, вставьте код счётчика на сайт — он появится в «Настройках» сразу после запуска.</span> : <span>Объявления будут вести на вашу страницу записи — обращения с неё считаются автоматически.</span>}
@@ -436,7 +450,7 @@ export function LaunchWizard(p: Props) {
 }
 
 const ANGLE: Record<string, string> = { price: "цена", offer: "предложение новым клиентам", proof: "доверие", convenience: "удобство", result: "результат", emotion: "эмоция" };
-const LIM: Record<Channel, { title: number; title2: number; text: number }> = { search: { title: 56, title2: 30, text: 81 }, network: { title: 40, title2: 30, text: 81 }, vk: { title: 40, title2: 30, text: 90 } };
+const LIM: Record<AdFormat, { title: number; title2: number; text: number }> = { search: { title: 56, title2: 30, text: 81 }, network: { title: 40, title2: 30, text: 81 }, vk: { title: 40, title2: 30, text: 90 } };
 
 export function EditAdModal({ edit, onClose, onSave }: { edit: { ad: { title: string; title2?: string | null; text: string }; channel: Channel } | null; onClose: () => void; onSave: (v: { title: string; title2: string; text: string }) => Promise<void> }) {
   const [v, setV] = useState({ title: "", title2: "", text: "" });
@@ -447,7 +461,7 @@ export function EditAdModal({ edit, onClose, onSave }: { edit: { ad: { title: st
     setLastKey(key);
     setV({ title: edit.ad.title, title2: edit.ad.title2 ?? "", text: edit.ad.text });
   }
-  const L = edit ? LIM[edit.channel] : LIM.search;
+  const L = edit ? LIM[formatOf(edit.channel)] : LIM.search;
   const counter = (s: string, max: number) => <span className={`text-xs ${s.length > max ? "text-bad" : "text-faint"}`}>{s.length}/{max}</span>;
   return (
     <Modal open={!!edit} onClose={onClose} title="Текст объявления">

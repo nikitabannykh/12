@@ -5,6 +5,7 @@ import type { AuctionRow, AdLimits, AdSpec, AdState, CampaignSpec, Channel, Grou
 import { PlatformError } from "./types";
 import { getDb, schema } from "../db";
 import { addDays, isoDay, pl, uid } from "../util";
+import { formatOf, isRetarget } from "../channels";
 
 /**
  * Демо-площадка: ведёт себя как рекламный кабинет, но показы, клики и заявки моделируются.
@@ -18,6 +19,8 @@ type DemoCampaign = {
   /** Создана, но запуск ещё не завершён — как черновик Директа / заблокированный план VK: не показывается и не тратит */
   pending?: boolean;
   name?: string;
+  /** Ретаргетинг: не «стартует» задним числом, а начинает работать в день включения (когда набралась аудитория) */
+  retarget?: boolean;
 };
 
 /**
@@ -126,7 +129,7 @@ export async function shiftDemoClock(days: number, scope?: DemoScope) {
 
 /** Как в Директе: в группе до 3 неархивных комбинаторных объявлений и до 10 вместе с архивными (поиск и РСЯ) */
 const DEMO_DIRECT_LIMITS: AdLimits = { nonArchived: 3, total: 10 };
-const limitsFor = (channel: Channel | undefined) => (channel === "vk" ? null : DEMO_DIRECT_LIMITS);
+const limitsFor = (channel: Channel | undefined) => (channel && formatOf(channel) === "vk" ? null : DEMO_DIRECT_LIMITS);
 
 const BAD_WORDS = ["бесплатно", "вакансии", "обучение", "своими руками", "курсы", "работа", "дома самой", "как сделать", "отзывы сотрудников", "игра"];
 
@@ -186,19 +189,22 @@ export class DemoPlatform implements PlatformClient {
     await shiftDemoClock(0, { accountId: this.accountId });
     const s = await this.load();
     const now = await this.now();
-    const day = isoDay(addDays(now, -DEMO_BACKFILL_DAYS));
+    const retarget = isRetarget(spec.channel);
+    const day = isoDay(retarget ? now : addDays(now, -DEMO_BACKFILL_DAYS));
     const name = spec.tag ? `${spec.name} #${spec.tag}` : spec.name;
     // Повтор прерванной попытки: кампания с тем же именем уже есть — используем её
     const existing = spec.resume?.campaignExt ?? Object.entries(s.campaigns).find(([, c]) => c.name === name && c.pending)?.[0] ?? null;
     const campaignExt = existing && s.campaigns[existing] ? existing : this.id(s);
     if (!s.campaigns[campaignExt]) {
-      s.campaigns[campaignExt] = { channel: spec.channel, budgets: [{ from: day, weekly: spec.weeklyBudget }], intervals: [{ from: day, to: null }], negatives: [...spec.negativeKeywords], created: day, pending: true, name };
+      s.campaigns[campaignExt] = { channel: spec.channel, budgets: [{ from: day, weekly: spec.weeklyBudget }], intervals: [{ from: day, to: null }], negatives: [...spec.negativeKeywords], created: day, pending: true, name, ...(retarget ? { retarget: true } : {}) };
       await this.save(s);
     }
     await hooks?.onCampaignCreated?.(campaignExt);
     const out: LaunchResult = {
       campaignExt, groups: [], complete: true,
-      warnings: [`Демо-кабинет: чтобы отчёты и решения робота были видны сразу, кампания «работает» с ${day} — статистика за ${pl(DEMO_BACKFILL_DAYS, "день", "дня", "дней")} до запуска смоделирована`],
+      warnings: retarget
+        ? []
+        : [`Демо-кабинет: чтобы отчёты и решения робота были видны сразу, кампания «работает» с ${day} — статистика за ${pl(DEMO_BACKFILL_DAYS, "день", "дня", "дней")} до запуска смоделирована`],
     };
     const lim = limitsFor(spec.channel);
     for (const g of spec.groups) {
@@ -223,8 +229,20 @@ export class DemoPlatform implements PlatformClient {
     const c = s.campaigns[campaignExt];
     if (c?.pending) {
       delete c.pending;
+      if (c.retarget) {
+        // Ретаргетинг включился, когда набралась аудитория: показы — с сегодняшнего дня, без истории «задним числом»
+        const day = isoDay(await this.now());
+        c.intervals = [{ from: day, to: null }];
+        c.budgets = [{ from: day, weekly: c.budgets[c.budgets.length - 1]?.weekly ?? 0 }];
+        for (const a of Object.values(s.ads)) if (a.campaign === campaignExt && a.status !== "rejected") a.intervals = [{ from: day, to: null }];
+      }
       await this.save(s);
     }
+  }
+
+  /** Условная аудитория «были на сайте, но не оставили заявку» — её размер робот оценивает по статистике демо */
+  async ensureAudience(a: { name: string }) {
+    return `demo-aud-${createHash("sha256").update(this.accountId + a.name).digest("hex").slice(0, 8)}`;
   }
 
   async findCampaignByName(name: string) {
@@ -412,6 +430,20 @@ export class DemoPlatform implements PlatformClient {
             for (let k = 0; k < clicks; k++) if (r() < cr) conversions++;
             const tv = Math.max(1, Math.min(100, t.tv + Math.round((r() - 0.5) * 8)));
             out.push({ campaignExt: cExt, adExt: id, day, impressions, clicks, cost: Math.round(clicks * cpc * 100) / 100, conversions, trafficVolume: tv, position: t.pos + Math.round((r() - 0.5) * 40) / 100 });
+            return;
+          }
+          if (isRetarget(c.channel)) {
+            // Ретаргетинг: «тёплая» маленькая аудитория — клик дешевле, кликают и записываются чаще, но людей немного,
+            // поэтому лимит обычно не выбирается целиком
+            const cpc = (c.channel === "retarget_yandex" ? 10 : 13) * (0.85 + r() * 0.3) / Math.sqrt(a.quality);
+            const reach = (c.channel === "retarget_yandex" ? 9 : 6) * (0.7 + r() * 0.6) * (weights[i] / wsum) * live.length;
+            const clicks = Math.max(0, Math.min(Math.round(spend / cpc), Math.round(reach)));
+            const ctr = 0.018 * a.quality * (0.85 + r() * 0.3);
+            const impressions = Math.round(clicks / Math.max(ctr, 0.0005)) + Math.round(r() * 15);
+            const cr = 0.075 * a.quality;
+            let conversions = 0;
+            for (let k = 0; k < clicks; k++) if (r() < cr) conversions++;
+            out.push({ campaignExt: cExt, adExt: id, day, impressions, clicks, cost: Math.round(clicks * cpc * 100) / 100, conversions });
             return;
           }
           const baseCpc = c.channel === "network" ? 13 : 17;

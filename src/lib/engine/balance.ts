@@ -14,7 +14,8 @@ import { addDays, appUrl, errorText, isoDay, pl, rub } from "../util";
  *    POST https://api.direct.yandex.ru/live/v4/json/ { method: "AccountManagement", param: { Action: "Get" }, token }
  *    → data.Accounts[].Amount / Currency. https://yandex.ru/dev/direct/doc/dg-v4/ru/live/AccountManagement_Get
  *  - VK Реклама: GET /api/v2/user.json → account.balance (строка с суммой) [проверить на реальном кабинете].
- *  - Демо: остаток моделируем — владелец «пополняет» кабинет порциями по трети месячного бюджета.
+ *  - Демо: остаток моделируем — владелец пополняет кабинет заранее (автопополнение), поэтому в демо деньги
+ *    не кончаются и предупреждений о балансе нет.
  * В демо считаем на каждой проверке, у настоящих площадок — не чаще раза в 3 часа.
  * Суммы сравниваем с расходом с НДС (как в статистике). Если площадка отдаёт остаток без НДС,
  * дней получится чуть меньше настоящего — предупредим раньше, а не позже.
@@ -80,12 +81,20 @@ async function vkBalance(acc: AdAccount): Promise<{ amount: number | null; curre
   return { amount, currency: u?.account?.currency ?? u?.currency ?? "RUB" };
 }
 
-/** Демо: владелец пополняет кабинет порциями по трети месячного бюджета, когда деньги кончаются */
-function demoBalance(b: Business, spentTotal: number) {
-  const topup = Math.max(3000, Math.round(b.monthlyBudget / 3 / 100) * 100);
-  if (spentTotal <= 0) return topup;
-  const paid = Math.ceil(spentTotal / topup) * topup;
-  return Math.max(0, paid - spentTotal);
+/**
+ * Демо: в кабинете включено автопополнение — как только остатка хватает меньше чем на неделю,
+ * владелец докладывает порцию (треть месячного бюджета, но не меньше двух недель расхода).
+ * Поэтому остаток всегда больше порога предупреждения: демо не пугает «кончились деньги», которых нет.
+ */
+export function demoBalance(b: Business, spentTotal: number, dailySpend = 0) {
+  const topup = Math.max(3000, Math.round(b.monthlyBudget / 3 / 100) * 100, Math.ceil((dailySpend * 14) / 100) * 100);
+  const spent = Math.max(0, spentTotal);
+  const reserve = Math.max(dailySpend * 7, (LOW_DAYS + 1) * dailySpend);
+  let left = Math.ceil(spent / topup) * topup - spent;
+  if (spent <= 0) left = topup;
+  // Порция ≥ 14 дней расхода, так что хватает одной-двух итераций
+  for (let i = 0; i < 4 && left <= reserve; i++) left += topup;
+  return Math.round(left);
 }
 
 /** Проверить балансы кабинетов, где у бизнеса есть кампании; сохранить и предупредить владельца в Telegram */
@@ -118,7 +127,7 @@ export async function checkBalances(b: Business, opts: { force?: boolean } = {})
       let got: { amount: number | null; currency: string; note?: string };
       if (demo) {
         const total = rows.filter((r) => String(r.day) <= isoDay(now)).reduce((s, r) => s + r.cost, 0);
-        got = { amount: demoBalance(b, total), currency: "RUB" };
+        got = { amount: demoBalance(b, total, dailySpend), currency: "RUB" };
       } else if (acc.platform === "yandex") got = await yandexBalance(acc);
       else if (acc.platform === "vk") got = await vkBalance(acc);
       else continue;
@@ -127,7 +136,7 @@ export async function checkBalances(b: Business, opts: { force?: boolean } = {})
       const bal: Balance = { accountId: acc.id, platform: acc.platform, login: acc.login, amount: got.amount, currency: got.currency, dailySpend: Math.round(dailySpend), daysLeft, at: new Date().toISOString(), note: got.note ?? null, demo };
       await kvSet(`balance:${acc.id}`, bal);
       balances.push(bal);
-      if (live && daysLeft !== null && daysLeft <= LOW_DAYS) await alertLow(b, bal).catch((e) => errors.push(`предупреждение о балансе: ${errorText(e)}`));
+      if (!demo && live && daysLeft !== null && daysLeft <= LOW_DAYS) await alertLow(b, bal).catch((e) => errors.push(`предупреждение о балансе: ${errorText(e)}`));
     } catch (e) {
       errors.push(`баланс ${PLATFORM_NAME[acc.platform] ?? acc.platform}: ${errorText(e)}`);
       if (prev) balances.push(prev);

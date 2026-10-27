@@ -445,14 +445,20 @@ export function responsiveAssets(b: ExtrasBiz, ad: { title: string; title2?: str
   const svcRow = (o.service && services.find((s) => s.name === o.service)) || null;
   const svc = clean(svcRow?.name ?? o.service ?? services[0]?.name ?? "") || (nicheById(b.niche).id === "other" ? clean(b.name) : nicheById(b.niche).generic);
   const priceRaw = clean((svcRow ?? (o.service ? null : services[0]))?.price ?? "");
-  const p = priceRaw ? (/₽|руб/i.test(priceRaw) ? priceRaw : `${priceRaw} ₽`) : null;
+  // «1900» → «1 900 ₽», «от 1900р» → «от 1 900 ₽» (как в объявлениях из шаблонов)
+  const p = priceRaw
+    ? priceRaw
+        .replace(/\s*(р\.?|руб\.?|рублей|₽)\s*$/i, "")
+        .replace(/\d[\d\s]*\d|\d/g, (m) => new Intl.NumberFormat("ru-RU").format(Number(m.replace(/\s/g, ""))).replace(/[\u00a0\u202f]/g, " ")) + " ₽"
+    : null;
   const name = clean(b.name);
   const street = b.address ? clean(b.address.split(/[,—–]/)[0]) : null;
   const where = street ? `${b.city}, ${street}` : b.city;
   const adv = (b.advantages ?? []).map(withoutSuperlatives).filter(Boolean);
   const offer = b.offer ? withoutSuperlatives(b.offer) : null;
   const hours = clean(b.hours ?? "") || null;
-  const low = (s: string) => (/^\p{Lu}{2}/u.test(s) ? s : s.charAt(0).toLowerCase() + s.slice(1));
+  // Со строчной — только обычные слова: название бизнеса и аббревиатуры оставляем как у владельца
+  const low = (s: string) => (/^\p{Lu}{2}/u.test(s) || s.startsWith(name) || (name && s.toLowerCase().startsWith(name.toLowerCase())) ? s : s.charAt(0).toLowerCase() + s.slice(1));
   const okWords = (s: string, max: number) => s.split(/\s+/).every((w) => w.length <= max);
   const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 

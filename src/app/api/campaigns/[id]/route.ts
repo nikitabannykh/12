@@ -1,7 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
-import { act, applyBudgetTrims, assertFitsBudget } from "@/lib/engine/ops";
+import { act, applyBudgetTrims, assertFitsBudget, logChange } from "@/lib/engine/ops";
+import { audienceMeta, isRetarget } from "@/lib/channels";
 import { CHANNEL_NAME } from "@/lib/platforms";
 import { MIN_WEEKLY } from "@/lib/engine/budget";
 import { rub } from "@/lib/util";
@@ -16,6 +17,21 @@ export const PATCH = route<{ id: string }>(async ({ business, params, req }) => 
   const name = CHANNEL_NAME[c.channel];
 
   if (body.status === "active" || body.status === "paused") {
+    // Ретаргетинг, который ещё копит аудиторию: «включить» — значит ждать и включиться самому, «выключить» — не включаться
+    const aud = isRetarget(c.channel) ? audienceMeta(c) : null;
+    if (aud && aud.state !== "on" && c.status === "paused") {
+      const state = body.status === "active" ? "collecting" : "off";
+      if (aud.state === state) return json({ ok: true });
+      await db.update(schema.campaigns).set({ meta: { ...(c.meta ?? {}), audience: { ...aud, state, at: new Date().toISOString() } } }).where(eq(schema.campaigns.id, c.id));
+      await logChange({
+        businessId: business.id, actor: "owner", kind: state === "off" ? "pause" : "resume",
+        title: state === "off" ? `Отключили автозапуск «${name}»` : `Вернули автозапуск «${name}»`,
+        reason: state === "off"
+          ? "Ретаргетинг не включится сам, даже когда наберётся аудитория. Вернуть можно в разделе «Реклама»."
+          : `Ретаргетинг включится сам, когда наберётся ${aud.need} человек, которые были на сайте, но не записались.`,
+      });
+      return json({ ok: true, waiting: state === "collecting" });
+    }
     if (body.status === c.status) return json({ ok: true });
     const trims = body.status === "active" ? await assertFitsBudget(business.id, [{ campaignId: c.id, status: "active" }], "resume") : [];
     await applyBudgetTrims(business.id, trims, `Вы включаете канал «${name}»`);

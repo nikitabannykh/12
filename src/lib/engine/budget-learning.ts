@@ -1,4 +1,5 @@
 import type { Change } from "../db/schema";
+import { familyOf } from "../channels";
 
 /**
  * Период обучения площадки — одно правило для робота (не трогает настройки) и для значка «обучается» в кабинете.
@@ -12,7 +13,10 @@ import type { Change } from "../db/schema";
  */
 export const LEARN_DAYS = { vk: 7, directLaunch: 14, directStrategy: 14, budget: 7 };
 /** Сколько длится обучение после запуска — для подсказок */
-export const LEARNING_DAYS: Record<string, number> = { vk: LEARN_DAYS.vk, search: LEARN_DAYS.directLaunch, network: LEARN_DAYS.directLaunch };
+export const LEARNING_DAYS: Record<string, number> = {
+  vk: LEARN_DAYS.vk, retarget_vk: LEARN_DAYS.vk,
+  search: LEARN_DAYS.directLaunch, network: LEARN_DAYS.directLaunch, retarget_yandex: LEARN_DAYS.directLaunch,
+};
 /** За сколько дней смотрим историю и статистику, чтобы найти начало обучения */
 export const LEARN_LOOKBACK_DAYS = 45;
 
@@ -28,7 +32,7 @@ const DAY = 864e5;
 
 /** Сколько дней ещё учится кампания (0 — обучение закончилось) */
 export function learningLeft(c: { id: string; channel: string; createdAt: Date | string }, x: LearningInput): number {
-  const vk = c.channel === "vk";
+  const vk = familyOf(c.channel) === "vk";
   const created = new Date(c.createdAt).getTime();
   const first = x.firstDay.get(c.id);
   // Показы до создания кампании (например, история демо-кабинета) обучение не сокращают

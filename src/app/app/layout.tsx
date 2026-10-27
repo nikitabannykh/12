@@ -4,6 +4,9 @@ import { Nav } from "@/components/Nav";
 import { ToastProvider, UrlNotice } from "@/components/client";
 import { requireUser } from "@/lib/auth";
 import { getBusinessForUser } from "@/lib/engine/launch";
+import { and, eq, inArray } from "drizzle-orm";
+import { getDb, schema } from "@/lib/db";
+import { familyOf } from "@/lib/channels";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +14,15 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const user = await requireUser();
   const b = await getBusinessForUser(user.id);
   const launched = b?.status === "active";
+  // Подпункты «Рекламы»: сколько кампаний на каждой площадке
+  let ads: { yandex: number; vk: number } | undefined;
+  if (launched && b) {
+    const db = await getDb();
+    const rows = await db.select({ channel: schema.campaigns.channel }).from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused"])));
+    // Как в фильтрах «Рекламы»: карточка «Яндекс Карты» (места показа поиска) считается вместе с кампаниями Яндекса
+    const maps = rows.some((r) => r.channel === "search") ? 1 : 0;
+    ads = { yandex: rows.filter((r) => familyOf(r.channel) === "yandex").length + maps, vk: rows.filter((r) => familyOf(r.channel) === "vk").length };
+  }
   return (
     <ToastProvider>
       <UrlNotice />
@@ -19,7 +31,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <aside className="hidden md:block border-r border-line bg-card">
           <div className="flex flex-col gap-8 px-4 py-5 sticky top-0 h-dvh overflow-y-auto">
           <Link href="/app" className="px-2"><Logo size={26} /></Link>
-          <Nav launched={launched} variant="side" />
+          <Nav launched={launched} variant="side" ads={ads} />
           <div className="mt-auto px-2 text-sm">
             {b ? <div className="font-semibold truncate">{b.name}</div> : null}
             <div className="text-muted truncate">{user.email.includes("@demo.") ? "Демо-аккаунт" : user.email}</div>

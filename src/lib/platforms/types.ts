@@ -1,6 +1,7 @@
 import type { AdExtras } from "../engine/extras";
 export type Platform = "yandex" | "vk" | "demo";
-export type Channel = "search" | "network" | "vk";
+import type { Channel } from "../channels";
+export type { Channel } from "../channels";
 export type Strategy = "clicks" | "conversions";
 
 export type ImageInput = { imageId: string; data: Buffer; mime: string; width: number; height: number; cachedRef?: string };
@@ -37,7 +38,26 @@ export type GroupSpec = {
   ageFrom?: number;
   ageTo?: number;
   sex?: "female" | "male" | "any";
+  /**
+   * Ретаргетинг: ID аудитории на площадке (Директ — условие ретаргетинга RetargetingLists, VK — сегмент
+   * remarketing/segments). Группа без ключевых фраз и автотаргетинга, показ — только этой аудитории.
+   */
+  retargetingId?: string | null;
   ads: AdSpec[];
+};
+
+/** Что нужно площадке, чтобы собрать аудиторию «были на сайте, но не оставили заявку» */
+export type AudienceSpec = {
+  name: string;
+  /** Директ: счётчик Метрики, цель «посетил сайт» и цель «обращение» */
+  counterId?: number | null;
+  visitGoalId?: number | null;
+  leadGoalId?: number | null;
+  /** VK: пиксель (счётчик Top@Mail.ru) и событие «заявка» */
+  pixelId?: number | null;
+  leadGoal?: string | null;
+  /** Дней в аудитории */
+  days: number;
 };
 
 /** Расписание показов по часам работы (Директ TimeTargeting): 7 строк «день,24 коэффициента» */
@@ -128,6 +148,8 @@ export interface PlatformClient {
   launchCampaign(spec: CampaignSpec, hooks?: LaunchHooks): Promise<LaunchResult>;
   /** Включить созданную launchCampaign кампанию: отправить объявления на модерацию / разблокировать план */
   activateCampaign(campaignExt: string, adExts: string[]): Promise<void>;
+  /** Создать (или найти созданную раньше) аудиторию ретаргетинга. Возвращает её ID на площадке */
+  ensureAudience?(a: AudienceSpec): Promise<string>;
   /** Найти кампанию по имени на площадке (для уборки, когда ID не успели сохранить) */
   findCampaignByName?(name: string): Promise<string | null>;
   /** Удалить (или, если площадка не даёт, остановить) недосозданную кампанию — для возобновления прерванного запуска */

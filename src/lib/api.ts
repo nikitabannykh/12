@@ -59,11 +59,22 @@ export function route<T>(fn: (ctx: { user: SessionUser; business: Business | nul
       const business = await getBusinessForUser(user.id);
       return await fn({ user, business, req, params: ctx?.params ? await ctx.params : ({} as T) });
     } catch (e) {
+      // Тело запроса не JSON (req.json() бросает SyntaxError) — это ошибка клиента, а не сервера
+      if (e instanceof SyntaxError) return fail("Не удалось прочитать запрос", 400);
+      const raw = Number((e as { status?: number })?.status) || 500;
+      const status = raw >= 400 && raw < 600 ? raw : 500;
+      if (status < 500) return fail(errorText(e), status); // свои ошибки (404, 400…) — без стека в логах
       console.error(e);
-      const status = Number((e as { status?: number })?.status) || 500;
-      return fail(errorText(e), status >= 400 && status < 600 ? status : 500);
+      return fail(publicError(e), status);
     }
   };
+}
+
+/** Текст ошибки 5xx для владельца: свои русские сообщения показываем, технические (TypeError, SQL, сеть) — нет */
+export function publicError(e: unknown): string {
+  const msg = errorText(e);
+  if (/[а-яё]/i.test(msg) && !/failed query|select |update |insert |delete from|sqlite|postgres|econn|fetch failed/i.test(msg)) return msg;
+  return "Что-то пошло не так. Попробуйте ещё раз через минуту — если не получится, напишите в поддержку.";
 }
 
 export function needBusiness(b: Business | null): asserts b is Business {

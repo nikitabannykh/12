@@ -209,3 +209,11 @@
 .spin {
   animation: spin 0.9s linear infinite;
 }
+
+/* Горизонтальные ленты фильтров на телефоне: прокрутка пальцем без полосы прокрутки */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}

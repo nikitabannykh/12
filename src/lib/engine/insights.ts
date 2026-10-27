@@ -11,7 +11,7 @@ export const ctrOf = (s: S) => (s.impressions ? s.clicks / s.impressions : 0);
 export const cplOf = (s: S) => (s.conversions ? s.cost / s.conversions : null);
 
 /** Порог показов, после которого объявление можно сравнивать */
-export const MIN_IMPR: Record<string, number> = { search: 150, network: 1500, vk: 1500 };
+export const MIN_IMPR: Record<string, number> = { search: 150, network: 1500, vk: 1500, retarget_yandex: 600, retarget_vk: 600 };
 
 export type Verdict = "leader" | "good" | "average" | "weak" | "learning" | "off";
 export const VERDICT: Record<Verdict, { label: string; cls: string }> = {
