@@ -41,6 +41,7 @@ export async function GET(req: NextRequest) {
   if (!payload.email || payload.email_verified !== true) {
     return NextResponse.redirect(`${appUrl()}/login?error=email`);
   }
-  await createSession({ email: payload.email, name: payload.name, image: payload.picture });
+  // Google подтвердил почту (email_verified) — отмечаем её подтверждённой
+  await createSession({ email: payload.email, name: payload.name, image: payload.picture, verified: true });
   return NextResponse.redirect(`${appUrl()}/app`);
 }

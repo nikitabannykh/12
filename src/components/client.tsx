@@ -171,9 +171,12 @@ export function UrlNotice() {
     const connected = p.get("connected");
     if (err) toast(err, "error");
     if (connected) toast(connected === "yandex" ? "Яндекс Директ подключён" : connected === "vk" ? "VK Реклама подключена" : "Кабинет подключён");
-    if (err || connected) {
+    const verified = p.get("verified");
+    if (verified) toast("Почта подтверждена");
+    if (err || connected || verified) {
       p.delete("error");
       p.delete("connected");
+      p.delete("verified");
       const q = p.toString();
       window.history.replaceState(null, "", window.location.pathname + (q ? `?${q}` : ""));
     }

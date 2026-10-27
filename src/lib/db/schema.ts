@@ -15,6 +15,11 @@ export const users = pgTable("users", {
   email: text("email").notNull(),
   name: text("name"),
   image: text("image"),
+  // Вход по почте: scrypt-хеш пароля (null — пароль не задан: вход через Google, по ссылке или демо)
+  passwordHash: text("password_hash"),
+  emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+  // Входит в cookie сессии; увеличивается при смене/сбросе пароля — старые сессии перестают действовать
+  sessionVersion: integer("session_version").notNull().default(0),
   createdAt: createdAt(),
 }, (t) => [uniqueIndex("users_email").on(t.email)]);
 

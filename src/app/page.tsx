@@ -5,7 +5,7 @@ import { getUser } from "@/lib/auth";
 
 export default async function Home() {
   const user = await getUser();
-  const cta = user ? { href: "/app", text: "Открыть кабинет" } : { href: "/login", text: "Начать бесплатно" };
+  const cta = user ? { href: "/app", text: "Открыть кабинет" } : { href: "/login?tab=register", text: "Начать бесплатно" };
   return (
     <main className="min-h-dvh">
       <header className="mx-auto max-w-6xl px-4 sm:px-6 h-16 flex items-center justify-between">

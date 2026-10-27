@@ -4,6 +4,7 @@ import { getUser, type SessionUser } from "./auth";
 import { getBusinessForUser } from "./engine/launch";
 import type { Business } from "./db/schema";
 import { appUrl, errorText } from "./util";
+import { secretError } from "./crypto";
 
 export const json = (data: unknown, status = 200) => NextResponse.json(data, { status });
 export const fail = (message: string, status = 400) => NextResponse.json({ error: message }, { status });
@@ -66,6 +67,22 @@ export function route<T>(fn: (ctx: { user: SessionUser; business: Business | nul
       if (status < 500) return fail(errorText(e), status); // свои ошибки (404, 400…) — без стека в логах
       console.error(e);
       return fail(publicError(e), status);
+    }
+  };
+}
+
+/** Как route(), но без обязательного входа: формы входа, регистрации и восстановления пароля. CSRF-проверка та же */
+export function publicRoute(fn: (req: Request) => Promise<Response>) {
+  return async (req: Request) => {
+    try {
+      if (!sameOrigin(req)) return csrfError();
+      const cfg = secretError();
+      if (cfg) return fail(cfg, 503);
+      return await fn(req);
+    } catch (e) {
+      if (e instanceof SyntaxError) return fail("Не удалось прочитать запрос", 400);
+      console.error(e);
+      return fail(publicError(e), 500);
     }
   };
 }

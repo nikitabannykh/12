@@ -6,6 +6,9 @@ CREATE TABLE IF NOT EXISTS users (
   email text NOT NULL,
   name text,
   image text,
+  password_hash text,
+  email_verified_at timestamptz,
+  session_version integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email);
@@ -247,4 +250,7 @@ ALTER TABLE leads ADD COLUMN IF NOT EXISTS metrika_client_id text;
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS yclid text;
 ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS client_id text;
 ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS client_secret text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version integer NOT NULL DEFAULT 0;
 `;

@@ -2,7 +2,10 @@ import { VkConnect } from "@/components/VkConnect";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Check, ExternalLink, TriangleAlert } from "lucide-react";
-import { requireUser, demoAllowed } from "@/lib/auth";
+import { requireUser, demoAllowed, isDemoEmail } from "@/lib/auth";
+import { AccountSettings } from "@/components/AccountSettings";
+import { findUserById } from "@/lib/account";
+import { mailConfigured } from "@/lib/mail";
 import { accountsFor, getBusinessForUser, channelsFor } from "@/lib/engine/launch";
 import { trackingSnippet } from "@/lib/platforms/metrica";
 import { yandexConfigured } from "@/lib/platforms/yandex";
@@ -26,6 +29,7 @@ export default async function Settings() {
   const channels = channelsFor(accounts).map((c) => c.channel);
   const notify = await getNotify(b.id);
   const connected = Boolean(notify?.telegramChatId);
+  const me = await findUserById(user.id);
   const notifyStatus = { configured: tgConfigured(), connected, name: notify?.telegramName ?? null, digest: notify ? notify.digest === 1 : true, unlinked: connected ? null : await getUnlinked(b.id) };
 
   return (
@@ -105,6 +109,11 @@ export default async function Settings() {
         ) : (
           <p className="text-muted mt-1 leading-relaxed max-w-2xl">Объявления ведут на вашу страницу записи — обращения с неё считаются автоматически, ничего ставить не нужно.</p>
         )}
+      </section>
+
+      <section id="account" className="card p-5 sm:p-7 scroll-mt-6">
+        <h2 className="text-lg font-bold">Аккаунт</h2>
+        <AccountSettings email={user.email} hasPassword={Boolean(me?.passwordHash)} verified={Boolean(me?.emailVerifiedAt)} mail={mailConfigured()} demo={isDemoEmail(user.email)} />
       </section>
 
       <section className="card p-5 sm:p-7">
