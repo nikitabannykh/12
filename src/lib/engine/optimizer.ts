@@ -4,7 +4,7 @@ import { getDb, schema } from "../db";
 import type { Ad, AdGroup, Business, Campaign, Change, Experiment, UndoOp } from "../db/schema";
 import { clientFor, CHANNEL_NAME } from "../platforms";
 import { demoNow } from "../platforms/demo";
-import { ensureLogo, getImage, imageSet, makeCreative } from "./images";
+import { ensureLogo, getImage, imageSet, makeCreative, ownerPhotoCreative, ownerPhotoIds } from "./images";
 import { adExtras, responsiveAssets } from "./extras";
 import { liftBy, pickByThompson, placeName } from "./insights";
 import { availableLayouts, LAYOUT_NAME, type Layout } from "../creative/render";
@@ -17,6 +17,7 @@ import { firstDays, learningLeft as learningLeftFor, LEARN_LOOKBACK_DAYS } from 
 import { CATCH_UP, CATCH_UP_GAP, cutMeta, daysLeftInMonth, monthDays, monthKey, monthWeekly, planLimits, reserveFor, restoreTarget, spendableWeekly, type BudgetMeta, type Plan, type PlanItem } from "./budget-plan";
 import { budgetState, businessNow, liveCampaigns, patchBudgetMeta, pausedForBudget, type BudgetState } from "./budget-guard";
 import { addDays, errorText, isoDay, rub, uid, pl, num } from "../util";
+import { getBalances, LOW_DAYS, CABINET_NAME } from "./balance";
 import { isDirectChannel, landingUrl, withUtm } from "./launch";
 import { VkAds } from "../platforms/vk";
 import { vkAdContext } from "./regions";
@@ -71,6 +72,8 @@ type Ctx = {
   images: Map<string, { layout: string | null; photoId: string | null; width: number; height: number }>;
   /** Тесты, выигранные в этом проходе — их идеи переносим в другие группы */
   won: Experiment[];
+  /** Свои фото владельца (не ИИ), старые первыми — робот предпочитает их иллюстрациям */
+  ownPhotos: string[];
 };
 
 function sumAd(cx: Ctx, adId: string, since?: string): S {
@@ -136,7 +139,8 @@ async function load(b: Business): Promise<Ctx> {
     : [];
   const images = new Map(imgRows.map((r) => [r.id, { layout: r.layout, photoId: r.prompt && r.prompt.startsWith("img_") ? r.prompt : null, width: r.width, height: r.height }]));
   const tvRows = stats.filter((r) => r.tvWeighted > 0).map((r) => ({ campaignId: r.campaignId, day: String(r.day), impressions: r.impressions, tvWeighted: r.tvWeighted }));
-  return { b, now, campaigns, groups, ads, experiments, statByAd, tvRows, log: [], newAds: 0, protected: prot, ownerStatus, history, firstDay, images, won: [] };
+  const ownPhotos = await ownerPhotoIds(b.id);
+  return { b, now, campaigns, groups, ads, experiments, statByAd, tvRows, log: [], newAds: 0, protected: prot, ownerStatus, history, firstDay, images, won: [], ownPhotos };
 }
 
 /** Объявление сейчас участвует в идущем тесте (поле experimentId после теста не учитываем) */
@@ -216,6 +220,16 @@ async function adSpecFor(cx: Ctx, camp: Campaign, group: AdGroup, platform: stri
   const svc0 = cx.b.services?.[0];
   const service = camp.channel === "search" ? cx.b.services?.find((x) => x.name === group.name) ?? svc0 : svc0;
   const set = img && direct ? await imageSet(cx.b, img.id, { headline: camp.channel === "search" ? service?.name ?? group.name : svc0?.name, price: service?.price }).catch(() => []) : [];
+  // Фото владельца — в набор картинок комбинаторного объявления (чистое фото 1:1, без надписей).
+  // Берём фото, которого ещё нет в этой группе, — так в группе со временем окажутся все фото владельца.
+  let own: NonNullable<typeof img>[] = [];
+  if (direct && img && cx.ownPhotos.length) {
+    const inGroup = new Set(cx.ads.filter((x) => x.adGroupId === group.id && x.imageId).map((x) => cx.images.get(x.imageId!)?.photoId).filter(Boolean) as string[]);
+    const basePhoto = img.prompt?.startsWith("img_") ? img.prompt : null;
+    const pick = cx.ownPhotos.find((id) => id !== basePhoto && !inGroup.has(id)) ?? cx.ownPhotos.find((id) => id !== basePhoto);
+    const x = pick ? await ownerPhotoCreative(cx.b, pick, { width: 1080, height: 1080 }).catch(() => null) : null;
+    if (x) own = [x];
+  }
   const assets = direct ? responsiveAssets(cx.b, a, { service: camp.channel === "search" ? group.name : null }) : null;
   const toInput = (x: NonNullable<typeof img>) => ({ imageId: x.id, data: x.data, mime: x.mime, width: x.width, height: x.height, cachedRef: x.platformRefs?.[platform] });
   return {
@@ -227,7 +241,8 @@ async function adSpecFor(cx: Ctx, camp: Campaign, group: AdGroup, platform: stri
     texts: assets?.texts,
     href: withUtm(href, platform),
     image: img ? toInput(img) : null,
-    images: set.map(toInput),
+    // Площадка берёт до 5 картинок: основная, фото владельца, затем другие пропорции
+    images: [...own, ...set].map(toInput),
     extras: adExtras(cx.b, { channel: camp.channel, href, service: camp.channel === "search" ? group.name : null, text: a.text }),
     logo: await logoFor(cx.b, camp.channel),
     marking: `${nicheById(cx.b.niche).label}: ${cx.b.name}`,
@@ -289,7 +304,7 @@ async function ensureRoom(cx: Ctx, client: PlatformClient, camp: Campaign, group
       .map((x) => x.a),
   ];
   if (candidates.length < need) {
-    cx.log.push(`${group.name}: в группе уже ${live().length} объявлений (лимит ${lim.nonArchived}), все заняты тестами — новый вариант позже`);
+    cx.log.push(`${group.name}: в группе уже ${pl(live().length, "объявление", "объявления", "объявлений")} (лимит ${lim.nonArchived}), все заняты тестами — новый вариант позже`);
     return null;
   }
   for (const a of candidates.slice(0, need)) {
@@ -300,7 +315,7 @@ async function ensureRoom(cx: Ctx, client: PlatformClient, camp: Campaign, group
           {
             businessId: cx.b.id, actor: "robot", kind: "pause",
             title: `Убрали в архив объявление ${adLabel(a)}`,
-            reason: `В одной группе Директа может быть не больше ${lim.nonArchived} неархивных объявлений. ${why} — поэтому освободили место: ${adLabel(a)} работает слабее остальных в группе «${group.name}» (${s.impressions ? `${pct(ctr(s))} кликов из ${num(s.impressions)} показов` : "показов пока почти нет"}).`,
+            reason: `В одной группе Директа может быть не больше ${lim.nonArchived} неархивных объявлений. ${why} — поэтому освободили место: ${adLabel(a)} работает слабее остальных в группе «${group.name}» (${s.impressions ? `${pct(ctr(s))} кликов из ${pl(s.impressions, "показа", "показов", "показов")}` : "показов пока почти нет"}).`,
             details: { adId: a.id, stats: s, archived: true },
           },
           [{ op: "adStatus", adId: a.id, status: "paused" }],
@@ -322,7 +337,7 @@ async function ensureRoom(cx: Ctx, client: PlatformClient, camp: Campaign, group
 /** Группа заполнена до 10 объявлений: такая же новая группа, лучшие объявления — копиями, старые — в архив */
 async function rolloverGroup(cx: Ctx, client: PlatformClient, camp: Campaign, group: AdGroup, keep: string[], lim: { nonArchived: number; total: number }) {
   if (!client.addGroup || !camp.externalId) {
-    cx.log.push(`${group.name}: в группе ${lim.total} объявлений — больше площадка не принимает`);
+    cx.log.push(`${group.name}: в группе ${pl(lim.total, "объявление", "объявления", "объявлений")} — больше площадка не принимает`);
     return null;
   }
   const db = await getDb();
@@ -501,6 +516,7 @@ async function budgetGuard(cx: Ctx) {
   if (pool.length) {
     const items = pool.map((c) => item(c, newMonth || c.status !== "active"));
     const wantSum = items.reduce((s, i) => s + i.want, 0);
+    const low = await lowCabinets(cx, active);
     let plan: Plan;
     if (newMonth) {
       // Новый месяц: обычная раскладка бюджета, как при запуске
@@ -509,6 +525,11 @@ async function budgetGuard(cx: Ctx) {
       // Не помещаемся в остаток — снижаем с запасом 3 %, чтобы не дёргать лимиты каждый день; превышение бюджета не допускаем вовсе
       plan = planLimits(items, Math.floor(cap * 0.97));
       if (plan.dropped.length || plan.short) plan = planLimits(items, cap);
+    } else if (wantSum < target * CATCH_UP_GAP && low.length) {
+      // Недорасход из-за того, что в кабинете кончаются деньги, а не из-за площадки: лимиты не поднимаем,
+      // иначе после пополнения реклама разом потратила бы «накопленное»
+      plan = planLimits(items, wantSum);
+      await holdForBalance(cx, low, st);
     } else if (wantSum < target * CATCH_UP_GAP) {
       // Площадки тратят меньше лимита, и к концу месяца остался бы неизрасходованный бюджет — поднимаем лимиты под остаток
       // С тем же запасом 3 % до жёсткой границы, что и при снижении, — иначе на следующий день лимиты пришлось бы снова снижать
@@ -545,6 +566,36 @@ async function budgetGuard(cx: Ctx) {
     }
   }
   if (mark) await markJob(cx, "budget_month", st.month);
+}
+
+/** Кабинеты активных кампаний, где деньги кончились или кончатся в ближайшие дни (по последней проверке баланса) */
+async function lowCabinets(cx: Ctx, active: Campaign[]) {
+  const ids = new Set(active.map((c) => c.accountId));
+  const list = await getBalances(cx.b).catch(() => []);
+  return list.filter((x) => ids.has(x.accountId) && x.daysLeft !== null && x.daysLeft <= LOW_DAYS);
+}
+
+/** Объяснить в истории, почему лимиты не подняли при недорасходе (не чаще раза в 3 дня) */
+async function holdForBalance(cx: Ctx, low: Awaited<ReturnType<typeof lowCabinets>>, st: BudgetState) {
+  cx.log.push("Бюджет: недорасход из-за баланса кабинета — лимиты не поднимаем");
+  const db = await getDb();
+  const key = `balance:hold:${cx.b.id}`;
+  const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, key));
+  const last = Number((row?.value as { at?: number } | undefined)?.at ?? 0);
+  if (last && cx.now.getTime() - last < 3 * 86400e3) return;
+  const where = low.map((x) => (x.platform === "demo" ? "в демо-кабинете" : `в кабинете ${CABINET_NAME[x.platform] ?? x.platform}`)).join(" и ");
+  const empty = low.some((x) => x.daysLeft === 0);
+  await logChange({
+    businessId: cx.b.id, actor: "robot", kind: "budget",
+    title: "Не поднимаем лимиты: в кабинете кончаются деньги",
+    reason:
+      `С начала месяца потрачено ${rub(st.spent)} из ${rub(cx.b.monthlyBudget)} — меньше плана. Обычно робот в таком случае поднимает недельные лимиты, чтобы бюджет не пропал. ` +
+      `Но сейчас деньги ${where} ${empty ? "кончились" : "почти кончились"}, поэтому реклама тратит меньше не из-за площадки, а из-за остатка. ` +
+      "Лимиты оставили прежними: после пополнения реклама продолжит в обычном темпе, без рывка. Пополните кабинет — и робот снова будет следить за темпом сам.",
+    details: { guard: true, balance: low.map((x) => ({ accountId: x.accountId, amount: x.amount, daysLeft: x.daysLeft })) },
+  });
+  const value = { at: cx.now.getTime() };
+  await db.insert(schema.kv).values({ key, value }).onConflictDoUpdate({ target: schema.kv.key, set: { value, updatedAt: new Date() } });
 }
 
 /** Минимумы площадок не помещаются в остаток — отключаем наименее важные каналы */
@@ -677,7 +728,7 @@ async function resolveExperiments(cx: Ctx) {
     const varRows = (cx.statByAd.get(variant.id) ?? []).filter((r) => r.s.impressions > 0).map((r) => r.day).sort();
     if (!varRows.length) {
       // Вариант так и не показался — тест не должен висеть вечно и блокировать новые тесты в группе
-      if ((cx.now.getTime() - ex.startedAt.getTime()) / 864e5 >= MAX_TEST_DAYS) await endExperiment(cx, ex, "draw", `За ${MAX_TEST_DAYS} дней новый вариант так и не начал показываться.`);
+      if ((cx.now.getTime() - ex.startedAt.getTime()) / 864e5 >= MAX_TEST_DAYS) await endExperiment(cx, ex, "draw", `За ${pl(MAX_TEST_DAYS, "день", "дня", "дней")} новый вариант так и не начал показываться.`);
       continue;
     }
     const since = varRows[0];
@@ -707,7 +758,7 @@ async function resolveExperiments(cx: Ctx) {
         ? `Гипотеза подтвердилась: новый вариант даёт ${fmt(rate(sv))} ${metric} против ${fmt(rate(sc))} (вероятность, что он лучше, — ${Math.round(p * 100)}%).`
         : status === "lost"
           ? `Гипотеза не подтвердилась: новый вариант даёт ${fmt(rate(sv))} ${metric} против ${fmt(rate(sc))}. Оставили прежний.`
-          : `За ${MAX_TEST_DAYS} дней явного победителя нет (${fmt(rate(sv))} против ${fmt(rate(sc))} ${metric}). Оставили тот, что немного лучше.`;
+          : `За ${pl(MAX_TEST_DAYS, "день", "дня", "дней")} явного победителя нет (${fmt(rate(sv))} против ${fmt(rate(sc))} ${metric}). Оставили тот, что немного лучше.`;
     await act(
       { businessId: cx.b.id, actor: "robot", kind: "test_end", title: `Тест завершён: ${status === "won" ? "новый вариант лучше" : status === "lost" ? "старый вариант лучше" : "ничья"}`, reason: `Проверяли: ${hyp}. ${result} ${loser.title === winner.title && ex.kind === "creative" ? `Отключили вариант с ${loser.id === ex.variantId ? "новой" : "прежней"} картинкой, работает вариант с ${winner.id === ex.variantId ? "новой" : "прежней"}.` : `Отключили ${adLabel(loser)}, работает ${adLabel(winner)}.`}`, details: { experimentId: ex.id, p, control: sc, variant: sv } },
       [{ op: "adStatus", adId: loser.id, status: "paused" }],
@@ -749,8 +800,8 @@ async function optimizeAds(cx: Ctx) {
       const drain = cpa && r.s.conversions === 0 && r.s.cost >= Math.max(2 * cpa, 600);
       if ((pWorse >= 0.95 && ratio >= 1.4) || drain) {
         const reason = drain
-          ? `${adLabel(r.a)} потратило ${rub(r.s.cost)} за ${WINDOW_DAYS} дней и не принесло ни одного обращения. В среднем по группе обращение стоит ${rub(cpa!)}.`
-          : `${adLabel(r.a)} показали ${num(r.s.impressions)} раз, кликнули ${num(r.s.clicks)} (${pct(ctr(r.s))}). Лучшее объявление в этой группе получает ${pct(ctr(best.s))} — в ${times(ratio)} раза больше. Разница не случайна (уверенность ${Math.round(pWorse * 100)}%).`;
+          ? `${adLabel(r.a)} потратило ${rub(r.s.cost)} за ${pl(WINDOW_DAYS, "день", "дня", "дней")} и не принесло ни одного обращения. В среднем по группе обращение стоит ${rub(cpa!)}.`
+          : `${adLabel(r.a)} показали ${pl(r.s.impressions, "раз", "раза", "раз")}, кликнули ${pl(r.s.clicks, "раз", "раза", "раз")} (${pct(ctr(r.s))}). Лучшее объявление в этой группе получает ${pct(ctr(best.s))} — в ${times(ratio)} раза больше. Разница не случайна (уверенность ${Math.round(pWorse * 100)}%).`;
         await act(
           { businessId: cx.b.id, actor: "robot", kind: "pause", title: `Отключили слабое объявление ${adLabel(r.a)}`, reason: `${reason} Деньги уйдут на объявления, которые работают лучше.`, details: { adId: r.a.id, stats: r.s, best: best.s } },
           [{ op: "adStatus", adId: r.a.id, status: "paused" }],
@@ -846,32 +897,77 @@ async function propagateWinners(cx: Ctx) {
 
 // ─── 3в. Тест картинок: тот же текст, другой макет ─────────────────────
 
-async function creativeTests(cx: Ctx) {
+/**
+ * Тест картинки при том же тексте. Сначала — фото владельца: если в группе его ещё не пробовали,
+ * ставим его вместо иллюстрации или сгенерированной картинки (тот же макет, только другой снимок).
+ * Когда все фото владельца в группе уже были, пробуем другие макеты с тем же фото.
+ */
+async function creativeTests(cx: Ctx, onlyOwnerPhotos = false) {
   const since = isoDay(addDays(cx.now, -WINDOW_DAYS));
   const db = await getDb();
   for (const camp of cx.campaigns.filter((c) => c.status === "active" && c.channel !== "search" && c.externalId)) {
     if (cx.newAds >= MAX_NEW_ADS_PER_RUN) return;
     const groups = cx.groups.filter((g) => g.campaignId === camp.id && g.status === "active" && g.externalId && !cx.protected.has(g.id));
     for (const g of groups) {
+      // Фото владельца, которых в этой группе ещё не было (ни в работающих, ни в отключённых объявлениях)
+      const triedPhotos = new Set(cx.ads.filter((a) => a.adGroupId === g.id && a.imageId).map((a) => cx.images.get(a.imageId!)?.photoId).filter(Boolean) as string[]);
+      const freshPhoto = cx.ownPhotos.find((id) => !triedPhotos.has(id)) ?? null;
+      if (onlyOwnerPhotos && !freshPhoto) continue;
+      const running = cx.experiments.find((e) => e.status === "running" && cx.ads.some((a) => a.adGroupId === g.id && (a.id === e.controlId || a.id === e.variantId)));
+      if (running) {
+        // Тест нарисованных картинок уступает место фото владельца: настоящие фото важнее, чем выбор между иллюстрациями.
+        // Тесты текстов и тесты с фото владельца не прерываем — фото подождёт их итога.
+        const ownIn = (id: string) => { const ad = cx.ads.find((a) => a.id === id); const ph = ad?.imageId ? cx.images.get(ad.imageId)?.photoId : null; return !!ph && cx.ownPhotos.includes(ph); };
+        if (!freshPhoto || running.kind !== "creative" || ownIn(running.controlId) || ownIn(running.variantId)) continue;
+        const variant = cx.ads.find((a) => a.id === running.variantId);
+        await endExperiment(cx, running, "draw", "Тест остановлен: владелец загрузил свои фото — теперь сравниваем с ними.");
+        if (variant && (variant.status === "active" || variant.status === "moderation") && !cx.protected.has(variant.id)) {
+          await act(
+            {
+              businessId: cx.b.id, actor: "robot", kind: "pause",
+              title: `Остановили проверку нарисованной картинки для ${adLabel(variant)}`,
+              reason: `Вы загрузили свои фото. Настоящие фото обычно работают лучше нарисованных картинок, поэтому проверку другой иллюстрации в аудитории «${g.name}» остановили — вместо неё сравним объявление с вашим фото.`,
+              details: { experimentId: running.id },
+            },
+            [{ op: "adStatus", adId: variant.id, status: "paused" }],
+          );
+          variant.status = "paused";
+        }
+      }
       const live = cx.ads.filter((a) => a.adGroupId === g.id && a.status === "active" && a.imageId);
-      const busy = cx.experiments.some((e) => e.status === "running" && cx.ads.some((a) => a.adGroupId === g.id && (a.id === e.controlId || a.id === e.variantId)));
-      if (busy || live.length < 2) continue;
-      const best = live.map((a) => ({ a, s: sumAd(cx, a.id, since) })).filter((r) => r.s.impressions >= MIN_IMPR[camp.channel as Channel]).sort((x, y) => ctr(y.s) - ctr(x.s))[0];
+      if (!live.length) continue;
+      const ranked = live.map((a) => ({ a, s: sumAd(cx, a.id, since) })).sort((x, y) => ctr(y.s) - ctr(x.s));
+      // Тест макетов — только когда у лидера достаточно показов. Фото владельца пробуем сразу: владелец ждёт его в рекламе
+      const best = freshPhoto ? ranked[0] : live.length >= 2 ? ranked.filter((r) => r.s.impressions >= MIN_IMPR[camp.channel as Channel])[0] : undefined;
       if (!best) continue;
       const img = cx.images.get(best.a.imageId!);
       if (!img?.layout) continue;
-      const usedHere = live.map((a) => cx.images.get(a.imageId!)?.layout).filter(Boolean) as string[];
-      const options = availableLayouts(cx.b).filter((l) => l !== img.layout && !usedHere.includes(l));
-      if (!options.length) continue;
-      const layout = pickByThompson(options, layoutStats(cx, camp.channel));
+      let layout: Layout;
+      let photoId = img.photoId;
+      let hypothesis: string;
+      if (freshPhoto) {
+        // Тот же макет, если он показывает фото целиком; иначе — ценник поверх фото
+        layout = img.layout === "photo" || img.layout === "tag" ? (img.layout as Layout) : "tag";
+        photoId = freshPhoto;
+        const was = !img.photoId ? "иллюстрация" : cx.ownPhotos.includes(img.photoId) ? "другое ваше фото" : "сгенерированная картинка";
+        hypothesis = `привлечёт ли ваше фото больше людей, чем ${was}, при том же тексте`;
+      } else {
+        const usedHere = live.map((a) => cx.images.get(a.imageId!)?.layout).filter(Boolean) as string[];
+        const options = availableLayouts(cx.b, cx.ownPhotos.length > 0 || !!img.photoId).filter((l) => l !== img.layout && !usedHere.includes(l));
+        if (!options.length) continue;
+        layout = pickByThompson(options, layoutStats(cx, camp.channel));
+        // Без фото у лидера, но с фото владельца — берём фото, а не иллюстрацию
+        photoId = img.photoId ?? cx.ownPhotos[0] ?? null;
+        hypothesis = `привлечёт ли картинка «${LAYOUT_NAME[layout]}» больше людей, чем «${LAYOUT_NAME[img.layout as Layout] ?? img.layout}», при том же тексте`;
+      }
       try {
         const { acc, client } = await clientOf(camp);
         // Лимит объявлений в группе: лидер остаётся, место освобождает проигравшее или самое слабое
-        const room = await ensureRoom(cx, client, camp, g, [best.a.id], "Робот проверяет новую картинку");
+        const room = await ensureRoom(cx, client, camp, g, [best.a.id], freshPhoto ? "Робот ставит ваше фото" : "Робот проверяет новую картинку");
         if (!room) continue;
         const group = room.group;
         const control = room.copies.get(best.a.id) ?? best.a;
-        const creative = await makeCreative(cx.b, { layout, photoId: img.photoId, width: img.width, height: img.height });
+        const creative = await makeCreative(cx.b, { layout, photoId, width: img.width, height: img.height });
         const localId = uid("ad_");
         const res = await client.addAd(camp.externalId!, group.externalId!, await adSpecFor(cx, camp, group, acc.platform, { title: control.title, title2: control.title2, text: control.text, imageId: creative.id }, localId), { channel: camp.channel as Channel, orgId: cx.b.orgId });
         const experimentId = uid("x_");
@@ -882,9 +978,8 @@ async function creativeTests(cx: Ctx) {
         };
         await db.insert(schema.ads).values(ad);
         cx.ads.push(ad);
-        cx.images.set(creative.id, { layout, photoId: img.photoId, width: img.width, height: img.height });
+        cx.images.set(creative.id, { layout, photoId, width: img.width, height: img.height });
         cx.newAds++;
-        const hypothesis = `привлечёт ли картинка «${LAYOUT_NAME[layout]}» больше людей, чем «${LAYOUT_NAME[img.layout as Layout] ?? img.layout}», при том же тексте`;
         const ex: Experiment = { id: experimentId, businessId: cx.b.id, campaignId: camp.id, kind: "creative", hypothesis, controlId: control.id, variantId: ad.id, status: "running", result: null, startedAt: cx.now, finishedAt: null };
         await db.insert(schema.experiments).values(ex);
         await db.update(schema.ads).set({ experimentId }).where(eq(schema.ads.id, control.id));
@@ -892,12 +987,14 @@ async function creativeTests(cx: Ctx) {
         cx.experiments.push(ex);
         await logChange({
           businessId: cx.b.id, actor: "robot", kind: "test_start",
-          title: `Тестируем другую картинку для ${adLabel(control)}`,
-          reason: `Текст этого объявления работает лучше всех в аудитории «${g.name}». Теперь проверяем, ${hypothesis}. Меняем только картинку — так будет понятно, что именно сработало.`,
-          details: { experimentId, controlId: control.id, variantId: ad.id, layout },
+          title: freshPhoto ? `Добавили объявление с вашим фото в аудиторию «${g.name}»` : `Тестируем другую картинку для ${adLabel(control)}`,
+          reason: freshPhoto
+            ? `Вы загрузили свои фото. В аудитории «${g.name}» добавили объявление с тем же текстом, но с вашим фото, и проверяем, ${hypothesis}. Оба объявления идут наравне, робот оставит то, что приводит больше людей.`
+            : `Текст этого объявления работает лучше всех в аудитории «${g.name}». Теперь проверяем, ${hypothesis}. Меняем только картинку — так будет понятно, что именно сработало.`,
+          details: { experimentId, controlId: control.id, variantId: ad.id, layout, photoId: freshPhoto },
           undo: [{ op: "adStatus", adId: ad.id, status: "paused" }],
         });
-        cx.log.push(`Тест картинки ${layout} в ${group.id}`);
+        cx.log.push(freshPhoto ? `Фото владельца в ${group.id}` : `Тест картинки ${layout} в ${group.id}`);
       } catch (e) {
         cx.log.push(`Тест картинки: ${errorText(e)}`);
       }
@@ -1124,6 +1221,8 @@ export async function optimizeBusiness(b: Business) {
     ["тесты", resolveExperiments],
     ["перенос идей", propagateWinners],
     ["место в выдаче", positionGuard],
+    // Свои фото владельца — раньше новых текстов: иначе свободные группы займут тесты текстов, и фото будет ждать неделями
+    ["фото владельца", (c) => creativeTests(c, true)],
     ["объявления", optimizeAds],
     ["картинки", creativeTests],
     ["аудитории", optimizeAudiences],

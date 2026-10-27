@@ -374,7 +374,7 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
     const pub = g.ads.filter(publishable);
     const allowed = direct ? pub.filter((a) => build.groups[g.id]?.ads[a.id]).length + Math.max(0, DIRECT_ADS_PER_GROUP - already) : Infinity;
     const list = direct ? [...pub.filter((a) => build.groups[g.id]?.ads[a.id]), ...pub.filter((a) => !build.groups[g.id]?.ads[a.id])].slice(0, allowed) : pub;
-    if (direct && pub.length > list.length) warnings.push(`${CHANNEL_NAME[ch.channel]}: в группе «${g.name}» включено ${pub.length} объявлений, а Директ принимает не больше ${DIRECT_ADS_PER_GROUP} — отправили первые ${DIRECT_ADS_PER_GROUP}`);
+    if (direct && pub.length > list.length) warnings.push(`${CHANNEL_NAME[ch.channel]}: в группе «${g.name}» включено ${pl(pub.length, "объявление", "объявления", "объявлений")}, а Директ принимает не больше ${DIRECT_ADS_PER_GROUP} — отправили первые ${DIRECT_ADS_PER_GROUP}`);
     for (const ad of list) {
       if (build.failedAds.includes(ad.id)) continue;
       let image = null;

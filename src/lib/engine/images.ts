@@ -1,5 +1,5 @@
 import "server-only";
-import { and, count, eq, inArray } from "drizzle-orm";
+import { and, asc, count, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import { uid } from "../util";
 import { imageSize } from "../creative/imagesize";
@@ -29,6 +29,35 @@ export async function listPhotos(businessId: string) {
     .select({ id: schema.images.id, kind: schema.images.kind, width: schema.images.width, height: schema.images.height, prompt: schema.images.prompt, createdAt: schema.images.createdAt })
     .from(schema.images)
     .where(and(eq(schema.images.businessId, businessId), inArray(schema.images.kind, ["photo", "generated"])));
+}
+
+/** Сколько своих фото можно держать в сервисе: больше в объявления всё равно не поместится */
+export const MAX_PHOTOS = 20;
+
+/** Свои фото владельца (без сгенерированных ИИ), старые первыми */
+export async function ownerPhotoIds(businessId: string): Promise<string[]> {
+  const db = await getDb();
+  const rows = await db.select({ id: schema.images.id }).from(schema.images).where(and(eq(schema.images.businessId, businessId), eq(schema.images.kind, "photo"))).orderBy(asc(schema.images.createdAt));
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Фото владельца как картинка объявления без надписей (макет «Чистое фото») нужного размера.
+ * Рендерим один раз на фото и размер (kv `ownphoto:<id>:<w>x<h>`), дальше переиспользуем.
+ */
+export async function ownerPhotoCreative(b: Business, photoId: string, size: { width: number; height: number }) {
+  const db = await getDb();
+  const key = `ownphoto:${photoId}:${size.width}x${size.height}`;
+  const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, key));
+  const known = (row?.value as { id?: string } | undefined)?.id;
+  if (known) {
+    const img = await getImage(known);
+    if (img) return img;
+  }
+  if (!(await getImage(photoId))) return null;
+  const made = await makeCreative(b, { layout: "photo", photoId, width: size.width, height: size.height });
+  await db.insert(schema.kv).values({ key, value: { id: made.id } }).onConflictDoUpdate({ target: schema.kv.key, set: { value: { id: made.id }, updatedAt: new Date() } });
+  return getImage(made.id);
 }
 
 /**
@@ -123,12 +152,15 @@ export async function imageSet(b: Business, baseImageId: string, ctx: { headline
   const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, key));
   const known = { ...((row?.value as Record<string, string> | undefined) ?? {}) };
   const own = ratioKey(base.width, base.height);
+  const srcPhoto = base.prompt?.startsWith("img_") ? base.prompt : null;
+  // Владелец удалил исходное фото — новые пропорции без него получились бы другой картинкой, не дорисовываем
+  const photoGone = srcPhoto ? !(await getImage(srcPhoto)) : false;
   let changed = false;
   for (const sz of DIRECT_IMAGE_SIZES) {
     const r = ratioKey(sz.width, sz.height);
-    if (r === own || known[r]) continue;
+    if (r === own || known[r] || photoGone) continue;
     try {
-      const img = await makeCreative(b, { layout: base.layout as Layout, photoId: base.prompt?.startsWith("img_") ? base.prompt : null, width: sz.width, height: sz.height, headline: ctx.headline, price: ctx.price, variant: 0 });
+      const img = await makeCreative(b, { layout: base.layout as Layout, photoId: srcPhoto, width: sz.width, height: sz.height, headline: ctx.headline, price: ctx.price, variant: 0 });
       known[r] = img.id;
       changed = true;
     } catch {

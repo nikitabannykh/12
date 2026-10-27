@@ -76,7 +76,7 @@ export function scoreGroup(rows: { id: string; s: S; live: boolean }[], channel:
     const idx = sorted.findIndex((x) => x.id === r.id);
     if (idx < 0) {
       const left = Math.max(0, Math.ceil(min / 3 - r.s.impressions));
-      return { id: r.id, rank: null, verdict: "learning", why: `Нужно ещё ≈ ${new Intl.NumberFormat("ru-RU").format(left)} показов, чтобы сравнить`, rel: 0, s: r.s };
+      return { id: r.id, rank: null, verdict: "learning", why: `Нужно ещё ≈ ${new Intl.NumberFormat("ru-RU").format(left)} ${left % 10 === 1 && left % 100 !== 11 ? "показ" : [2, 3, 4].includes(left % 10) && ![12, 13, 14].includes(left % 100) ? "показа" : "показов"}, чтобы сравнить`, rel: 0, s: r.s };
     }
     if (noSignal) {
       return { id: r.id, rank: null, verdict: "learning", why: r.s.clicks ? "Пока мало данных для сравнения" : "Кликов пока нет — сравним, когда появятся", rel: 0, s: r.s };

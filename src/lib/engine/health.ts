@@ -177,7 +177,7 @@ export async function healthCheck(b: Business): Promise<Health> {
     title: "Загружены свои фото",
     todo: "Добавьте свои фото",
     hint: "Сейчас в объявлениях только сгенерированные картинки. Настоящие фото зала и работ обычно кликают чаще.",
-    fix: { href: "/app/ads", label: "Объявления" },
+    fix: { href: "/app/ads#photos", label: "Загрузить фото" },
     weight: 5,
   });
 

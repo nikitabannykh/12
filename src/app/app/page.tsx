@@ -130,7 +130,7 @@ export default async function Dashboard() {
       ) : null}
 
       {lowBalance.map((x) => (
-        <StopBanner key={x.accountId} tone={x.daysLeft === 0 ? "bad" : "warn"} icon="wallet" title={x.daysLeft === 0 ? "Кончились деньги в рекламном кабинете" : "Скоро кончатся деньги в рекламном кабинете"} text={`${balanceText(x)}${x.demo ? " В демо пополнение происходит само." : " Пополнение — в самом кабинете площадки."}`}>
+        <StopBanner key={x.accountId} tone={x.daysLeft === 0 ? "bad" : "warn"} icon="wallet" title={x.daysLeft === 0 ? "Кончились деньги в рекламном кабинете" : "Скоро кончатся деньги в рекламном кабинете"} text={`${balanceText(x)}${x.demo ? " В демо пополнение происходит само." : " Пополнение — в самом кабинете площадки."} Пока денег мало, робот не поднимает недельные лимиты — расход ниже плана из-за остатка, а не из-за площадки.`}>
           {TOPUP_URL[x.platform] && !x.demo ? <a href={TOPUP_URL[x.platform]} target="_blank" rel="noreferrer" className="btn btn-primary btn-sm">Пополнить <ExternalLink size={14} /></a> : null}
         </StopBanner>
       ))}
@@ -251,7 +251,7 @@ export default async function Dashboard() {
                         {s.stopped === "guard" ? (overBudget ? "стоит: кончился бюджет" : "стоит: не хватает бюджета") : s.stopped === "error" ? "ошибка площадки" : s.stopped === "owner" ? "на паузе — вы остановили" : "на паузе — остановил робот"}
                       </span>
                     ) : s && s.learningLeft > 0 ? (
-                      <span className="pill bg-info-soft text-ink-2" title={`Площадка подбирает аудиторию: после запуска до ${LEARNING_DAYS[x.channel] ?? 14} дней, после изменения бюджета — до 7. Робот в это время не трогает настройки`}>
+                      <span className="pill bg-info-soft text-ink-2" title={`Площадка подбирает аудиторию: после запуска до ${pl(LEARNING_DAYS[x.channel] ?? 14, "дня", "дней", "дней")}, после изменения бюджета — до 7. Робот в это время не трогает настройки`}>
                         <GraduationCap size={13} /> обучается — не трогаем {pl(s.learningLeft, "день", "дня", "дней")}
                       </span>
                     ) : (

@@ -3,6 +3,7 @@ import { getDb, schema } from "@/lib/db";
 import { eq } from "drizzle-orm";
 import { DEMO_MAX_SHIFT_DAYS, shiftDemoClock } from "@/lib/platforms/demo";
 import { runBusiness } from "@/lib/engine/run";
+import { pl } from "@/lib/util";
 
 export const maxDuration = 60;
 
@@ -21,7 +22,7 @@ export const POST = route(async ({ business, req }) => {
   const logs: string[] = [];
   let done = 0;
   let offset = await shiftDemoClock(0, scope);
-  if (offset >= DEMO_MAX_SHIFT_DAYS) return fail(`Демо-время уже промотано на ${DEMO_MAX_SHIFT_DAYS} дней — дальше нельзя. Создайте новый демо-аккаунт, чтобы начать сначала.`);
+  if (offset >= DEMO_MAX_SHIFT_DAYS) return fail(`Демо-время уже промотано на ${pl(DEMO_MAX_SHIFT_DAYS, "день", "дня", "дней")} — дальше нельзя. Создайте новый демо-аккаунт, чтобы начать сначала.`);
   for (let i = 0; i < d; i++) {
     if (Date.now() - started > 45_000 || offset >= DEMO_MAX_SHIFT_DAYS) break;
     offset = await shiftDemoClock(1, scope);

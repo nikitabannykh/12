@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 import { Check, ImagePlus, Loader2, Pencil, Sparkles, Trash2, TriangleAlert } from "lucide-react";
-import { api, Modal, Toggle, useToast } from "./client";
+import { api, Modal, Toggle, useToast, resizeToJpeg } from "./client";
 import { SearchAdPreview, ImageAdPreview, ResponsiveAssets } from "./AdPreview";
 import { adExtras, responsiveAssets, withPlanCallouts, type ExtrasBiz } from "@/lib/engine/extras";
 import { allocate, forecast, minMonthlyFor } from "@/lib/engine/budget";
@@ -65,26 +65,6 @@ function Step({ n, title, done, active, children, aside }: { n: number; title: s
       </div>
     </section>
   );
-}
-
-async function resizeToJpeg(file: File, max = 1600): Promise<string> {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await new Promise<HTMLImageElement>((ok, bad) => {
-      const i = new Image();
-      i.onload = () => ok(i);
-      i.onerror = bad;
-      i.src = url;
-    });
-    const k = Math.min(1, max / Math.max(img.width, img.height));
-    const c = document.createElement("canvas");
-    c.width = Math.round(img.width * k);
-    c.height = Math.round(img.height * k);
-    c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
-    return c.toDataURL("image/jpeg", 0.88);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
 }
 
 export function LaunchWizard(p: Props) {
@@ -407,7 +387,7 @@ export function LaunchWizard(p: Props) {
             ))}
             {plan.negatives.length ? (
               <details className="text-sm">
-                <summary className="cursor-pointer font-semibold">Минус-слова: не показываем рекламу по {plan.negatives.length} нецелевым запросам</summary>
+                <summary className="cursor-pointer font-semibold">Минус-слова: не показываем рекламу по {plan.negatives.length} {plural(plan.negatives.length, "нецелевому запросу", "нецелевым запросам", "нецелевым запросам")}</summary>
                 <p className="text-muted mt-2 leading-relaxed">{plan.negatives.join(", ")}</p>
               </details>
             ) : null}

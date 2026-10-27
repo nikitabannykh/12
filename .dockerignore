@@ -1,0 +1,16 @@
+# Не копируем в образ: зависимости ставятся внутри, сборка делается внутри
+node_modules
+.next
+.data
+.git
+.github
+.vercel
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+docs
+scripts
+Dockerfile
+.dockerignore
+npm-debug.log*

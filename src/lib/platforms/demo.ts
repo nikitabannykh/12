@@ -4,7 +4,7 @@ import { createHash } from "crypto";
 import type { AuctionRow, AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy } from "./types";
 import { PlatformError } from "./types";
 import { getDb, schema } from "../db";
-import { addDays, isoDay, uid } from "../util";
+import { addDays, isoDay, pl, uid } from "../util";
 
 /**
  * Демо-площадка: ведёт себя как рекламный кабинет, но показы, клики и заявки моделируются.
@@ -198,7 +198,7 @@ export class DemoPlatform implements PlatformClient {
     await hooks?.onCampaignCreated?.(campaignExt);
     const out: LaunchResult = {
       campaignExt, groups: [], complete: true,
-      warnings: [`Демо-кабинет: чтобы отчёты и решения робота были видны сразу, кампания «работает» с ${day} — статистика за ${DEMO_BACKFILL_DAYS} дней до запуска смоделирована`],
+      warnings: [`Демо-кабинет: чтобы отчёты и решения робота были видны сразу, кампания «работает» с ${day} — статистика за ${pl(DEMO_BACKFILL_DAYS, "день", "дня", "дней")} до запуска смоделирована`],
     };
     const lim = limitsFor(spec.channel);
     for (const g of spec.groups) {
@@ -243,7 +243,7 @@ export class DemoPlatform implements PlatformClient {
   private room(s: State, groupExt: string, lim: AdLimits | null) {
     if (!lim) return null;
     const peers = Object.values(s.ads).filter((a) => a.group === groupExt);
-    if (peers.length >= lim.total) return `В группе уже ${lim.total} объявлений вместе с архивными — больше Директ не принимает`;
+    if (peers.length >= lim.total) return `В группе уже ${pl(lim.total, "объявление", "объявления", "объявлений")} вместе с архивными — больше Директ не принимает`;
     if (peers.filter((a) => a.status !== "archived").length >= lim.nonArchived) return `В группе может быть не больше ${lim.nonArchived} неархивных объявлений — сначала уберите одно в архив`;
     return null;
   }

@@ -1,5 +1,5 @@
 import { route, json, fail, needBusiness } from "@/lib/api";
-import { saveImage, listPhotos } from "@/lib/engine/images";
+import { saveImage, listPhotos, ownerPhotoIds, MAX_PHOTOS } from "@/lib/engine/images";
 import { imageSize } from "@/lib/creative/imagesize";
 
 export const GET = route(async ({ business }) => {
@@ -18,6 +18,7 @@ export const POST = route(async ({ business, req }) => {
   const size = imageSize(buf);
   if (!size) return fail("Не получилось прочитать фото");
   if (size.width < 450 || size.height < 450) return fail("Фото маловато: нужно хотя бы 450×450 пикселей, иначе площадки его не примут");
+  if ((await ownerPhotoIds(business.id)).length >= MAX_PHOTOS) return fail(`Загружено уже ${MAX_PHOTOS} фото — удалите старое, чтобы добавить новое`);
   const img = await saveImage(business.id, "photo", buf);
   return json({ id: img.id });
 });

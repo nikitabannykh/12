@@ -7,6 +7,8 @@ import { adStats, reportNow, report, campaignStates, LEARNING_DAYS } from "@/lib
 import { getDb, schema } from "@/lib/db";
 import { LiveToggle } from "@/components/client";
 import { AdActions, AddChannelButton, BudgetInline } from "@/components/AdsControls";
+import { OwnerPhotos } from "@/components/OwnerPhotos";
+import { MAX_PHOTOS } from "@/lib/engine/images";
 import { SearchAdPreview, ImageAdPreview, ResponsiveAssets } from "@/components/AdPreview";
 import { SerpScheme, AuctionTable } from "@/components/Serp";
 import { ceilingOf } from "@/lib/engine/ops";
@@ -116,6 +118,19 @@ export default async function AdsPage() {
   const bestAd = leaders.sort((x, y) => cpl(x.id) - cpl(y.id) || ctrOf(st(y.id)) - ctrOf(st(x.id)))[0];
   const weakCount = visible.filter((a) => scores.get(a.id)?.verdict === "weak").length;
 
+  // ─── Свои фото владельца: где уже стоят (объявления с картинкой из этого фото) ───
+  const ownPhotos = await db.select({ id: schema.images.id }).from(schema.images).where(and(eq(schema.images.businessId, b.id), eq(schema.images.kind, "photo"))).orderBy(schema.images.createdAt);
+  const fromPhoto = ownPhotos.length
+    ? await db.select({ id: schema.images.id, prompt: schema.images.prompt }).from(schema.images).where(and(eq(schema.images.businessId, b.id), eq(schema.images.kind, "creative"), inArray(schema.images.prompt, ownPhotos.map((p) => p.id))))
+    : [];
+  const photoOfCreative = new Map(fromPhoto.map((r) => [r.id, r.prompt!]));
+  const photoUses = new Map<string, number>();
+  for (const a of visible) {
+    const pid = a.imageId ? photoOfCreative.get(a.imageId) : undefined;
+    if (pid) photoUses.set(pid, (photoUses.get(pid) ?? 0) + 1);
+  }
+  const hasImageChannels = camps.some((c) => c.channel !== "search");
+
   // ─── Каналы, которые подключены, но ещё не запущены ───
   const allCamps = await db.select({ channel: schema.campaigns.channel, status: schema.campaigns.status }).from(schema.campaigns).where(eq(schema.campaigns.businessId, b.id));
   const launched = [...new Set(allCamps.filter((c) => ["active", "paused", "creating"].includes(c.status)).map((c) => c.channel as Channel))];
@@ -136,7 +151,7 @@ export default async function AdsPage() {
     <div className="grid grid-cols-1 gap-6">
       <div>
         <h1 className="text-3xl font-extrabold tracking-tight">Реклама</h1>
-        <p className="text-muted mt-1 max-w-2xl">Что приносит клиентов, а что нет. Цифры за последние {DAYS} дней — так у сравнений больше данных. Можно менять всё вручную: робот учтёт ваши решения.</p>
+        <p className="text-muted mt-1 max-w-2xl">Что приносит клиентов, а что нет. Цифры за последние {pl(DAYS, "день", "дня", "дней")} — так у сравнений больше данных. Можно менять всё вручную: робот учтёт ваши решения.</p>
       </div>
 
       {/* ─── Главное ─── */}
@@ -340,6 +355,20 @@ export default async function AdsPage() {
           ) : null}
         </section>
       ) : null}
+
+      {/* ─── Свои фото ─── */}
+      <section id="photos" className="card p-5 sm:p-7 scroll-mt-20">
+        <h2 className="text-lg font-bold flex items-center gap-2"><ImageIcon size={18} /> Ваши фото</h2>
+        <p className="text-sm text-muted mt-1 max-w-2xl">
+          {ownPhotos.length
+            ? "Робот ставит ваши фото в объявления вместо нарисованных картинок и сравнивает: оставит то, что приводит больше людей."
+            : "Сейчас в объявлениях нарисованные или сгенерированные картинки. Настоящие фото — готовая работа крупным планом, зал, мастер за работой — обычно кликают чаще. Можно с телефона."}
+          {hasImageChannels ? " Новые фото робот ставит при следующих проверках, по одному в каждую аудиторию. Если там как раз проверяется текст, фото подождёт его итога." : " Картинки показываются в РСЯ и ВКонтакте — когда подключите их, фото пойдут в рекламу."}
+        </p>
+        <div className="mt-4">
+          <OwnerPhotos photos={ownPhotos.map((p) => ({ id: p.id, uses: photoUses.get(p.id) ?? 0 }))} max={MAX_PHOTOS} />
+        </div>
+      </section>
 
       {/* ─── Каналы подробно ─── */}
       {camps.map((camp) => {
@@ -558,7 +587,7 @@ function CampaignPill({ s, ch }: { s?: { stopped: string | null; learningLeft: n
   if (s?.stopped) return <span className="pill bg-paper text-muted">На паузе — вы остановили</span>;
   if (s && s.learningLeft > 0)
     return (
-      <span className="pill bg-info-soft text-ink-2" title={`Обучение после запуска длится до ${LEARNING_DAYS[ch] ?? 14} дней, после изменения бюджета — до 7`}>
+      <span className="pill bg-info-soft text-ink-2" title={`Обучение после запуска длится до ${pl(LEARNING_DAYS[ch] ?? 14, "дня", "дней", "дней")}, после изменения бюджета — до 7`}>
         <GraduationCap size={13} /> обучается — не трогаем {pl(s.learningLeft, "день", "дня", "дней")}
       </span>
     );
