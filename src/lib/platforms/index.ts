@@ -44,6 +44,7 @@ export async function clientFor(account: AdAccount): Promise<PlatformClient> {
           statusNote: null,
         }).where(eq(schema.adAccounts.id, account.id));
       },
+      account.clientId && account.clientSecret ? { clientId: account.clientId, clientSecret: decrypt(account.clientSecret) } : null,
     );
   }
   throw new Error(`Неизвестная площадка ${account.platform}`);

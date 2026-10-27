@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS ad_accounts (
   external_id text,
   access_token text NOT NULL,
   refresh_token text,
+  client_id text,
+  client_secret text,
   expires_at timestamptz,
   status text NOT NULL DEFAULT 'ok',
   status_note text,
@@ -243,4 +245,6 @@ ALTER TABLE leads ADD COLUMN IF NOT EXISTS status text;
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS status_at timestamptz;
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS metrika_client_id text;
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS yclid text;
+ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS client_id text;
+ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS client_secret text;
 `;

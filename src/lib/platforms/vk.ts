@@ -36,6 +36,8 @@ export const VK_MIN_WEEKLY_GROSS = Math.ceil(VK_MIN_DAILY * (1 + VK_VAT)) * 7;
 const grossOf = (net: number) => Math.round(net * (1 + VK_VAT) * 100) / 100;
 
 type Tokens = { accessToken: string; refreshToken: string | null };
+/** Ключи API самого рекламодателя — тогда токен можно получить заново без OAuth */
+export type VkCreds = { clientId: string; clientSecret: string };
 
 /**
  * Данные бизнеса, которых нет в CampaignSpec (общий тип площадок): задаются через VkAds.useBusiness() перед
@@ -69,11 +71,20 @@ export class VkAds implements PlatformClient {
   private packagesCache?: any[];
   private formatCache = new Map<number, VkFormat>();
   private biz: VkBusinessContext = {};
-  constructor(private tokens: Tokens, private onTokens?: (t: Tokens & { expiresIn: number }) => Promise<void>) {}
+  constructor(private tokens: Tokens, private onTokens?: (t: Tokens & { expiresIn: number }) => Promise<void>, private creds?: VkCreds | null) {}
 
   private async refresh() {
-    if (!this.tokens.refreshToken) throw new PlatformError("vk", "Доступ к VK Рекламе истёк — подключите кабинет заново");
-    const t = await vkToken({ grant_type: "refresh_token", refresh_token: this.tokens.refreshToken });
+    let t: Awaited<ReturnType<typeof vkToken>> | null = null;
+    if (this.tokens.refreshToken) {
+      try {
+        t = await vkToken({ grant_type: "refresh_token", refresh_token: this.tokens.refreshToken }, this.creds);
+      } catch (e) {
+        if (!this.creds) throw e;
+      }
+    }
+    // Свои ключи API: просто получаем новый токен
+    if (!t && this.creds) t = await vkToken({ grant_type: "client_credentials" }, this.creds);
+    if (!t) throw new PlatformError("vk", "Доступ к VK Рекламе истёк — подключите кабинет заново");
     this.tokens = { accessToken: t.accessToken, refreshToken: t.refreshToken ?? this.tokens.refreshToken };
     await this.onTokens?.({ ...this.tokens, expiresIn: t.expiresIn });
   }
@@ -617,19 +628,20 @@ export function vkAuthUrl(state: string, redirectUri: string) {
   return `https://ads.vk.com/hq/settings/access?${p}`;
 }
 
-export async function vkToken(params: Record<string, string>) {
+export async function vkToken(params: Record<string, string>, creds?: VkCreds | null) {
   const res = await fetch(`${BASE()}/v2/oauth2/token.json`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      client_id: process.env.VK_ADS_CLIENT_ID || "",
-      client_secret: process.env.VK_ADS_CLIENT_SECRET || "",
+      client_id: creds?.clientId || process.env.VK_ADS_CLIENT_ID || "",
+      client_secret: creds?.clientSecret || process.env.VK_ADS_CLIENT_SECRET || "",
       ...params,
     }),
   });
   const j = await res.json().catch(() => ({}));
   if (!res.ok || !j.access_token) {
-    const hint = res.status === 403 ? " (лимит в 5 токенов на приложение — удалите старые в настройках доступа VK)" : "";
+    const msg = JSON.stringify(j).toLowerCase();
+    const hint = /token.*limit|limit.*token|tokens_left/.test(msg) ? " (лимит в 5 токенов на ключ — удалите старые токены в «Настройки → Доступ к API» в VK)" : "";
     throw new Error(`VK Реклама не выдала доступ: ${j.error_description || j.message || j.error || res.status}${hint}`);
   }
   return { accessToken: j.access_token as string, refreshToken: (j.refresh_token as string) || null, expiresIn: Number(j.expires_in) || 86400 };

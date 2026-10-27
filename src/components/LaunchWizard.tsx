@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 import { Check, ImagePlus, Loader2, Pencil, Sparkles, Trash2, TriangleAlert } from "lucide-react";
 import { api, Modal, Toggle, useToast, resizeToJpeg } from "./client";
+import { VkConnect } from "./VkConnect";
 import { SearchAdPreview, ImageAdPreview, ResponsiveAssets } from "./AdPreview";
 import { adExtras, responsiveAssets, withPlanCallouts, type ExtrasBiz } from "@/lib/engine/extras";
 import { allocate, forecast, minMonthlyFor } from "@/lib/engine/budget";
@@ -233,6 +234,8 @@ export function LaunchWizard(p: Props) {
                   <div className={`text-sm ${acc.status === "ok" ? "text-good" : "text-bad"}`}>
                     {acc.status === "ok" ? <><Check size={14} className="inline -mt-0.5" /> Подключён: {acc.login}</> : <>Ошибка: {acc.statusNote}</>}
                   </div>
+                ) : x.platform === "vk" ? (
+                  <VkConnect oauth={x.on} back="/app/launch" compact />
                 ) : x.on ? (
                   <a className="btn btn-primary btn-sm self-start" href={x.href}>Подключить</a>
                 ) : (

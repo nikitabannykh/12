@@ -62,6 +62,9 @@ export const adAccounts = pgTable("ad_accounts", {
   externalId: text("external_id"),
   accessToken: text("access_token").notNull(), // зашифрован
   refreshToken: text("refresh_token"), // зашифрован
+  // VK по ключам API самого рекламодателя (Настройки → Доступ к API): client_id и client_secret (зашифрован)
+  clientId: text("client_id"),
+  clientSecret: text("client_secret"),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   status: text("status").notNull().default("ok"), // ok | error
   statusNote: text("status_note"),

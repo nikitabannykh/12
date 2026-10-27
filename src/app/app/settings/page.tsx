@@ -1,3 +1,4 @@
+import { VkConnect } from "@/components/VkConnect";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Check, ExternalLink, TriangleAlert } from "lucide-react";
@@ -67,16 +68,23 @@ export default async function Settings() {
               ) : (
                 <span className="pill bg-bad-soft text-bad" title={a.statusNote ?? ""}><TriangleAlert size={13} /> Нет доступа</span>
               )}
-              {a.platform !== "demo" ? <a className="btn btn-ghost btn-sm" href={`/api/connect/${a.platform}/start?back=/app/settings`}>Подключить заново</a> : null}
+              {a.platform === "yandex" || (a.platform === "vk" && vkConfigured()) ? <a className="btn btn-ghost btn-sm" href={`/api/connect/${a.platform}/start?back=/app/settings`}>Подключить заново</a> : null}
               <ActionButton method="DELETE" url={`/api/accounts/${a.id}`} confirm="Отключить кабинет? Сервис перестанет управлять рекламой в нём." done="Кабинет отключён">Отключить</ActionButton>
             </li>
           ))}
         </ul>
         <div className="mt-4 flex flex-wrap gap-2">
           {yandexConfigured() && !accounts.some((a) => a.platform === "yandex") ? <a className="btn btn-primary btn-sm" href="/api/connect/yandex/start?back=/app/settings">Подключить Яндекс Директ</a> : null}
-          {vkConfigured() && !accounts.some((a) => a.platform === "vk") ? <a className="btn btn-primary btn-sm" href="/api/connect/vk/start?back=/app/settings">Подключить VK Рекламу</a> : null}
+
           {demoAllowed() && !accounts.length ? <ActionButton url="/api/connect/demo" done="Демо-кабинет подключён" className="btn btn-ghost btn-sm">Подключить демо-кабинет</ActionButton> : null}
         </div>
+        {!accounts.some((a) => a.platform === "vk") || accounts.some((a) => a.platform === "vk" && a.status !== "ok") ? (
+          <div id="vk" className="mt-5 pt-5 border-t border-line scroll-mt-6">
+            <div className="font-semibold">VK Реклама</div>
+            <p className="text-sm text-muted mt-0.5 mb-3">ВКонтакте, Одноклассники, Дзен. {vkConfigured() ? "Войдите через VK или подключите по ключам API своего кабинета." : "Подключается по ключам API вашего кабинета — это 2 минуты."}</p>
+            <VkConnect oauth={vkConfigured()} back="/app/settings" />
+          </div>
+        ) : null}
         <p className="hint mt-4 max-w-2xl">Новые кабинеты используются для следующего запуска. Пополнение баланса — в самих кабинетах Директа и VK Рекламы. Маркировку рекламы площадки делают автоматически, если в кабинете заполнены данные рекламодателя.</p>
       </section>
 
