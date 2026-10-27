@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Loader2, Plus, Trash2, Wand2 } from "lucide-react";
+import { Link2, Loader2, Plus, Trash2 } from "lucide-react";
 import { api, useToast } from "./client";
 import type { Service } from "@/lib/db/schema";
 
@@ -13,48 +13,43 @@ export type BusinessInput = {
   description: string; services: Service[]; advantages: string[]; audience: string; offer: string; review: string; leadToClientRate: number;
 };
 
-export function BusinessForm({ initial, niches, next, aiOn, nicheLock = null }: { initial: BusinessInput; niches: NicheLite[]; next: string; aiOn: boolean; nicheLock?: "launched" | "plan" | null }) {
-  const [f, setF] = useState<BusinessInput>({ ...initial, services: initial.services.length ? initial.services : [{ name: "", price: "" }] });
+/** Пустые строки → null и очистка списков — то, что уходит в POST /api/business */
+export function businessPayload(f: BusinessInput) {
+  return {
+    ...f,
+    services: f.services.filter((s) => s.name.trim()).map((s) => ({ name: s.name.trim(), price: s.price?.trim() || undefined })),
+    advantages: f.advantages.map((a) => a.trim()).filter(Boolean),
+    address: f.address || null, phone: f.phone || null, whatsapp: f.whatsapp || null, telegram: f.telegram || null, hours: f.hours || null,
+    siteUrl: f.siteUrl || null, orgUrl: f.orgUrl.trim() || null, legalInfo: f.legalInfo.trim() || null, audience: f.audience || null, offer: f.offer || null, review: f.review || null,
+  };
+}
+
+/**
+ * Полная анкета. Может работать сама по себе (initial) или под управлением мастера автозаполнения
+ * (value + onChange + onSubmit): тогда правки сохраняются при переключении «короткая карточка ↔ все поля».
+ */
+export function BusinessForm({ initial, niches, next, nicheLock = null, value, onChange, onSubmit, onImport }: {
+  initial: BusinessInput; niches: NicheLite[]; next: string; nicheLock?: "launched" | "plan" | null;
+  value?: BusinessInput; onChange?: React.Dispatch<React.SetStateAction<BusinessInput>>; onSubmit?: (f: BusinessInput) => Promise<void>; onImport?: () => void;
+}) {
+  const [inner, setInner] = useState<BusinessInput>({ ...initial, services: initial.services.length ? initial.services : [{ name: "", price: "" }] });
+  const f = value ?? inner;
+  const setF = onChange ?? setInner;
   const [busy, setBusy] = useState(false);
-  const [importing, setImporting] = useState(false);
   const toast = useToast();
   const router = useRouter();
   const set = <K extends keyof BusinessInput>(k: K, v: BusinessInput[K]) => setF((x) => ({ ...x, [k]: v }));
   const niche = niches.find((n) => n.id === f.niche);
 
-  async function importSite() {
-    if (!f.siteUrl) return toast("Сначала укажите адрес сайта", "error");
-    setImporting(true);
-    try {
-      const d = await api<any>("POST", "/api/business/import", { url: f.siteUrl, niche: niche?.label, city: f.city });
-      setF((x) => ({
-        ...x,
-        name: x.name || d.name || "",
-        description: x.description || d.description || "",
-        address: x.address || d.address || "",
-        phone: x.phone || d.phone || "",
-        services: d.services?.length && !x.services.some((s) => s.name) ? d.services.slice(0, 10) : x.services,
-        advantages: d.advantages?.length && !x.advantages.length ? d.advantages.slice(0, 5) : x.advantages,
-      }));
-      toast("Заполнили по сайту — проверьте поля");
-    } catch (e) {
-      toast((e as Error).message, "error");
-    } finally {
-      setImporting(false);
-    }
-  }
-
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     try {
-      await api("POST", "/api/business", {
-        ...f,
-        services: f.services.filter((s) => s.name.trim()).map((s) => ({ name: s.name.trim(), price: s.price?.trim() || undefined })),
-        advantages: f.advantages.map((a) => a.trim()).filter(Boolean),
-        address: f.address || null, phone: f.phone || null, whatsapp: f.whatsapp || null, telegram: f.telegram || null, hours: f.hours || null,
-        siteUrl: f.siteUrl || null, orgUrl: f.orgUrl.trim() || null, legalInfo: f.legalInfo.trim() || null, audience: f.audience || null, offer: f.offer || null, review: f.review || null,
-      });
+      if (onSubmit) {
+        await onSubmit(f);
+        return;
+      }
+      await api("POST", "/api/business", businessPayload(f));
       router.push(next);
       router.refresh();
     } catch (err) {
@@ -66,6 +61,15 @@ export function BusinessForm({ initial, niches, next, aiOn, nicheLock = null }: 
   const section = "card p-5 sm:p-7 grid gap-5";
   return (
     <form onSubmit={save} className="grid gap-5">
+      {onImport ? (
+        <button type="button" onClick={onImport} className="card p-4 sm:p-5 flex items-center gap-3 text-left hover:border-line-2 transition-colors">
+          <span className="grid place-items-center size-10 rounded-full bg-mark-soft shrink-0"><Link2 size={18} /></span>
+          <span className="min-w-0">
+            <span className="block font-semibold">Заполнить по ссылке</span>
+            <span className="block text-sm text-muted">Сайт, Яндекс Карты, 2ГИС, Taplink, VK или YCLIENTS — подтянем адрес, часы, телефон, услуги и цены</span>
+          </span>
+        </button>
+      ) : null}
       <section className={section}>
         <h2 className="text-lg font-bold">Кто вы</h2>
         <div className="grid sm:grid-cols-2 gap-4">
@@ -125,14 +129,8 @@ export function BusinessForm({ initial, niches, next, aiOn, nicheLock = null }: 
         <h2 className="text-lg font-bold">Куда приходят клиенты</h2>
         <div>
           <label className="label" htmlFor="site">Сайт</label>
-          <div className="flex gap-2">
+          <div>
             <input id="site" className="field" value={f.siteUrl} onChange={(e) => set("siteUrl", e.target.value)} placeholder="lak-studio.ru или страница в Taplink" maxLength={300} />
-            {aiOn ? (
-              <button type="button" className="btn btn-ghost shrink-0" onClick={importSite} disabled={importing}>
-                {importing ? <Loader2 size={16} className="spin" /> : <Wand2 size={16} />}
-                <span className="hidden sm:inline">Заполнить по сайту</span>
-              </button>
-            ) : null}
           </div>
           <p className="hint mt-1.5">Нет сайта — не страшно. Сделаем простую страницу записи с вашими услугами, ценами и кнопками связи.</p>
         </div>
@@ -167,7 +165,7 @@ export function BusinessForm({ initial, niches, next, aiOn, nicheLock = null }: 
               </button>
             </div>
           ))}
-          {f.services.length < 10 ? (
+          {f.services.length < 15 ? (
             <button type="button" className="btn btn-ghost btn-sm justify-self-start" onClick={() => set("services", [...f.services, { name: "", price: "" }])}>
               <Plus size={16} /> Добавить услугу
             </button>

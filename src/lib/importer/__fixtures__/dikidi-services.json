@@ -1,0 +1,124 @@
+{
+ "error": {
+  "code": 0,
+  "message": null
+ },
+ "data": {
+  "list": {
+   "980353": {
+    "id": "980353",
+    "name": "Маникюр",
+    "category_value": "Маникюр",
+    "category_custom_sort": 3,
+    "field_sort_service": "custom_sort",
+    "services": [
+     {
+      "id": 7418455,
+      "name": "Маникюр+укрепление гелем",
+      "cost": 3000,
+      "time": 150,
+      "floating": false,
+      "price": 3000,
+      "service_value": "Маникюр+укрепление гелем",
+      "service_custom_sort": 4
+     },
+     {
+      "id": 13392862,
+      "name": "Маникюр(без покрытия)",
+      "cost": 2000,
+      "time": 60,
+      "floating": false,
+      "price": 2000,
+      "service_value": "Маникюр(без покрытия)",
+      "service_custom_sort": 3
+     },
+     {
+      "id": 17631148,
+      "name": "french / дизайн",
+      "cost": 500,
+      "time": 30,
+      "floating": false,
+      "price": 500,
+      "service_value": "french / дизайн",
+      "service_custom_sort": 2
+     },
+     {
+      "id": 4572043,
+      "name": "Ремонт",
+      "cost": 300,
+      "time": 60,
+      "floating": false,
+      "price": 300,
+      "service_value": "Ремонт",
+      "service_custom_sort": 1
+     }
+    ]
+   },
+   "1139627": {
+    "id": "1139627",
+    "name": "Маникюр +педикюр с покрытием и снятием",
+    "category_value": "Маникюр +педикюр с покрытием и снятием",
+    "category_custom_sort": 2,
+    "field_sort_service": "value",
+    "services": [
+     {
+      "id": 5080827,
+      "name": "Маникюр +педикюр с покрытием",
+      "cost": 6500,
+      "time": 300,
+      "floating": false,
+      "price": 6500,
+      "service_value": "Маникюр +педикюр с покрытием",
+      "service_custom_sort": 1
+     }
+    ]
+   },
+   "980357": {
+    "id": "980357",
+    "name": "Педикюр",
+    "category_value": "Педикюр",
+    "category_custom_sort": 1,
+    "field_sort_service": "custom_sort",
+    "services": [
+     {
+      "id": 4572093,
+      "name": "Педикюр с покрытием",
+      "cost": 3500,
+      "time": 120,
+      "floating": true,
+      "price": 3500,
+      "service_value": "Педикюр с покрытием",
+      "service_custom_sort": 3
+     },
+     {
+      "id": 5906061,
+      "name": "Педикюр пальчики + покрытие",
+      "cost": 3000,
+      "time": 120,
+      "floating": true,
+      "price": 3000,
+      "service_value": "Педикюр пальчики + покрытие",
+      "service_custom_sort": 2
+     },
+     {
+      "id": 12459346,
+      "name": "Обработка пальчики + стопа",
+      "cost": 2700,
+      "time": 90,
+      "floating": true,
+      "price": 2700,
+      "service_value": "Обработка пальчики + стопа",
+      "service_custom_sort": 1
+     }
+    ]
+   }
+  },
+  "currency": {
+   "id": 1,
+   "title": "Российский рубль",
+   "abbr": "RUB",
+   "iso": "RUB"
+  },
+  "minimal_cost": 300
+ }
+}

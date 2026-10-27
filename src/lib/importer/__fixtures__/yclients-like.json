@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "data": {
+    "category": [{ "id": 1, "title": "Стрижки" }],
+    "services": [
+      { "id": 101, "title": "Женская стрижка", "category_id": 1, "price_min": 2000, "price_max": 3500, "seance_length": 3600 },
+      { "id": 102, "title": "Окрашивание в один тон", "category_id": 1, "price_min": 4500, "price_max": 4500 },
+      { "id": 103, "title": "Укладка", "category_id": 1, "price_min": 1200, "price_max": 0 },
+      { "id": 104, "title": "Консультация колориста", "category_id": 1, "price_min": 0, "price_max": 0 }
+    ],
+    "staff": [{ "id": 7, "name": "Анна", "specialization": "Стилист" }]
+  },
+  "meta": []
+}

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Студия маникюра «Лак» — маникюр и педикюр в Казани</title>
+  <meta name="description" content="Маникюр, педикюр и брови в центре Казани. Работаем с 2019 года, стерилизация в сухожаре.">
+  <meta property="og:title" content="Студия «Лак»">
+  <meta property="og:image" content="https://lak-studio.example/img/interior.jpg">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "WebSite", "name": "Лак", "url": "https://lak-studio.example/" },
+      {
+        "@type": ["BeautySalon", "NailSalon"],
+        "name": "Студия «Лак»",
+        "description": "Маникюр, педикюр и оформление бровей в центре Казани. Работаем с 2019 года.",
+        "telephone": "8 (843) 200-10-20",
+        "priceRange": "1500-4000 RUB",
+        "image": ["https://lak-studio.example/img/hall.jpg", {"@type": "ImageObject", "url": "/img/works-1.jpg"}],
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "ул. Баумана, 15",
+          "addressLocality": "Казань",
+          "postalCode": "420111",
+          "addressCountry": "RU"
+        },
+        "openingHoursSpecification": [
+          { "@type": "OpeningHoursSpecification", "dayOfWeek": ["Monday","Tuesday","Wednesday","Thursday","Friday"], "opens": "10:00", "closes": "21:00" },
+          { "@type": "OpeningHoursSpecification", "dayOfWeek": ["https://schema.org/Saturday","https://schema.org/Sunday"], "opens": "11:00", "closes": "19:00" }
+        ],
+        "aggregateRating": { "@type": "AggregateRating", "ratingValue": "4.9", "reviewCount": "87" },
+        "review": [{ "@type": "Review", "reviewBody": "Хожу к Алине второй год — маникюр ни разу не скололся раньше чем через три недели.", "author": {"@type": "Person", "name": "Мария"} }],
+        "hasOfferCatalog": {
+          "@type": "OfferCatalog",
+          "name": "Услуги",
+          "itemListElement": [
+            { "@type": "OfferCatalog", "name": "Маникюр", "itemListElement": [
+              { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Маникюр с покрытием гель-лаком" }, "price": "1900", "priceCurrency": "RUB" },
+              { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Снятие и укрепление" }, "priceSpecification": { "@type": "PriceSpecification", "minPrice": 700, "priceCurrency": "RUB" } }
+            ]},
+            { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Педикюр" }, "lowPrice": "2200", "highPrice": "2800", "priceCurrency": "RUB" },
+            { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Архитектура бровей" }, "price": 1200, "priceCurrency": "RUB" }
+          ]
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header><a href="/"><img src="/img/logo.svg" alt="Лак"></a>
+    <nav><a href="/uslugi/">Услуги и цены</a> <a href="/kontakty">Контакты</a> <a href="/blog">Блог</a> <a href="https://vk.com/lak">VK</a></nav>
+  </header>
+  <h1>Маникюр и педикюр в центре Казани</h1>
+  <p>Запись: <a href="tel:+78432001020">+7 843 200-10-20</a>, <a href="https://wa.me/79001112233?text=Здравствуйте">WhatsApp</a>, <a href="https://t.me/lak_studio">Telegram</a></p>
+  <p>Мы на <a href="https://yandex.ru/maps/org/lak/1234567890/">Яндекс Картах</a> · запись онлайн в <a href="https://dikidi.net/123456">DIKIDI</a></p>
+  <div class="gallery">
+    <img src="/img/works-2.jpg" width="1200" height="900" alt="Работа мастера">
+    <img src="/img/icon-whatsapp.png" width="32" height="32">
+    <img data-src="/upload/works-3.jpg" class="lazy">
+  </div>
+</body>
+</html>

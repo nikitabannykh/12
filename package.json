@@ -6,7 +6,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "check:schema": "tsx scripts/check-schema.ts"
+    "check:schema": "tsx scripts/check-schema.ts",
+    "test:importer": "tsx --test src/lib/importer/importer.test.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.11",
