@@ -233,7 +233,7 @@ export class VkAds implements PlatformClient {
    *  3) создаём: POST remarketing/counters.json {name, url}. В документации пример создания ещё с email/password
    *     владельца Top@Mail.ru — их у нас нет; пробуем без них (VK_ADS_CREATE_PIXEL=0 — не пытаться). Не вышло — null.
    */
-  async ensurePixel(o: { name: string; url: string; tag: string; known?: number | null }): Promise<{ counterId: number | null; note?: string }> {
+  async ensurePixel(o: { name: string; url: string; tag: string; known?: number | null; email?: string | null }): Promise<{ counterId: number | null; note?: string }> {
     const items = async (query: Record<string, string>) => (await this.listAll("v2/remarketing/counters.json", query, 10)) as any[];
     const ok = (c: any) => c && c.status !== "deleted" && c.system_status !== "blocked";
     try {
@@ -252,7 +252,10 @@ export class VkAds implements PlatformClient {
     if (process.env.VK_ADS_CREATE_PIXEL === "0") return { counterId: null, note: "создание пикселя отключено (VK_ADS_CREATE_PIXEL=0)" };
     const manual = `создайте его в кабинете VK Рекламы: «Сайты» → «Добавить сайт», адрес ${o.url}`;
     try {
-      const c = await this.req("POST", "v2/remarketing/counters.json", { body: { name: `${o.name.slice(0, 60)} ${o.tag}`, url: o.url } });
+      // Пиксель в VK — счётчик Top@Mail.ru: VK требует email владельца и пароль к счётчику. Пароль генерируем сами
+      // (входить по нему не нужно — пиксель виден в кабинете VK Рекламы), email — только с согласия владельца
+      const password = o.email ? Array.from(crypto.getRandomValues(new Uint8Array(18)), (x) => "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"[x % 55]).join("") + "7a" : undefined;
+      const c = await this.req("POST", "v2/remarketing/counters.json", { body: { name: `${o.name.slice(0, 60)} ${o.tag}`, url: o.url, ...(o.email ? { email: o.email, password } : {}) } });
       const id = Number(c.counter_id);
       return id ? { counterId: id } : { counterId: null, note: `VK не вернул номер пикселя — ${manual}` };
     } catch (e) {
@@ -585,7 +588,7 @@ export class VkAds implements PlatformClient {
       break;
       }
       if (lastErr && /priced_goal/.test(String((lastErr as Error).message)) && /required/.test(String((lastErr as Error).message))) {
-        throw new PlatformError("vk", `Ваш кабинет VK принимает только кампании «Конверсии на сайте», а им нужен пиксель с событием «Заявка». Один раз сделайте в кабинете VK Рекламы (ads.vk.ru): 1) «Сайты» → «Добавить сайт», адрес: ${spec.siteUrl.split("?")[0]}; 2) в настройках пикселя → «События» → добавьте JS-событие с ID «lead» (название «Заявка»). Код пикселя на нашу страницу записи мы поставим сами${/\/p\//.test(spec.siteUrl) ? "" : ", а на ваш сайт его нужно добавить — он появится в «Настройках»"}. Потом нажмите «Продолжить запуск».`);
+        throw new PlatformError("vk", `Ваш кабинет VK принимает только кампании «Конверсии на сайте», а им нужен пиксель с событием «Заявка». Нажмите «Настроить VK за меня» в блоке VK Рекламы выше (или в «Настройках» → «Рекламные кабинеты») — пиксель создадим сами; затем добавьте в пикселе событие «Заявка» по подсказке и нажмите «Продолжить запуск».`);
       }
       if (lastErr) throw badPackage(lastErr) ? new PlatformError("vk", `Ни один формат размещения кабинета не подошёл для рекламы сайта (проверили ${candidates.length}). Укажите пакет в переменной VK_ADS_PACKAGE_ID или напишите нам.`) : lastErr;
       if (!planId) throw new PlatformError("vk", "VK не создал кампанию");

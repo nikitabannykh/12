@@ -1,4 +1,5 @@
 import { VkConnect } from "@/components/VkConnect";
+import { VkPixelSetup } from "@/components/VkPixelSetup";
 import { ShowSettingsEditor } from "@/components/ShowSettingsEditor";
 import { LandingEditor } from "@/components/LandingEditor";
 import { pageUrl, type LandingSettings } from "@/lib/engine/landing";
@@ -147,6 +148,7 @@ export default async function Settings() {
             <VkConnect oauth={vkConfigured()} back="/app/settings" />
           </div>
         ) : null}
+        {accounts.some((a) => a.platform === "vk" && a.status === "ok") ? <div id="vk-pixel" className="mt-4 scroll-mt-6"><VkPixelSetup /></div> : null}
         <p className="hint mt-4 max-w-2xl">Новые кабинеты используются для следующего запуска. Пополнение баланса — в самих кабинетах Директа и VK Рекламы. Маркировку рекламы площадки делают автоматически, если в кабинете заполнены данные рекламодателя.</p>
       </section>
 

@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ImagePlus, Loader2, Rocket, Search, Sparkles, Trash2, TriangleAlert } from "lucide-react";
 import { api, Modal, useToast, resizeToJpeg } from "./client";
 import { VkConnect } from "./VkConnect";
+import { VkPixelSetup } from "./VkPixelSetup";
 import { PlanManager } from "./PlanManager";
 import { ShowSettingsEditor } from "./ShowSettingsEditor";
 import { MedicalLicenseGuide } from "./MedicalLicenseGuide";
@@ -326,8 +327,11 @@ export function LaunchWizard(p: Props) {
                   <div className="text-sm text-muted">{x.desc}</div>
                 </div>
                 {acc ? (
-                  <div className={`text-sm ${acc.status === "ok" ? "text-good" : "text-bad"}`}>
-                    {acc.status === "ok" ? <><Check size={14} className="inline -mt-0.5" /> Подключён: {acc.login}</> : <>Ошибка: {acc.statusNote}</>}
+                  <div className="grid gap-2">
+                    <div className={`text-sm ${acc.status === "ok" ? "text-good" : "text-bad"}`}>
+                      {acc.status === "ok" ? <><Check size={14} className="inline -mt-0.5" /> Подключён: {acc.login}</> : <>Ошибка: {acc.statusNote}</>}
+                    </div>
+                    {x.platform === "vk" && acc.status === "ok" ? <VkPixelSetup /> : null}
                   </div>
                 ) : x.platform === "vk" ? (
                   <VkConnect oauth={x.on} back="/app/launch" compact />

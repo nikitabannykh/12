@@ -752,7 +752,7 @@ async function ensureAudienceFor(b: Business, account: AdAccount, client: Platfo
       why = (ctx as { notes?: string[] }).notes?.join("; ") ?? "";
       pixelId = await vkPixelCounterId(b.id);
     }
-    if (!pixelId) throw new Error(`для ретаргетинга нужен пиксель VK на сайте, а создать его не получилось${why ? ` (${why})` : ""}. Создайте пиксель в кабинете VK Рекламы: «Сайты» → «Добавить сайт», — и нажмите «Продолжить запуск»`);
+    if (!pixelId) throw new Error(`для ретаргетинга нужен пиксель VK на сайте, а создать его не получилось${why ? ` (${why})` : ""}. Нажмите «Настроить VK за меня» в блоке VK Рекламы выше — пиксель создадим сами, — и затем «Продолжить запуск»`);
     return client.ensureAudience({ name, pixelId, leadGoal: VK_LEAD_GOAL, days: RETARGET_WINDOW_DAYS });
   }
   void channel;

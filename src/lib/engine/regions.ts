@@ -137,12 +137,12 @@ export async function vkPixelCounterId(businessId: string): Promise<number | nul
  * запоминаем в kv `vk:pixel:<businessId>`; цель — событие пикселя с JS-событием `lead` (VkAds.leadGoal).
  * Нет пикселя или цели — null и предупреждение: кампания пойдёт по переходам (как раньше).
  */
-export async function vkLeadGoal(b: Business, client: VkAds, siteUrl?: string): Promise<{ pricedGoal: VkBusinessContext["pricedGoal"]; note?: string }> {
+export async function vkLeadGoal(b: Business, client: VkAds, siteUrl?: string, email?: string | null): Promise<{ pricedGoal: VkBusinessContext["pricedGoal"]; note?: string }> {
   if (process.env.VK_PIXEL === "0") return { pricedGoal: null };
   const db = await getDb();
   const url = siteUrl || b.siteUrl || `${appUrl()}/p/${b.publicKey}`;
   const known = await vkPixelCounterId(b.id).catch(() => null);
-  const px = await client.ensurePixel({ name: b.name, url, tag: `pz-${b.publicKey}`, known });
+  const px = await client.ensurePixel({ name: b.name, url, tag: `pz-${b.publicKey}`, known, email: email ?? (await vkPixelEmail(b.id)) });
   if (!px.counterId) return { pricedGoal: null, note: `VK: пиксель не настроен — ${px.note ?? "нет данных"}. Оптимизируем по переходам` };
   if (px.counterId !== known) {
     const value = { counterId: px.counterId, url };
@@ -180,4 +180,16 @@ export async function prepareVk(b: Business, client: VkAds, siteUrl?: string): P
   for (const n of notes) console.warn(`[vk] ${b.id}: ${n}`);
   client.useBusiness({ ...ctx, notes });
   return { ...ctx, notes };
+}
+
+/** Email для пикселя VK, который владелец разрешил использовать (кнопка «Настроить VK за меня») */
+export async function vkPixelEmail(businessId: string): Promise<string | null> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, `vkpixelemail:${businessId}`));
+  return ((row?.value as { email?: string } | undefined)?.email) ?? null;
+}
+export async function saveVkPixelEmail(businessId: string, email: string) {
+  const db = await getDb();
+  const key = `vkpixelemail:${businessId}`;
+  await db.insert(schema.kv).values({ key, value: { email, at: new Date().toISOString() } }).onConflictDoUpdate({ target: schema.kv.key, set: { value: { email, at: new Date().toISOString() }, updatedAt: new Date() } });
 }
