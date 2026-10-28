@@ -317,7 +317,7 @@ export const MEDICAL_NOTE =
  * затем возвращает план с done=false; следующий вызов продолжает с того же места. Одинаковые картинки
  * (тот же макет, фото, размер, услуга и цена) рисуем один раз и переиспользуем.
  */
-export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Date.now() + 40_000): Promise<{ plan: LaunchPlan; done: boolean; made: number; total: number }> {
+export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Date.now() + 40_000): Promise<{ plan: LaunchPlan; done: boolean; made: number; total: number; steps: number; stepsDone: number }> {
   const warnings = [...plan.warnings];
   let photoIds = plan.stage === "images" ? plan.photoIds : [];
   if (plan.stage !== "images") {
@@ -408,16 +408,21 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
       const service = ch.channel === "search" ? b.services?.find((x) => x.name === (g.service ?? g.name)) ?? svc : svc;
       for (const ad of g.ads) {
         if (!ad.imageId || setsDone.has(ad.imageId) || timeUp()) continue;
-        await imageSet(b, ad.imageId, { headline: ch.channel === "search" ? service?.name ?? g.name : svc?.name, price: service?.price }).catch(() => []);
+        await imageSet(b, ad.imageId, { headline: ch.channel === "search" ? service?.name ?? g.name : svc?.name, price: service?.price, until: deadline }).catch(() => []);
+        if (timeUp()) break; // набор мог остаться неполным — доделаем в следующем шаге
         setsDone.add(ad.imageId);
       }
     }
   }
   const allAds = channels.flatMap((c) => c.groups.flatMap((g) => g.ads));
   const pending = allAds.filter((a) => !a.imageId).length;
+  // Прогресс для владельца: картинки объявлений + форматы Директа для каждой уникальной картинки
+  const directImages = new Set(channels.filter((c) => isDirectChannel(c.channel) && c.platform !== "vk").flatMap((c) => c.groups.flatMap((g) => g.ads.map((a) => a.imageId).filter(Boolean) as string[])));
+  const steps = allAds.length + directImages.size;
+  const stepsDone = allAds.length - pending + [...directImages].filter((id) => setsDone.has(id)).length;
   const done = !outOfTime;
   const next: LaunchPlan = { ...plan, channels, photoIds, creatives, imageSetsDone: [...setsDone], stage: done ? "ready" : "images", warnings: done ? [...new Set(warnings)] : plan.warnings };
-  return { plan: next, done, made, total: allAds.length - pending };
+  return { plan: next, done, made, total: allAds.length - pending, steps, stepsDone: done ? steps : stepsDone };
 }
 
 export async function savePlan(businessId: string, plan: LaunchPlan) {

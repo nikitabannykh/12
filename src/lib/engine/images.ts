@@ -145,7 +145,7 @@ const ratioKey = (w: number, h: number) => (Math.abs(w / h - 16 / 9) < 0.05 ? "1
  * Набор запоминается (kv `imgset:<id>`), поэтому при запуске, у робота и при повторах он одинаковый.
  * Возвращает картинки без исходной; ошибки рендера не мешают — просто меньше пропорций.
  */
-export async function imageSet(b: Business, baseImageId: string, ctx: { headline?: string; price?: string } = {}) {
+export async function imageSet(b: Business, baseImageId: string, ctx: { headline?: string; price?: string; until?: number } = {}) {
   const db = await getDb();
   const key = `imgset:${baseImageId}`;
   const base = await getImage(baseImageId);
@@ -160,6 +160,7 @@ export async function imageSet(b: Business, baseImageId: string, ctx: { headline
   for (const sz of DIRECT_IMAGE_SIZES) {
     const r = ratioKey(sz.width, sz.height);
     if (r === own || known[r] || photoGone) continue;
+    if (ctx.until && Date.now() > ctx.until) break; // не успеваем — остальные пропорции дорисуем в следующем шаге
     try {
       const img = await makeCreative(b, { layout: base.layout as Layout, photoId: srcPhoto, width: sz.width, height: sz.height, headline: ctx.headline, price: ctx.price, variant: 0 });
       known[r] = img.id;

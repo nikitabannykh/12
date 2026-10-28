@@ -10,7 +10,8 @@ export const POST = route(async ({ business }) => {
   if (!plan) return fail("Сначала подготовьте объявления");
   if (plan.launch) return fail("Запуск уже начат — дождитесь окончания или продолжите его", 409);
   // Не больше ~40 секунд за вызов (лимит функции — 60): если не успели, клиент вызовет ещё раз и мы продолжим
-  const r = await prepareImages(business, plan, Date.now() + 40_000);
+  // Порция ~20 секунд: одна картинка с большим фото рисуется до нескольких секунд, оставляем запас до лимита в 60
+  const r = await prepareImages(business, plan, Date.now() + 20_000);
   await savePlan(business.id, r.plan);
-  return json({ plan: r.plan, done: r.done, ready: r.total });
+  return json({ plan: r.plan, done: r.done, ready: r.stepsDone, total: r.steps, adsWithImages: r.total });
 });

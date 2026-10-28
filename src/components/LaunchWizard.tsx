@@ -103,6 +103,7 @@ export function LaunchWizard(p: Props) {
   const [budget, setBudget] = useState(p.business.monthlyBudget);
   const [savedBudget, setSavedBudget] = useState(p.business.monthlyBudget);
   const [phase, setPhase] = useState<null | "copy" | "images" | "publish">(null);
+  const [imgProgress, setImgProgress] = useState<{ ready: number; total: number } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [edit, setEdit] = useState<{ ad: PlanAd; channel: Channel } | null>(null);
   const [progress, setProgress] = useState<Progress | null>(() => progressOf(p.plan));
@@ -139,24 +140,37 @@ export function LaunchWizard(p: Props) {
     }
   }
 
+  async function drawImages() {
+    setPhase("images");
+    // Объявления показываем сразу после текстов, картинки появляются порциями
+    for (let i = 0; i < 40; i++) {
+      const b = await api<{ plan: LaunchPlan; done?: boolean; ready?: number; total?: number }>("POST", "/api/launch/images");
+      setPlan(b.plan);
+      if (typeof b.ready === "number" && typeof b.total === "number") setImgProgress({ ready: b.ready, total: b.total });
+      if (b.done !== false) break;
+    }
+    setImgProgress(null);
+  }
+
   async function prepare() {
     try {
       setPhase("copy");
       const a = await api<{ plan: LaunchPlan }>("POST", "/api/launch/copy");
       setPlan(a.plan);
-      setPhase("images");
-      // Картинки готовятся шагами: сервер отвечает done=false, если не успел за один вызов
-      for (let i = 0; i < 20; i++) {
-        const b = await api<{ plan: LaunchPlan; done?: boolean }>("POST", "/api/launch/images");
-        setPlan(b.plan);
-        if (b.done !== false) break;
-      }
+      await drawImages();
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
       setPhase(null);
     }
   }
+
+  // Страницу закрыли, пока рисовались картинки, — продолжаем с того же места
+  useEffect(() => {
+    if (p.plan?.stage !== "images") return;
+    drawImages().catch((e) => toast((e as Error).message, "error")).finally(() => setPhase(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function patchPlan(body: Record<string, unknown>) {
     try {
@@ -381,7 +395,17 @@ export function LaunchWizard(p: Props) {
       <Section id="ads" title="Объявления" done={ready && !preparing} active={hasAccounts} note={hasAccounts ? undefined : "После кабинета"}
         aside={ready && !preparing ? <button className="btn btn-ghost btn-sm" onClick={prepare} disabled={!!phase}><Sparkles size={15} /> Написать заново</button> : null}>
         {photoStrip}
-        {!ready || preparing ? (
+        {phase === "images" && plan ? (
+          <div className="mt-5 rounded-xl bg-paper px-4 py-3 text-sm flex items-center gap-3">
+            <Loader2 size={16} className="spin shrink-0" />
+            <div className="flex-1">
+              <div className="font-semibold">Тексты готовы — рисуем картинки{imgProgress ? `: ${Math.round((imgProgress.ready / Math.max(imgProgress.total, 1)) * 100)}%` : "…"}</div>
+              {imgProgress ? <div className="mt-1.5 h-1.5 rounded-full bg-line overflow-hidden"><div className="h-full bg-ink rounded-full transition-all" style={{ width: `${Math.round((imgProgress.ready / Math.max(imgProgress.total, 1)) * 100)}%` }} /></div> : null}
+              <div className="text-muted text-xs mt-1">Объявления уже можно смотреть и править ниже — картинки появятся сами.</div>
+            </div>
+          </div>
+        ) : null}
+        {(!ready || preparing) && !(phase === "images" && plan) ? (
           <div className="mt-5 rounded-xl border-2 border-dashed border-line p-5 grid gap-1.5 justify-items-start">
             {preparing ? <p className="font-semibold inline-flex items-center gap-2"><Loader2 size={16} className="spin" /> {phase === "copy" ? "Пишем тексты и подбираем запросы…" : "Готовим картинки…"}</p> : <p className="font-semibold">Здесь появятся объявления</p>}
             <p className="text-muted leading-relaxed text-sm max-w-xl">Робот напишет объявления для каждого канала, подберёт поисковые запросы и минус-слова, сделает картинки. Каждое объявление проверяет свою идею — какая сработает лучше, покажет статистика.{!preparing && hasAccounts ? " Нажмите «Подготовить объявления» внизу." : ""}</p>
