@@ -156,6 +156,23 @@ export class VkAds implements PlatformClient {
     return this.packagesCache!;
   }
 
+  /**
+   * Пакеты-кандидаты под «трафик на сайт», лучшие первыми. VK не говорит заранее, какой пакет подойдёт плану
+   * (ответ «invalid_package» приходит только при создании), поэтому при отказе пробуем следующий.
+   */
+  async trafficPackageCandidates(): Promise<number[]> {
+    if (process.env.VK_ADS_PACKAGE_ID) return [Number(process.env.VK_ADS_PACKAGE_ID)];
+    const list = await this.packages();
+    const active = list.filter((p) => !p.status || p.status === "active");
+    const obj = (p: any) => JSON.stringify(p.objective ?? p.objectives ?? "");
+    const score = (p: any) =>
+      (obj(p).includes("traffic") ? 0 : obj(p).includes("site") ? 1 : 3) +
+      (/универс|multi|мульти/i.test(p.name ?? "") ? 0 : 0.5) +
+      (/сайт|site|трафик|traffic/i.test(p.name ?? "") ? 0 : 0.3) +
+      (/приложен|app|игр|видео|video|лид.?форм|lead|сообществ|community|каталог|catalog|магазин|shop|музык/i.test(`${p.name ?? ""} ${obj(p)}`) ? 2 : 0);
+    return [...active].sort((a, b) => score(a) - score(b)).map((p) => Number(p.id)).filter(Boolean).slice(0, 8);
+  }
+
   /** Пакет (формат размещения) под цель «трафик на сайт». Можно переопределить через VK_ADS_PACKAGE_ID. */
   async trafficPackageId(): Promise<number> {
     if (process.env.VK_ADS_PACKAGE_ID) return Number(process.env.VK_ADS_PACKAGE_ID);
@@ -409,7 +426,9 @@ export class VkAds implements PlatformClient {
 
     if (!planId) {
       const urlId = await this.createUrl(spec.siteUrl);
-      const packageId = await this.trafficPackageId();
+      const candidates = await this.trafficPackageCandidates();
+      if (!candidates.length) throw new PlatformError("vk", "Не нашли подходящий формат размещения (пакет) в кабинете VK");
+      let packageId = candidates[0];
       const daily = vkDailyNet(spec.weeklyBudget);
 
       const biz = this.biz;
@@ -458,6 +477,10 @@ export class VkAds implements PlatformClient {
       };
 
       let lastErr: unknown = null;
+      const badPackage = (e: unknown) => /invalid_package/.test(String((e as Error)?.message ?? e));
+      packages: for (const pkg of candidates) {
+      packageId = pkg;
+      lastErr = null;
       for (const level of [0, 1, 2] as Level[]) {
         try {
           await create(level);
@@ -475,9 +498,13 @@ export class VkAds implements PlatformClient {
             break;
           }
           if (!VkAds.isValidation(e)) throw e;
+          // Пакет не подошёл плану — уровни упрощения не помогут, берём следующий пакет
+          if (badPackage(e)) continue packages;
         }
       }
-      if (lastErr) throw lastErr;
+      break;
+      }
+      if (lastErr) throw badPackage(lastErr) ? new PlatformError("vk", `Ни один формат размещения кабинета не подошёл для рекламы сайта (проверили ${candidates.length}). Укажите пакет в переменной VK_ADS_PACKAGE_ID или напишите нам.`) : lastErr;
       if (!planId) throw new PlatformError("vk", "VK не создал кампанию");
     }
     await hooks?.onCampaignCreated?.(planId);

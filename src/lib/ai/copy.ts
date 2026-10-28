@@ -229,13 +229,14 @@ function factCheckAd(a: AdDraft, facts: string, medical = false): AdDraft | null
 
 function bizBrief(b: Business) {
   const n = nicheById(b.niche);
-  const line = (s: Service) => `- ${s.name}${s.price ? ` — ${priceText(s.price)}` : ""}${s.note ? ` (${s.note})` : ""}`;
+  const line = (s: Service) => `- ${s.name}${humanService(b, s.name) !== cleanText(s.name) ? ` (в рекламе называть: «${humanService(b, s.name)}»)` : ""}${s.price ? ` — ${priceText(s.price)}` : ""}${s.note ? ` (${s.note})` : ""}`;
   // Разделы прайса — заголовками: модели проще сделать по группе на раздел («Маникюр», «Педикюр»)
   const services = hasCategories(b.services ?? [])
     ? groupServices(b.services ?? []).map((g) => `${g.category || "Другое"}:\n${g.items.map((x) => line(x.s)).join("\n")}`).join("\n")
     : (b.services ?? []).map(line).join("\n");
   return [
     `Бизнес: ${b.name} (${n.label}), город ${b.city}${b.address ? `, адрес: ${b.address}` : ""}.`,
+    specialistOf(b) ? `Кто принимает: ${specialistOf(b)!.nom}. Человек из рекламы не знает бизнес — в заголовке всегда понятно, что это за услуга и кто её оказывает.` : "",
     b.description ? `Описание от владельца: ${b.description}` : "",
     services ? `Услуги и цены:\n${services}` : "",
     b.advantages?.length ? `Преимущества: ${b.advantages.join("; ")}` : "",
@@ -485,6 +486,55 @@ export async function extractFromSite(text: string, hint: { niche?: string; city
 // Правило: только данные из анкеты (услуги, цены, преимущества, предложение, отзыв, адрес, часы)
 // и правда о продукте — на странице записи есть онлайн-форма. Никаких «Без очереди» и «до 10 человек».
 
+/**
+ * Кто оказывает услугу — по названию, описанию и прайсу бизнеса. Нужен, чтобы «Взрослый приём» из прайса
+ * стал в объявлении «Приём остеопата для взрослых»: человек из рекламы не знает, что это за бизнес.
+ */
+const SPECIALISTS: { re: RegExp; gen: string; nom: string }[] = [
+  { re: /остеопат/, gen: "остеопата", nom: "остеопат" },
+  { re: /мануальн/, gen: "мануального терапевта", nom: "мануальный терапевт" },
+  { re: /хиропракт/, gen: "хиропрактика", nom: "хиропрактик" },
+  { re: /невролог/, gen: "невролога", nom: "невролог" },
+  { re: /косметолог/, gen: "косметолога", nom: "косметолог" },
+  { re: /дерматолог/, gen: "дерматолога", nom: "дерматолог" },
+  { re: /трихолог/, gen: "трихолога", nom: "трихолог" },
+  { re: /подолог/, gen: "подолога", nom: "подолог" },
+  { re: /стоматолог/, gen: "стоматолога", nom: "стоматолог" },
+  { re: /гинеколог/, gen: "гинеколога", nom: "гинеколог" },
+  { re: /психотерапевт/, gen: "психотерапевта", nom: "психотерапевт" },
+  { re: /психолог/, gen: "психолога", nom: "психолог" },
+  { re: /логопед/, gen: "логопеда", nom: "логопед" },
+  { re: /нутрициолог|диетолог/, gen: "нутрициолога", nom: "нутрициолог" },
+  { re: /реабилитолог/, gen: "реабилитолога", nom: "реабилитолог" },
+  { re: /ветеринар|ветклиник/, gen: "ветеринара", nom: "ветеринар" },
+  { re: /массажист|массаж/, gen: "массажиста", nom: "массажист" },
+  { re: /тренер|фитнес/, gen: "тренера", nom: "тренер" },
+];
+export function specialistOf(b: Pick<Business, "name" | "description" | "services" | "niche">) {
+  const text = [b.name, b.description, ...(b.services ?? []).flatMap((x) => [x.name, x.category, x.note])].filter(Boolean).join(" ").toLowerCase().replace(/ё/g, "е");
+  return SPECIALISTS.find((x) => x.re.test(text)) ?? null;
+}
+
+/**
+ * Название услуги для рекламы: если в прайсе написано обезличенно («Взрослый приём», «Первичная консультация»,
+ * «Сеанс 60 минут»), добавляем специалиста: «Приём остеопата для взрослых», «Первичная консультация остеопата».
+ */
+export function humanService(b: Pick<Business, "name" | "description" | "services" | "niche">, raw: string | null | undefined): string {
+  const name = cleanText(raw);
+  if (!name) return name;
+  const sp = specialistOf(b);
+  if (!sp) return name;
+  const l = name.toLowerCase().replace(/ё/g, "е");
+  if (sp.re.test(l)) return name; // специалист уже в названии
+  const who = /взросл/.test(l) ? " для взрослых" : /детск|ребен|малыш|подрост/.test(l) ? " для детей" : /беремен/.test(l) ? " для беременных" : /младен|новорожд|грудн/.test(l) ? " для младенцев" : "";
+  const kind = /консультац/.test(l) ? "консультация" : /сеанс/.test(l) ? "сеанс" : /диагност/.test(l) ? "диагностика" : /при[её]м|прием|визит/.test(l) ? "приём" : null;
+  if (!kind) return name;
+  const first = /первичн|перв(ый|ая)/.test(l) ? "Первичный " : /повторн/.test(l) ? "Повторный " : "";
+  const k = kind === "консультация" ? (first ? `${first.replace("ый", "ая").trim()} консультация` : "Консультация") : kind === "сеанс" ? `${first}сеанс`.replace(/^с/, "С") : kind === "диагностика" ? "Диагностика" : `${first}приём`.replace(/^п/, "П");
+  const tail = l.match(/\d+\s*(мин|минут|час)\S*/)?.[0];
+  return `${k} ${sp.gen}${who}${tail ? `, ${tail}` : ""}`.replace(/\s+/g, " ").trim();
+}
+
 /** Название услуги, если владелец услуг не указал: нейтральное слово ниши, без выдуманных деталей */
 function genericService(b: Business) {
   const n = nicheById(b.niche);
@@ -492,7 +542,7 @@ function genericService(b: Business) {
 }
 
 function mainService(b: Business) {
-  return cleanText(b.services?.[0]?.name) || genericService(b);
+  return humanService(b, b.services?.[0]?.name) || genericService(b);
 }
 
 /** Первый вариант, который помещается целиком (и не занят другим объявлением — used); иначе — аккуратно укороченный */
@@ -554,8 +604,9 @@ function uniqueAds(ads: AdDraft[]): AdDraft[] {
 
 function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string, price?: string, set = 0): AdDraft[] {
   const L = LIMITS[ch];
-  const svc = cleanText(serviceName) || mainService(b);
-  const owned = b.services?.find((s) => cleanText(s.name) === svc);
+  const rawSvc = cleanText(serviceName);
+  const svc = humanService(b, rawSvc) || mainService(b);
+  const owned = b.services?.find((s) => cleanText(s.name) === rawSvc);
   const p = priceText(cleanText(price || owned?.price || (serviceName ? null : b.services?.[0]?.price))) || null;
   const street = b.address ? cleanText(b.address.split(/[,—–]/)[0]) : null;
   const where = street ? `${b.city}, ${street}` : b.city;
@@ -659,7 +710,7 @@ export function layerAds(b: Business, g: Pick<SemanticGroup, "layer" | "hook" | 
   if (!hook) return threeAds(b, "search", g.service, b.services?.find((s) => s.name === g.service)?.price, set);
   const medical = isMedical(b);
   const owned = b.services?.find((s) => s.name === g.service);
-  const svc = cleanText(g.service) || mainService(b);
+  const svc = humanService(b, g.service) || mainService(b);
   const p = priceText(cleanText(owned?.price)) || null;
   const name = cleanText(b.name);
   const street = b.address ? cleanText(b.address.split(/[,—–]/)[0]) : null;
