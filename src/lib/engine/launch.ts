@@ -17,7 +17,7 @@ import { YandexDirect } from "../platforms/yandex";
 import { VkAds } from "../platforms/vk";
 import { ensureCounter, ensureGoals, ensureVisitGoal } from "../platforms/metrica";
 import { decrypt } from "../crypto";
-import { regionIdsFor, vkPixelCounterId } from "./regions";
+import { prepareVk, regionIdsFor, vkPixelCounterId } from "./regions";
 import { act, logChange } from "./ops";
 import { isMedical, nicheById, type Layer } from "../niches";
 export { MEDICAL_LICENSE_URL } from "../niches";
@@ -744,8 +744,15 @@ async function ensureAudienceFor(b: Business, account: AdAccount, client: Platfo
     return client.ensureAudience({ name, counterId: b.counterId, visitGoalId: visit, leadGoalId: b.goalIds.lead, days: RETARGET_WINDOW_DAYS });
   }
   if (account.platform === "vk") {
-    const pixelId = await vkPixelCounterId(b.id);
-    if (!pixelId) throw new Error("для ретаргетинга нужен пиксель VK на сайте, а создать его не получилось");
+    let pixelId = await vkPixelCounterId(b.id);
+    let why = "";
+    if (!pixelId) {
+      // Пиксель ещё не заводили (например, основной канал VK не запускался) — пробуем сейчас
+      const ctx = await prepareVk(b, client as VkAds).catch((e: unknown) => ({ notes: [errorText(e)] }));
+      why = (ctx as { notes?: string[] }).notes?.join("; ") ?? "";
+      pixelId = await vkPixelCounterId(b.id);
+    }
+    if (!pixelId) throw new Error(`для ретаргетинга нужен пиксель VK на сайте, а создать его не получилось${why ? ` (${why})` : ""}. Создайте пиксель в кабинете VK Рекламы: «Сайты» → «Добавить сайт», — и нажмите «Продолжить запуск»`);
     return client.ensureAudience({ name, pixelId, leadGoal: VK_LEAD_GOAL, days: RETARGET_WINDOW_DAYS });
   }
   void channel;

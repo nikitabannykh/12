@@ -523,8 +523,10 @@ export class VkAds implements PlatformClient {
         }
         return groups;
       };
+      // Цель плана: обычно «traffic», но часть пакетов принимает только «site_conversions» — VK сам говорит, какую
+      let objective = "traffic";
       const planBody = (ad_groups: unknown[], level: Level) => ({
-        name, status: "blocked", objective: "traffic", autobidding_mode: "max_goals",
+        name, status: "blocked", objective, autobidding_mode: "max_goals",
         budget_limit_day: daily, date_start: spec.startDate, ad_object_type: "url", ad_object_id: urlId,
         // Оптимизация по цели пикселя (PricedGoal). Цель пакета остаётся traffic: в списке Package.objective отдельной
         // «конверсии на сайте» нет (https://ads.vk.ru/en/doc/api/object/Package)
@@ -539,10 +541,15 @@ export class VkAds implements PlatformClient {
 
       let lastErr: unknown = null;
       const badPackage = (e: unknown) => /invalid_package/.test(String((e as Error)?.message ?? e));
+      const allowedObjective = (e: unknown) => {
+        const m = String((e as Error)?.message ?? e).match(/"allowed_values":\["([a-z_]+)"[^\]]*\],"objective"|"objective":\{[^}]*"allowed_values":\["([a-z_]+)"/);
+        return m ? m[1] || m[2] : null;
+      };
       packages: for (const pkg of candidates) {
       packageId = pkg;
       lastErr = null;
-      for (const level of [0, 1, 2] as Level[]) {
+      for (let li = 0, levels = [0, 1, 2] as Level[]; li < levels.length; li++) {
+        const level = levels[li];
         try {
           await create(level);
           if (level >= 1) warnings.push(`VK не принял часть настроек (${(lastErr as Error).message}) — кампания создана без цели, «о компании», логотипа и длинного текста`);
@@ -559,6 +566,13 @@ export class VkAds implements PlatformClient {
             break;
           }
           if (!VkAds.isValidation(e)) throw e;
+          // Пакет принимает другую цель плана — повторяем с ней на том же уровне
+          const obj = allowedObjective(e);
+          if (obj && obj !== objective) {
+            objective = obj;
+            li--;
+            continue;
+          }
           // Пакет не подошёл плану — уровни упрощения не помогут, берём следующий пакет
           if (badPackage(e)) continue packages;
         }

@@ -54,6 +54,7 @@ export default async function Launch() {
         href={landingUrl(b)}
         logo={logo ? `/api/images/${logo.id}` : null}
         vkRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null}
+        legalInfo={b.legalInfo}
         landing={{ initial: (b.landing ?? {}) as LandingSettings, siteUrl: b.siteUrl, pageUrl: pageUrl(b, appUrl()) }}
         show={{ initial: (b.showSettings ?? {}) as ShowSettings, city: b.city, address: b.address, autoTime: timeTargeting({ ...b, showSettings: {} })?.note ?? null, autoRadiusKm: Math.round(vkRadiusFor(b.city) / 100) / 10 }}
       />

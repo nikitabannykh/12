@@ -12,6 +12,7 @@ import { api, Modal, useToast, resizeToJpeg } from "./client";
 import { VkConnect } from "./VkConnect";
 import { PlanManager } from "./PlanManager";
 import { ShowSettingsEditor } from "./ShowSettingsEditor";
+import { MedicalLicenseGuide } from "./MedicalLicenseGuide";
 import { LandingEditor } from "./LandingEditor";
 import type { LandingSettings } from "@/lib/engine/landing";
 import type { ShowSettings } from "@/lib/engine/show";
@@ -66,6 +67,7 @@ type Props = {
   /** Радиус показа во ВКонтакте вокруг адреса, км (если адрес найден на карте) */
   vkRadiusKm?: number | null;
   /** Настройки показа: регион, пол и возраст, расписание */
+  legalInfo?: string | null;
   landing: { initial: LandingSettings; siteUrl: string | null; pageUrl: string };
   show: { initial: ShowSettings; city: string; address: string | null; autoTime: string | null; autoRadiusKm: number | null };
 };
@@ -446,8 +448,9 @@ export function LaunchWizard(p: Props) {
                 </ul>
               </details>
             ) : null}
-            {plan.warnings.length ? (
-              <div className="rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2"><TriangleAlert size={16} className="shrink-0 mt-0.5" /><div>{plan.warnings.map((w) => <div key={w}>{w}</div>)}</div></div>
+            {plan.warnings.some((w) => w.startsWith("Медицинские услуги")) ? <MedicalLicenseGuide service={p.biz.services?.[0]?.name} legalInfo={p.legalInfo} address={p.biz.address ? `${p.biz.city}, ${p.biz.address}` : null} /> : null}
+            {plan.warnings.filter((w) => !w.startsWith("Медицинские услуги")).length ? (
+              <div className="rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2"><TriangleAlert size={16} className="shrink-0 mt-0.5" /><div>{plan.warnings.filter((w) => !w.startsWith("Медицинские услуги")).map((w) => <div key={w}>{w}</div>)}</div></div>
             ) : null}
             <PlanManager plan={plan} names={CH} platformNames={PLATFORM} biz={p.biz} host={p.host} href={p.href} logo={p.logo} businessName={p.business.name} vkRadiusKm={p.vkRadiusKm ?? null}
               onPatch={patchPlan} onEdit={(ad, channel) => setEdit({ ad, channel })} />
