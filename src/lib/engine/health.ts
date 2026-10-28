@@ -1,4 +1,5 @@
 import "server-only";
+import { CHANNEL_NAME } from "../platforms";
 import { and, eq, gte, isNotNull, ne } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { Business } from "../db/schema";
@@ -39,6 +40,7 @@ export async function healthCheck(b: Business): Promise<Health> {
   const used = accounts.filter((a) => usedAcc.has(a.id));
   const balances = await getBalances(b);
   const rejected = (await db.select({ id: schema.ads.id }).from(schema.ads).where(and(eq(schema.ads.businessId, b.id), eq(schema.ads.status, "rejected")))).length;
+  const moderation = (await db.select({ id: schema.ads.id }).from(schema.ads).where(and(eq(schema.ads.businessId, b.id), eq(schema.ads.status, "moderation")))).length;
   const ownPhotos = (await db.select({ id: schema.images.id }).from(schema.images).where(and(eq(schema.images.businessId, b.id), eq(schema.images.kind, "photo")))).length;
   // Заявки с телефоном за 14 дней — сколько из них владелец отметил
   const since = new Date(Date.now() - 14 * 864e5);
@@ -68,6 +70,24 @@ export async function healthCheck(b: Business): Promise<Health> {
     fix: { href: "/app/settings", label: "Подключить заново" },
     weight: 20,
   });
+
+  // 1б. Кампании включены, но площадка их не показывает (нет денег, модерация, лимит)
+  const stuck = camps.filter((c) => c.status === "active" && (c.meta as { delivery?: { ok: boolean } } | null)?.delivery?.ok === false);
+  if (camps.some((c) => c.status === "active")) {
+    const first = stuck[0];
+    const d = (first?.meta as { delivery?: { note?: string } } | null)?.delivery;
+    const money = stuck.find((c) => /средств|пополн/i.test(((c.meta as { delivery?: { note?: string } } | null)?.delivery?.note) ?? ""));
+    items.push({
+      key: "delivery",
+      ok: !stuck.length,
+      title: "Реклама показывается на площадках",
+      todo: money ? "Пополните рекламный кабинет — реклама не показывается" : "Площадка не показывает часть кампаний",
+      hint: stuck.map((c) => `${CHANNEL_NAME[c.channel] ?? c.channel}: ${((c.meta as { delivery?: { note?: string } } | null)?.delivery?.note) ?? "не показывается"}`).join(" "),
+      fix: money && TOPUP_URL[money.platform] ? { href: TOPUP_URL[money.platform], label: "Пополнить", external: true } : { href: "/app/ads", label: "Посмотреть кампании" },
+      weight: 20,
+    });
+    void d;
+  }
 
   // 2. Баланс
   const low = balances.filter((x) => x.daysLeft !== null && x.daysLeft <= LOW_DAYS);
@@ -155,7 +175,7 @@ export async function healthCheck(b: Business): Promise<Health> {
   items.push({
     key: "rejected",
     ok: rejected === 0,
-    title: "Все объявления прошли модерацию",
+    title: moderation ? `Отклонённых объявлений нет (${pl(moderation, "ещё на проверке", "ещё на проверке", "ещё на проверке")})` : "Все объявления прошли модерацию",
     todo: "Есть отклонённые объявления",
     hint: `${pl(rejected, "объявление не прошло", "объявления не прошли", "объявлений не прошли")} модерацию — робот перепишет их при следующей проверке, или поправьте сами.`,
     fix: { href: "/app/ads", label: "Объявления" },

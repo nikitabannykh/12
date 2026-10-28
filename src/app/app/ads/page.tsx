@@ -480,6 +480,12 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                 ) : <CampaignPill s={states.get(camp.id)} ch={ch} />}
               </div>
               <p className="text-sm text-muted mt-1 max-w-2xl"><Purpose type={typeOf(ch)} />. {CHANNEL_HINT[ch]}.</p>
+              {states.get(camp.id)?.stopped === "platform" ? (
+                <div className="mt-2 rounded-lg bg-bad-soft text-bad px-3 py-2 text-sm flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span>{states.get(camp.id)?.note ?? "Площадка сейчас не показывает кампанию."}</span>
+                  {/средств|пополн/i.test(states.get(camp.id)?.note ?? "") ? <a className="font-semibold underline" href={camp.platform === "vk" ? "https://ads.vk.ru/hq/budget/transactions" : "https://direct.yandex.ru/"} target="_blank" rel="noreferrer">Пополнить кабинет</a> : null}
+                </div>
+              ) : null}
               <div className="mt-2 grid gap-0.5 text-sm text-ink-2 max-w-3xl">
                 <div className="flex flex-wrap items-baseline justify-between gap-x-3"><span className="text-faint text-xs uppercase tracking-wide font-semibold">Показ</span><Link href="/app/settings#show" className="text-sm font-semibold underline underline-offset-2 text-ink-2 hover:text-ink">Изменить регион, возраст, время</Link></div>
                 <div><span className="text-muted">Ведёт на:</span> {(() => { const l = landingFor(b, ch, appUrl()); return <><a href={l.url} target="_blank" rel="noreferrer" className="underline underline-offset-2">{l.kind === "page" ? "страницу записи" : l.kind === "site" ? "сайт" : l.label}</a>{l.kind === "link" ? <span className="text-faint"> — заявки там не видим, считаем переходы</span> : null} · <Link href="/app/settings#landing" className="text-ink-2 underline underline-offset-2">изменить</Link></>; })()}</div>
@@ -820,9 +826,10 @@ function Duel({ label, title, note, s, ahead }: { label: string; title?: string;
   );
 }
 
-function CampaignPill({ s, ch, short = false }: { s?: { stopped: string | null; learningLeft: number }; ch: string; short?: boolean }) {
+function CampaignPill({ s, ch, short = false }: { s?: { stopped: string | null; learningLeft: number; note?: string | null }; ch: string; short?: boolean }) {
   if (s?.stopped === "guard") return <span className="pill bg-bad-soft text-bad">{short ? "Стоит: бюджет" : "Стоит: кончился бюджет месяца"}</span>;
   if (s?.stopped === "error") return <span className="pill bg-bad-soft text-bad">Ошибка площадки</span>;
+  if (s?.stopped === "platform") return <span className="pill bg-bad-soft text-bad" title={s.note ?? undefined}>{/средств|пополн/i.test(s.note ?? "") ? (short ? "Нет денег" : "Не показывается: нет денег на балансе") : /модерац/i.test(s.note ?? "") ? "На модерации" : "Не показывается"}</span>;
   if (s?.stopped === "audience") return <span className="pill bg-good-soft text-good">Копим аудиторию</span>;
   if (s?.stopped === "robot") return <span className="pill bg-paper text-muted">{short ? "Пауза — робот" : "На паузе — остановил робот"}</span>;
   if (s?.stopped) return <span className="pill bg-paper text-muted">{short ? "Пауза — вы" : "На паузе — вы остановили"}</span>;

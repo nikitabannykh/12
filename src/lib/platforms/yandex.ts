@@ -1,5 +1,5 @@
 import "server-only";
-import type { AuctionRow, AudienceSpec, DemographicsAdjustment, TargetingUpdate } from "./types";
+import type { AuctionRow, AudienceSpec, CampaignDelivery, DemographicsAdjustment, TargetingUpdate } from "./types";
 import type { Sitelink } from "../engine/extras";
 import type {
   AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy,
@@ -819,6 +819,23 @@ export class YandexDirect implements PlatformClient {
     const res = await this.call("ads", "update", { Ads: [{ Id: Number(adExt), ResponsiveAd: { Titles: r.titles, Texts: r.texts } }] });
     this.items(res.UpdateResults, "Текст объявления");
     await this.call("ads", "moderate", { SelectionCriteria: { Ids: [Number(adExt)] } });
+  }
+
+  /** Реальное состояние кампаний: State ON — показывается; иначе причина из StatusClarification (деньги, модерация) */
+  async getCampaignDelivery(campaignExts: string[]): Promise<Record<string, CampaignDelivery>> {
+    const out: Record<string, CampaignDelivery> = {};
+    for (let i = 0; i < campaignExts.length; i += 1000) {
+      const res = await this.call("campaigns", "get", { SelectionCriteria: { Ids: campaignExts.slice(i, i + 1000).map(Number) }, FieldNames: ["Id", "State", "Status", "StatusPayment", "StatusClarification"] }).catch(() => null);
+      for (const c of res?.Campaigns ?? []) {
+        if (c.State === "ON" || c.State === "SUSPENDED" || c.State === "ARCHIVED") { out[String(c.Id)] = { ok: true }; continue; }
+        const why = String(c.StatusClarification ?? "");
+        const note = c.StatusPayment === "DISALLOWED" || /средств|деньг|оплат/i.test(why) ? "Не хватает средств на счёте Директа — пополните кабинет, и показы начнутся"
+          : c.Status === "MODERATION" || /модерац/i.test(why) ? "Кампания на модерации Директа"
+          : why || "Директ сейчас не показывает кампанию";
+        out[String(c.Id)] = { ok: false, code: `${c.State}/${c.Status}/${c.StatusPayment ?? ""}`, note };
+      }
+    }
+    return out;
   }
 
   async getAdStates(adExts: string[]): Promise<Record<string, AdState>> {

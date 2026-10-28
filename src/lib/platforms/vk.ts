@@ -1,5 +1,5 @@
 import "server-only";
-import type { AdSpec, AdState, AudienceSpec, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, StatRow, Strategy, TargetingUpdate } from "./types";
+import type { AdSpec, AdState, AudienceSpec, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, StatRow, Strategy, TargetingUpdate, CampaignDelivery } from "./types";
 import { PlatformError } from "./types";
 import { sleep } from "../util";
 import { canFill, ctaValue, defaultFormat, fit, iconKey, imageKeyFor, legalAbout, lengthFromKey, parseBannerFormat, parsePatterns, patternIdsFromError, pickPattern, sizeFromKey, textKeys, type Fulltime, type VkFormat, type VkHave, type VkPattern } from "./vk-formats";
@@ -825,6 +825,31 @@ export class VkAds implements PlatformClient {
       }
     }
     return warnings;
+  }
+
+  /** Реальное состояние планов: delivery и issues (VK показывает «Не хватает средств», «На модерации» и т. п.) */
+  async getCampaignDelivery(campaignExts: string[]): Promise<Record<string, CampaignDelivery>> {
+    const out: Record<string, CampaignDelivery> = {};
+    for (let i = 0; i < campaignExts.length; i += VK_PAGE) {
+      const ids = campaignExts.slice(i, i + VK_PAGE);
+      const j = await this.req("GET", "v2/ad_plans.json", { query: { _id__in: ids.join(","), fields: "id,status,delivery,issues", limit: VK_PAGE } }).catch(() => null);
+      for (const p of (j?.items ?? []) as any[]) {
+        const issues: any[] = Array.isArray(p.issues) ? p.issues : [];
+        const codes = issues.map((x) => String(x?.code ?? x ?? "")).join(" ");
+        const raw = issues.map((x) => String(x?.message ?? "")).filter(Boolean).join("; ");
+        const delivering = p.delivery ? p.delivery === "delivering" : !issues.length;
+        if (p.status !== "active" || delivering) { out[String(p.id)] = { ok: true }; continue; }
+        const note =
+          /MONEY|BALANCE|FUND|PAY/i.test(codes) ? "Не хватает средств на балансе VK Рекламы — пополните кабинет, и показы начнутся"
+          : /MODERAT/i.test(codes) ? "Объявления на модерации VK — обычно до суток"
+          : /NO_ALLOWED_BANNERS|BANNER|REJECT/i.test(codes) ? "Нет одобренных объявлений — посмотрите причины отклонения"
+          : /BUDGET|LIMIT/i.test(codes) ? "Исчерпан дневной лимит — показы продолжатся завтра"
+          : /DATE|START|PENDING/i.test(codes) ? "Кампания ещё не началась"
+          : raw || "VK сейчас не показывает кампанию";
+        out[String(p.id)] = { ok: false, code: codes || String(p.delivery ?? ""), note };
+      }
+    }
+    return out;
   }
 
   async updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string }) {

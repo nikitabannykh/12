@@ -69,6 +69,9 @@ export type AudienceSpec = {
 /** Расписание показов по часам работы (Директ TimeTargeting): 7 строк «день,24 коэффициента» */
 export type TimeTargetingSpec = { schedule: string[]; timeZone: string; considerWorkingWeekends: boolean; note: string };
 
+/** Состояние показа кампании на площадке: ok — показывается; иначе code и понятная причина */
+export type CampaignDelivery = { ok: boolean; code?: string; note?: string };
+
 export type DemographicsAdjustment = { Gender?: "GENDER_MALE" | "GENDER_FEMALE"; Age?: string; BidModifier: number };
 
 /** Настройки показа для уже идущих кампаний (меняет владелец в «Настройках показа») */
@@ -187,6 +190,8 @@ export interface PlatformClient {
   setBudget(campaignExt: string, p: { channel: Channel; weeklyBudget: number; strategy: Strategy; goalId?: number | null; bidCeiling?: number | null }): Promise<void>;
   setNegativeKeywords(campaignExt: string, words: string[]): Promise<void>;
   /** Поменять регион, возраст/пол и расписание у идущей кампании (без пересоздания) */
+  /** Идёт ли показ на самом деле (кампания включена, но может стоять: нет денег, модерация, лимит) */
+  getCampaignDelivery?(campaignExts: string[]): Promise<Record<string, CampaignDelivery>>;
   /** Сменить ссылку у идущих объявлений (куда ведёт реклама). Возвращает предупреждения */
   updateAdsHref?(adExts: string[], href: string): Promise<string[]>;
   updateTargeting?(campaignExt: string, t: TargetingUpdate): Promise<string[]>;

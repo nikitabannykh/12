@@ -301,7 +301,7 @@ const PAUSE_KINDS = new Set(["pause", "resume", "revert"]);
 
 export type CampaignState = {
   /** почему стоит (null — идёт); audience — ретаргетинг копит аудиторию и включится сам */
-  stopped: null | "guard" | "owner" | "robot" | "error" | "audience";
+  stopped: null | "guard" | "owner" | "robot" | "error" | "audience" | "platform";
   stoppedAt?: Date;
   note?: string | null;
   /** пауза пришла вместе с другим изменением (например, со снижением бюджета) — его заголовок */
@@ -325,6 +325,12 @@ export async function campaignStates(b: Business, camps: Campaign[], now: Date):
     const learningLeft = c.status === "active" ? learningLeftFor(c, learnInput) : 0;
     if (c.status === "error") {
       out.set(c.id, { stopped: "error", note: c.statusNote, learningLeft: 0 });
+      continue;
+    }
+    // Включена у нас, но площадка не показывает: нет денег, модерация, лимит (по данным последней синхронизации)
+    const delivery = (c.meta as { delivery?: { ok: boolean; note?: string } } | null)?.delivery;
+    if (c.status === "active" && delivery?.ok === false) {
+      out.set(c.id, { stopped: "platform", note: delivery.note ?? null, learningLeft });
       continue;
     }
     if (c.status !== "paused") {

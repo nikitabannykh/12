@@ -92,6 +92,22 @@ export async function syncBusiness(b: Business) {
         }
       }
 
+      // Идёт ли показ на самом деле: включённая кампания может стоять (нет денег, модерация, лимит)
+      if (client.getCampaignDelivery) {
+        const active = list.filter((c) => c.status === "active" && c.externalId);
+        if (active.length) {
+          const d = await client.getCampaignDelivery(active.map((c) => c.externalId!)).catch(() => ({} as Record<string, { ok: boolean; code?: string; note?: string }>));
+          for (const c of active) {
+            const x = d[c.externalId!];
+            if (!x) continue;
+            const prev = (c.meta as { delivery?: { ok: boolean; note?: string } } | null)?.delivery;
+            if (prev?.ok === x.ok && prev?.note === x.note) continue;
+            const [fresh] = await db.select({ meta: schema.campaigns.meta }).from(schema.campaigns).where(eq(schema.campaigns.id, c.id));
+            await db.update(schema.campaigns).set({ meta: { ...(fresh?.meta ?? {}), delivery: { ...x, at: new Date().toISOString() } } }).where(eq(schema.campaigns.id, c.id));
+          }
+        }
+      }
+
       // Статусы модерации
       const live = ads.filter((a) => a.externalId && !["archived", "error"].includes(a.status));
       if (live.length) {

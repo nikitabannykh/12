@@ -68,6 +68,7 @@ export default async function Dashboard() {
   const guardStopped = stopped.filter((x) => states.get(x.id)?.stopped === "guard");
   const ownerStopped = stopped.filter((x) => states.get(x.id)?.stopped === "owner" || states.get(x.id)?.stopped === "robot");
   const errorStopped = stopped.filter((x) => states.get(x.id)?.stopped === "error");
+  const platformStopped = stopped.filter((x) => states.get(x.id)?.stopped === "platform");
   const learning = camps.filter((x) => (states.get(x.id)?.learningLeft ?? 0) > 0);
   const nextMonth = nextMonthStart(r.now).toLocaleDateString("ru-RU", { day: "numeric", month: "long", timeZone: "UTC" });
   const overBudget = monthCost >= b.monthlyBudget * 0.98;
@@ -133,6 +134,15 @@ export default async function Dashboard() {
           <ActionButton url="/api/campaigns/resume" body={{ ids: ownerStopped.map((x) => x.id) }} done="Реклама включена" className={`btn btn-sm ${allStopped ? "btn-primary" : "btn-ghost bg-white"}`}>Включить</ActionButton>
         </StopBanner>
       ) : null}
+      {platformStopped.map((x) => {
+        const note = states.get(x.id)?.note ?? "Площадка сейчас не показывает кампанию.";
+        const money = /средств|пополн/i.test(note);
+        return (
+          <StopBanner key={x.id} tone="bad" icon={money ? "wallet" : undefined} title={`${SHORT[x.channel] ?? x.channel}: реклама не показывается`} text={`${note} Кампания у нас включена — как только площадка начнёт показ, статус обновится сам.`}>
+            {money ? <a className="btn btn-primary btn-sm" href={x.platform === "vk" ? "https://ads.vk.ru/hq/budget/transactions" : "https://direct.yandex.ru/"} target="_blank" rel="noreferrer">Пополнить кабинет</a> : null}
+          </StopBanner>
+        );
+      })}
       {errorStopped.map((x) => (
         <StopBanner key={x.id} tone="bad" title={`${SHORT[x.channel] ?? x.channel}: показы не идут`} text={x.statusNote || "Площадка вернула ошибку. Робот попробует ещё раз при следующей проверке."}>
           <Link href="/app/settings" className="btn btn-ghost btn-sm bg-white">Настройки</Link>
@@ -282,8 +292,8 @@ export default async function Dashboard() {
                         {waiting ? (
                           aud!.state === "off" ? <span className="pill bg-paper text-muted">автозапуск выключен</span> : <AudienceBar size={aud!.size} need={aud!.need} compact />
                         ) : s?.stopped ? (
-                          <span className={`pill ${s.stopped === "guard" || s.stopped === "error" ? "bg-bad-soft text-bad" : "bg-paper text-muted"}`}>
-                            {s.stopped === "guard" ? (overBudget ? "стоит: кончился бюджет" : "стоит: не хватает бюджета") : s.stopped === "error" ? "ошибка площадки" : s.stopped === "owner" ? "на паузе — вы остановили" : "на паузе — остановил робот"}
+                          <span className={`pill ${s.stopped === "guard" || s.stopped === "error" || s.stopped === "platform" ? "bg-bad-soft text-bad" : "bg-paper text-muted"}`} title={s.note ?? undefined}>
+                            {s.stopped === "platform" ? (/средств|пополн/i.test(s.note ?? "") ? "не показывается: нет денег" : /модерац/i.test(s.note ?? "") ? "на модерации" : "не показывается") : s.stopped === "guard" ? (overBudget ? "стоит: кончился бюджет" : "стоит: не хватает бюджета") : s.stopped === "error" ? "ошибка площадки" : s.stopped === "owner" ? "на паузе — вы остановили" : "на паузе — остановил робот"}
                           </span>
                         ) : s && s.learningLeft > 0 ? (
                           <span className="pill bg-info-soft text-ink-2" title={`Площадка подбирает аудиторию: после запуска до ${pl(LEARNING_DAYS[x.channel] ?? 14, "дня", "дней", "дней")}, после изменения бюджета — до 7. Робот в это время не трогает настройки`}>
