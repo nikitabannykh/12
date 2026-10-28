@@ -7,17 +7,16 @@
  */
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ImagePlus, Loader2, Pencil, Rocket, Search, Sparkles, Trash2, TriangleAlert } from "lucide-react";
-import { api, Modal, Toggle, useToast, resizeToJpeg } from "./client";
+import { Check, ImagePlus, Loader2, Rocket, Search, Sparkles, Trash2, TriangleAlert } from "lucide-react";
+import { api, Modal, useToast, resizeToJpeg } from "./client";
 import { VkConnect } from "./VkConnect";
-import { SearchAdPreview, ImageAdPreview, ResponsiveAssets } from "./AdPreview";
-import { adExtras, responsiveAssets, withPlanCallouts, type ExtrasBiz } from "@/lib/engine/extras";
+import { PlanManager } from "./PlanManager";
+import type { ExtrasBiz } from "@/lib/engine/extras";
 import { allocate, forecast, minMonthlyFor } from "@/lib/engine/budget";
 import type { LaunchPlan, PlanAd, PublishStep } from "@/lib/engine/launch";
 import type { Channel } from "@/lib/platforms/types";
-import { CHANNEL_INFO, formatOf, isRetarget, RETARGET_MIN_AUDIENCE, TYPE_INFO, type AdFormat } from "@/lib/channels";
+import { CHANNEL_INFO, formatOf, isRetarget, RETARGET_MIN_AUDIENCE, type AdFormat } from "@/lib/channels";
 import { TypeBadge } from "./CampaignNav";
-import { LAYER_ITEM } from "@/lib/niches";
 
 const CH: Record<Channel, { name: string; hint: string }> = {
   search: { name: "Поиск Яндекса", hint: "Тем, кто прямо сейчас ищет услугу" },
@@ -60,6 +59,8 @@ type Props = {
   biz: ExtrasBiz;
   href: string;
   logo?: string | null;
+  /** Радиус показа во ВКонтакте вокруг адреса, км (если адрес найден на карте) */
+  vkRadiusKm?: number | null;
 };
 
 /** Раздел этапа: заголовок, справа — состояние («Готово», «Необязательно», «Сначала подключите кабинет») */
@@ -433,64 +434,8 @@ export function LaunchWizard(p: Props) {
             {plan.warnings.length ? (
               <div className="rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2"><TriangleAlert size={16} className="shrink-0 mt-0.5" /><div>{plan.warnings.map((w) => <div key={w}>{w}</div>)}</div></div>
             ) : null}
-            {plan.channels.map((ch) => (
-              <div key={ch.channel}>
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2">
-                  <div>
-                    <div className="font-bold text-lg flex flex-wrap items-center gap-2">{CH[ch.channel].name} <TypeBadge type={CHANNEL_INFO[ch.channel].type} /></div>
-                    <div className="text-sm text-muted">{PLATFORM[ch.platform]} · {rub(ch.weekly)} в неделю · {TYPE_INFO[CHANNEL_INFO[ch.channel].type].label} — {TYPE_INFO[CHANNEL_INFO[ch.channel].type].purpose}</div>
-                    {isRetarget(ch.channel) ? <div className="text-sm text-good mt-1">{RETARGET_NOTE}.</div> : null}
-                  </div>
-                  <label className="flex items-center gap-2 text-sm font-semibold">
-                    {ch.enabled ? "Включён" : "Выключен"}
-                    <Toggle checked={ch.enabled} label={`Канал ${CH[ch.channel].name}`} onChange={(v) => patchPlan({ channel: ch.channel, channelEnabled: v })} />
-                  </label>
-                </div>
-                {ch.enabled ? ch.groups.map((g) => (
-                  <div key={g.id} className="mt-4">
-                    <div className="font-semibold">{ch.channel === "search" && g.layer && g.layer !== "service" ? `${LAYER_ITEM[g.layer]}: ` : ""}{g.name}</div>
-                    <div className="text-sm text-muted">{g.audience}</div>
-                    {formatOf(ch.channel) !== "vk" && g.ads.filter((a) => a.enabled).length > 3 ? (
-                      <div className="text-sm text-warn mt-1">В группе Директа может работать не больше 3 объявлений — оставьте включёнными три, остальные не отправим.</div>
-                    ) : null}
-                    {g.keywords.length && ch.channel === "search" ? (
-                      <details className="mt-1 text-sm">
-                        <summary className="cursor-pointer text-ink-2 font-medium">Запросы: {g.keywords.slice(0, 3).join(", ")}{g.keywords.length > 3 ? ` и ещё ${g.keywords.length - 3}` : ""}</summary>
-                        <div className="mt-1 text-muted leading-relaxed">{g.keywords.join(", ")}</div>
-                      </details>
-                    ) : null}
-                    <div className={`mt-3 grid gap-3 ${ch.channel === "search" ? "md:grid-cols-2" : "sm:grid-cols-2 lg:grid-cols-3"}`}>
-                      {g.ads.map((ad) => (
-                        <div key={ad.id} className={`relative min-w-0 ${ad.enabled ? "" : "opacity-45"}`}>
-                          {ch.channel === "search" ? (
-                            <SearchAdPreview title={ad.title} title2={ad.title2} text={ad.text} host={p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={withPlanCallouts(adExtras(p.biz, { channel: "search", href: p.href, service: g.service ?? g.name, text: ad.text }), plan?.callouts ?? p.callouts)} />
-                          ) : (
-                            <ImageAdPreview channel={formatOf(ch.channel) === "vk" ? "vk" : "network"} title={ad.title} text={ad.text} host={formatOf(ch.channel) === "vk" ? p.business.name : p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={adExtras(p.biz, { channel: formatOf(ch.channel), href: p.href, text: ad.text })} logo={p.logo} />
-                          )}
-                          {formatOf(ch.channel) !== "vk" && ch.platform !== "vk" ? (() => {
-                            const ra = responsiveAssets(p.biz, ad, { service: ch.channel === "search" ? g.service ?? g.name : null, services: ch.channel === "search" ? g.services : null });
-                            return <ResponsiveAssets titles={ra.titles} texts={ra.texts} className="mt-1.5" />;
-                          })() : null}
-                          <div className="mt-1.5 flex items-center justify-between gap-2 text-xs">
-                            <span className="text-muted">Идея: {ANGLE[ad.angle] ?? ad.angle}</span>
-                            <span className="flex items-center gap-1">
-                              <button className="p-1.5 rounded-md hover:bg-paper" aria-label="Изменить текст" onClick={() => setEdit({ ad, channel: ch.channel })}><Pencil size={14} /></button>
-                              <Toggle checked={ad.enabled} label="Объявление включено" onChange={(v) => patchPlan({ adId: ad.id, enabled: v })} />
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )) : null}
-              </div>
-            ))}
-            {plan.negatives.length ? (
-              <details className="text-sm">
-                <summary className="cursor-pointer font-semibold">Минус-слова: не показываем рекламу по {plan.negatives.length} {plural(plan.negatives.length, "нецелевому запросу", "нецелевым запросам", "нецелевым запросам")}</summary>
-                <p className="text-muted mt-2 leading-relaxed">{plan.negatives.join(", ")}</p>
-              </details>
-            ) : null}
+            <PlanManager plan={plan} names={CH} platformNames={PLATFORM} biz={p.biz} host={p.host} href={p.href} logo={p.logo} businessName={p.business.name} vkRadiusKm={p.vkRadiusKm ?? null}
+              onPatch={patchPlan} onEdit={(ad, channel) => setEdit({ ad, channel })} />
           </div>
         ) : null}
       </Section>
@@ -544,7 +489,6 @@ export function LaunchWizard(p: Props) {
   );
 }
 
-const ANGLE: Record<string, string> = { price: "цена", offer: "предложение новым клиентам", proof: "доверие", convenience: "удобство", result: "результат", emotion: "эмоция" };
 const LIM: Record<AdFormat, { title: number; title2: number; text: number }> = { search: { title: 56, title2: 30, text: 81 }, network: { title: 40, title2: 30, text: 81 }, vk: { title: 40, title2: 30, text: 90 } };
 
 export function EditAdModal({ edit, onClose, onSave }: { edit: { ad: { title: string; title2?: string | null; text: string }; channel: Channel } | null; onClose: () => void; onSave: (v: { title: string; title2: string; text: string }) => Promise<void> }) {

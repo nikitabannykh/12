@@ -1,3 +1,4 @@
+import { vkRadiusFor } from "@/lib/platforms/vk-formats";
 import { ensureLogo } from "@/lib/engine/images";
 import type { ExtrasBiz } from "@/lib/engine/extras";
 import type { Business } from "@/lib/db/schema";
@@ -47,6 +48,7 @@ export default async function Launch() {
         biz={pickBiz(b)}
         href={landingUrl(b)}
         logo={logo ? `/api/images/${logo.id}` : null}
+        vkRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null}
       />
     </div>
   );

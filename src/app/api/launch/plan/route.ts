@@ -23,6 +23,11 @@ export const PATCH = route(async ({ business, req }) => {
       ch.enabled = body.channelEnabled;
     }
     for (const g of ch.groups) {
+      // Вся группа разом: включаем до 3 объявлений (лимит группы Директа; во VK — все), выключаем все
+      if (body.groupId === g.id && typeof body.groupEnabled === "boolean") {
+        const cap = ch.platform === "vk" || ch.channel === "vk" || ch.channel === "retarget_vk" ? Infinity : 3;
+        g.ads.forEach((ad, i) => { ad.enabled = body.groupEnabled && i < cap; });
+      }
       for (const ad of g.ads) {
         if (ad.id !== body.adId) continue;
         if (typeof body.enabled === "boolean") ad.enabled = body.enabled;
