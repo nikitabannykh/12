@@ -297,9 +297,9 @@ export class VkAds implements PlatformClient {
     if (found) return String(found.id);
     const left = Math.max(1, Math.min(365, a.days));
     const relations: Record<string, unknown>[] = [
-      { object_type: "remarketing_counter", params: { counter_id: a.pixelId, goal_id: "uss", type: "positive", left, right: 0 } },
+      { object_type: "remarketing_counter", params: { source_id: a.pixelId, goal_id: "uss", type: "positive", left, right: 0 } },
     ];
-    if (a.leadGoal) relations.push({ object_type: "remarketing_counter", params: { counter_id: a.pixelId, goal_id: a.leadGoal, type: "negative", left, right: 0 } });
+    if (a.leadGoal) relations.push({ object_type: "remarketing_counter", params: { source_id: a.pixelId, goal_id: a.leadGoal, type: "negative", left, right: 0 } });
     try {
       const j = await this.req("POST", "v2/remarketing/segments.json", { body: { name, pass_condition: relations.length, relations } });
       return String(j.id);
@@ -538,7 +538,8 @@ export class VkAds implements PlatformClient {
         budget_limit_day: daily, date_start: spec.startDate, ad_object_type: "url", ad_object_id: urlId,
         // Оптимизация по цели пикселя (PricedGoal). Цель пакета остаётся traffic: в списке Package.objective отдельной
         // «конверсии на сайте» нет (https://ads.vk.ru/en/doc/api/object/Package)
-        ...(level === 0 && biz.pricedGoal ? { priced_goal: biz.pricedGoal } : {}),
+        // «Конверсии на сайте» без цели VK не принимает — цель оставляем на всех уровнях упрощения
+        ...((level === 0 || objective === "site_conversions") && biz.pricedGoal ? { priced_goal: biz.pricedGoal } : {}),
         ad_groups,
       });
       const create = async (level: Level) => {
@@ -548,6 +549,7 @@ export class VkAds implements PlatformClient {
       };
 
       let lastErr: unknown = null;
+      const errs: string[] = [];
       const badPackage = (e: unknown) => /invalid_package/.test(String((e as Error)?.message ?? e));
       const allowedObjective = (e: unknown) => {
         const m = String((e as Error)?.message ?? e).match(/"allowed_values":\["([a-z_]+)"[^\]]*\],"objective"|"objective":\{[^}]*"allowed_values":\["([a-z_]+)"/);
@@ -566,6 +568,7 @@ export class VkAds implements PlatformClient {
           break;
         } catch (e) {
           lastErr = e;
+          errs.push(`пакет ${packageId}, уровень ${level}, цель ${objective}: ${(e as Error).message}`);
           // Ответ мог потеряться, хотя план создан (таймаут, 5xx) — сначала ищем его по имени
           planId = await this.findPlanByName(name).catch(() => null);
           if (planId) {
@@ -588,6 +591,7 @@ export class VkAds implements PlatformClient {
       break;
       }
       if (lastErr && /priced_goal/.test(String((lastErr as Error).message)) && /required/.test(String((lastErr as Error).message))) {
+        if (biz.pricedGoal) throw new PlatformError("vk", `VK не принял кампанию «Конверсии на сайте» с целью «${biz.pricedGoal.name}» пикселя ${biz.pricedGoal.source_id}. Ответы VK: ${errs.slice(0, 3).join(" | ")}`);
         throw new PlatformError("vk", `Ваш кабинет VK принимает только кампании «Конверсии на сайте», а им нужен пиксель с событием «Заявка». Нажмите «Настроить VK за меня» в блоке VK Рекламы выше (или в «Настройках» → «Рекламные кабинеты») — пиксель создадим сами; затем добавьте в пикселе событие «Заявка» по подсказке и нажмите «Продолжить запуск».`);
       }
       if (lastErr) throw badPackage(lastErr) ? new PlatformError("vk", `Ни один формат размещения кабинета не подошёл для рекламы сайта (проверили ${candidates.length}). Укажите пакет в переменной VK_ADS_PACKAGE_ID или напишите нам.`) : lastErr;
