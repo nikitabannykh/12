@@ -7,7 +7,8 @@
  * Защиту от роботов не обходим: при капче/блокировке — частичный результат из ссылки.
  */
 import type { Found } from "../types";
-import { cityFromSlug, formatPhone, formatWeek, stripTracking, telegramFrom, uniq, whatsappFrom, type DayHours } from "../normalize";
+import { cityFromSlug, formatPhone, formatPrice, formatWeek, stripTracking, telegramFrom, uniq, whatsappFrom, type DayHours } from "../normalize";
+import type { ImportService } from "../types";
 import { fetchJson, fetchPage } from "../fetch";
 
 type O = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -114,7 +115,7 @@ export function dgisItem(d: O, url: string): Found {
     hours: dgisHours(d.schedule),
     siteUrl: ownSite ?? "",
     rating: rv > 0 ? { value: rv, count: Number(reviews.general_review_count ?? 0) } : undefined,
-    photos: uniq(photos).slice(0, 4),
+    photos: uniq(photos).slice(0, 12),
     text: [name, d.name_ex?.extension, ...((d.rubrics ?? []) as O[]).map((r) => r?.name)].filter(Boolean).join("\n"),
     links: uniq([...(ownSite ? [ownSite] : []), ...booking]).slice(0, 3),
   };
@@ -129,6 +130,38 @@ export function parseDgisHtml(html: string, url: string): Found | null {
   const d = (entry as O | undefined)?.data;
   if (!d || (!d.name && !d.name_ex)) return null;
   return dgisItem(d, url);
+}
+
+/**
+ * Вкладка «Цены» (…/firm/<id>/tab/prices): в начальном состоянии страницы — data.market:
+ * products[id].data.product {name, categories[{label}]} и offers["<productId>:<firmId>"].data {price, price_value}.
+ * Это публичная страница карточки — тот же HTML, что видит посетитель; закрытые API 2ГИС не используем.
+ */
+export function dgisPrices(state: O | null, firmId: string | null): ImportService[] {
+  const market = state?.data?.market as O | undefined;
+  if (!market?.products) return [];
+  const offers = (market.offers ?? {}) as Record<string, O>;
+  const priceOf = (pid: string): string => {
+    const key = Object.keys(offers).find((k) => k.startsWith(`${pid}:`) && (!firmId || k.endsWith(`:${firmId}`))) ?? Object.keys(offers).find((k) => k.startsWith(`${pid}:`));
+    const o = key ? (offers[key]?.data as O | undefined) : undefined;
+    if (!o) return "";
+    const pv = (o.price_value ?? {}) as O;
+    if (pv.fixed?.value) return formatPrice(Number(pv.fixed.value));
+    const from = Number(pv.range?.from ?? pv.from?.value ?? pv.min?.value ?? 0);
+    const to = Number(pv.range?.to ?? pv.to?.value ?? pv.max?.value ?? 0);
+    if (from || to) return formatPrice(from || to, to && from && to > from ? to : null, Boolean(from && !to));
+    return Number(o.price) > 0 ? formatPrice(Number(o.price)) : "";
+  };
+  const out: ImportService[] = [];
+  for (const [pid, entry] of Object.entries(market.products as Record<string, O>)) {
+    const prod = (entry?.data?.product ?? entry?.product ?? entry?.data) as O | undefined;
+    const name = String(prod?.name ?? "").replace(/\s+/g, " ").trim();
+    if (!name || name.length > 120) continue;
+    const category = String(((prod?.categories ?? []) as O[])[0]?.label ?? "").trim() || undefined;
+    const description = String(prod?.description ?? "").replace(/\s+/g, " ").trim();
+    out.push({ name, price: priceOf(String(prod?.id ?? pid)) || undefined, category, note: description ? description.slice(0, 120) : undefined });
+  }
+  return out;
 }
 
 export const DGIS_BLOCKED = "Карточку не удалось прочитать автоматически — заполните недостающее или вставьте ссылку на сайт";
@@ -157,7 +190,21 @@ export async function readDgis(url: string): Promise<Found> {
     if (!firmId) return partial("error", "Это не карточка фирмы. Откройте свою организацию в 2ГИС и скопируйте ссылку — вида 2gis.ru/город/firm/1234567890.");
     if (page.status === 403 || page.status === 429 || /captcha/i.test(page.url)) return partial("blocked", DGIS_BLOCKED);
     const parsed = parseDgisHtml(page.html, page.url);
-    return parsed ? { ...parsed, url } : partial(page.status === 404 ? "error" : "partial", page.status === 404 ? "2ГИС не нашёл такую фирму — проверьте ссылку" : DGIS_BLOCKED);
+    if (parsed) {
+      // Прайс — на отдельной вкладке карточки; если её нет или не прочиталась, остаёмся с тем, что нашли
+      try {
+        const base = page.url.replace(/[?#].*$/, "").replace(/\/tab\/[^/]+\/?$/, "").replace(/\/$/, "");
+        const pricesPage = await fetchPage(`${base}/tab/prices`, { timeoutMs: 8000, maxBytes: 4 * 1024 * 1024 });
+        if (pricesPage.status === 200) {
+          const services = dgisPrices(dgisState(pricesPage.html), firmId);
+          if (services.length) return { ...parsed, url, services, servicesStructured: true };
+        }
+      } catch {
+        /* прайса нет — не страшно */
+      }
+      return { ...parsed, url };
+    }
+    return partial(page.status === 404 ? "error" : "partial", page.status === 404 ? "2ГИС не нашёл такую фирму — проверьте ссылку" : DGIS_BLOCKED);
   } catch {
     return partial("error", DGIS_BLOCKED);
   }

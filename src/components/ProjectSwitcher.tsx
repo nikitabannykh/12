@@ -5,6 +5,32 @@ import { useRouter } from "next/navigation";
 import { Check, ChevronDown, Loader2, Plus } from "lucide-react";
 import { api, useToast } from "./client";
 
+/* Черновики анкеты лежат в localStorage под ключом pz:onboarding:<user>:<проект|new> (см. BusinessOnboarding) */
+/** Убрать черновики нового (ещё не сохранённого) проекта — перед «+ Новый проект» */
+function clearNewProjectDrafts() {
+  try {
+    for (let i = window.localStorage.length - 1; i >= 0; i--) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith("pz:onboarding:") && k.endsWith(":new")) window.localStorage.removeItem(k);
+    }
+  } catch {
+    /* нет доступа к хранилищу */
+  }
+}
+
+/** Есть ли несохранённый черновик нового проекта (чтобы спросить перед тем, как начать заново) */
+function hasNewProjectDraft() {
+  try {
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith("pz:onboarding:") && k.endsWith(":new")) return true;
+    }
+  } catch {
+    /* нет доступа */
+  }
+  return false;
+}
+
 export type ProjectLite = { id: string; name: string; status: string; city: string };
 
 const STATUS: Record<string, string> = { active: "реклама идёт", launching: "запускается", paused: "на паузе", draft: "не запущен" };
@@ -20,7 +46,7 @@ export function ProjectSwitcher({ projects, current, limit, variant }: { project
   const router = useRouter();
   const toast = useToast();
   const cur = projects.find((p) => p.id === current);
-  const label = cur?.name ?? (projects.length ? "Новый проект" : "Мой бизнес");
+  const label = cur?.name ?? "Новый проект";
 
   useEffect(() => {
     if (!open) return;
@@ -37,11 +63,19 @@ export function ProjectSwitcher({ projects, current, limit, variant }: { project
 
   async function pick(id: string) {
     if (id === current) return setOpen(false);
+    const fresh = id === "new";
+    // Уже на несохранённой анкете — начать заново можно, но сначала спросим, если там что-то введено
+    if (fresh && !current && hasNewProjectDraft() && !window.confirm("Начать новую анкету с первого шага? Несохранённые данные текущей анкеты удалятся.")) return;
     setBusy(id);
     try {
       const r = await api<{ next: string }>("POST", "/api/projects", { id });
       setOpen(false);
-      router.push(r.next);
+      if (fresh) {
+        // Черновик прошлой несохранённой анкеты не подставляем, а метка в адресе пересоздаёт анкету,
+        // даже если мы уже на /app/start (иначе Next оставлял старое состояние и «ничего не происходило»)
+        clearNewProjectDrafts();
+        router.push(`${r.next}?new=${Date.now().toString(36)}`);
+      } else router.push(r.next);
       router.refresh();
     } catch (e) {
       toast((e as Error).message, "error");
@@ -60,7 +94,7 @@ export function ProjectSwitcher({ projects, current, limit, variant }: { project
         onClick={() => setOpen((o) => !o)}
         className={`w-full flex items-center gap-2 rounded-lg text-left font-semibold hover:bg-paper ${variant === "side" ? "px-2 py-2 border border-line" : "px-2 py-1.5 text-sm"}`}
       >
-        <span className="grid place-items-center size-7 shrink-0 rounded-md bg-mark text-ink text-sm font-extrabold" aria-hidden>{(label.trim()[0] ?? "+").toUpperCase()}</span>
+        <span className="grid place-items-center size-7 shrink-0 rounded-md bg-mark text-ink text-sm font-extrabold" aria-hidden>{cur ? (label.trim()[0] ?? "+").toUpperCase() : "+"}</span>
         <span className="min-w-0 flex-1 truncate">{label}</span>
         <ChevronDown size={16} className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
@@ -68,7 +102,7 @@ export function ProjectSwitcher({ projects, current, limit, variant }: { project
         <div className={`absolute z-50 mt-1.5 card shadow-lg p-1.5 ${variant === "top" ? "right-0 w-72 max-w-[calc(100vw-2rem)]" : "inset-x-0"}`} role="listbox" aria-label="Проекты">
           <p className="px-2.5 pt-1.5 pb-1 text-xs font-semibold text-faint uppercase tracking-wide">Проекты</p>
           {projects.map((p) => (
-            <button key={p.id} type="button" role="option" aria-selected={p.id === current} onClick={() => pick(p.id)} className="w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left hover:bg-paper">
+            <button key={p.id} type="button" role="option" aria-selected={p.id === current} disabled={busy !== null} onClick={() => pick(p.id)} className={`w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left ${p.id === current ? "bg-paper shadow-[inset_3px_0_0_var(--color-ink)]" : "hover:bg-paper"}`}>
               <span className="min-w-0 flex-1">
                 <span className="block font-semibold truncate">{p.name}</span>
                 <span className="block text-xs text-muted truncate">{p.city} · {STATUS[p.status] ?? p.status}</span>
@@ -76,14 +110,17 @@ export function ProjectSwitcher({ projects, current, limit, variant }: { project
               {busy === p.id ? <Loader2 size={16} className="spin" /> : p.id === current ? <Check size={16} className="text-good" /> : null}
             </button>
           ))}
-          {!current && projects.length ? (
-            <div className="flex items-center gap-2.5 rounded-md px-2.5 py-2 bg-paper">
-              <span className="flex-1 font-semibold">Новый проект</span>
+          {!current ? (
+            <div className="flex items-center gap-2.5 rounded-md px-2.5 py-2 bg-paper shadow-[inset_3px_0_0_var(--color-ink)]" aria-current="true">
+              <span className="min-w-0 flex-1">
+                <span className="block font-semibold truncate">Новый проект</span>
+                <span className="block text-xs text-muted truncate">анкета ещё не сохранена</span>
+              </span>
               <Check size={16} className="text-good" />
             </div>
           ) : null}
           <div className="border-t border-line mt-1.5 pt-1.5">
-            <button type="button" disabled={full || busy !== null || (!current && projects.length > 0)} onClick={() => pick("new")} className="w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left font-semibold hover:bg-paper disabled:opacity-50 disabled:cursor-not-allowed">
+            <button type="button" disabled={full || busy !== null} onClick={() => pick("new")} className="w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left font-semibold hover:bg-paper disabled:opacity-50 disabled:cursor-not-allowed">
               {busy === "new" ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}
               Новый проект
             </button>

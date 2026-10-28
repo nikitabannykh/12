@@ -2,14 +2,17 @@
 
 /**
  * Анкета бизнеса по шагам: 1. Ссылки → 2. О бизнесе → 3. Услуги и цены → 4. Фото → 5. Контакты и юр. данные.
- *  - Сверху — «Заполнено на N%» (взвешенная полнота анкеты) и шаги с галочками; на любой шаг можно вернуться,
- *    в том числе к ссылкам: добавить ссылку и прочитать заново. Повторное чтение не трогает то, что владелец уже
- *    заполнил, — только дописывает пустое и показывает, что изменилось («на сайте другое — заменить?»).
+ *  - Строго по порядку: виден один шаг, внизу только «Назад» и «Дальше». «Дальше» проверяет обязательные поля шага
+ *    (ошибки — прямо у полей). Вперёд по точкам шагов нельзя, назад — можно, в том числе к ссылкам: добавить ссылку и
+ *    прочитать заново. Повторное чтение не трогает то, что владелец уже заполнил, — только дописывает пустое
+ *    и показывает, что изменилось («на сайте другое — заменить?»).
+ *  - Шаг 1: «Заполнить по ссылке» (после чтения — сразу шаг 2) или «Пропустить — заполню вручную».
+ *  - Сверху — «Шаг N из 5», тонкая полоса «Заполнено на N%» и точки шагов.
  *  - Черновик сохраняется в браузере (localStorage) — перезагрузка страницы ничего не теряет.
  *  - Тот же мастер открывается из «Настройки → Изменить описание».
  */
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, CircleAlert, ImageOff, Link2, Loader2, Plus, RotateCcw, Star, Trash2, TriangleAlert, X } from "lucide-react";
 import { api, useToast } from "./client";
 import { businessPayload, type BusinessInput } from "./BusinessForm";
@@ -178,7 +181,7 @@ async function runImport(urls: string[], onEvent: (e: ImportEvent) => void): Pro
   return draft;
 }
 
-type Saved = { v: 1; f: BusinessInput; links: string[]; step: number; draft: Draft | null; photos: string[]; sources: Partial<Record<DraftField, string>>; at: number };
+type Saved = { v: 1; f: BusinessInput; links: string[]; step: number; max?: number; draft: Draft | null; photos: string[]; sources: Partial<Record<DraftField, string>>; at: number };
 const storageKey = (k: string) => `pz:onboarding:${k}`;
 function readSaved(k: string): Saved | null {
   try {
@@ -190,10 +193,12 @@ function readSaved(k: string): Saved | null {
   }
 }
 
+const LAST = STEPS.length - 1;
+
 export function BusinessOnboarding({
-  initial, niches, next, nicheLock, editing, draftKey, savedPhotos, photoMax, otherProjects,
+  initial, niches, next, saveLabel, nicheLock, editing, draftKey, savedPhotos, photoMax, otherProjects,
 }: {
-  initial: BusinessInput; niches: NicheLite[]; next: string; nicheLock: "launched" | "plan" | null; editing: boolean;
+  initial: BusinessInput; niches: NicheLite[]; next: string; saveLabel: string; nicheLock: "launched" | "plan" | null; editing: boolean;
   /** Ключ черновика в браузере: пользователь + проект («new» для нового) */
   draftKey: string;
   /** Уже сохранённые фото владельца (id) */
@@ -201,7 +206,10 @@ export function BusinessOnboarding({
   photoMax: number;
   otherProjects: number;
 }) {
+  // Шаги идут строго по порядку: вперёд — только «Дальше», назад — «Назад» или по пройденному шагу.
+  // У сохранённого проекта все шаги уже пройдены — открываем «О бизнесе», остальные доступны.
   const [step, setStep] = useState(editing ? 1 : 0);
+  const [max, setMax] = useState(editing ? LAST : 0);
   const [f, setF] = useState<BusinessInput>(initial);
   const [links, setLinks] = useState<string[]>(() => {
     const pre = [initial.siteUrl, initial.orgUrl].filter(Boolean);
@@ -209,11 +217,17 @@ export function BusinessOnboarding({
   });
   const [rows, setRows] = useState<Row[]>([]);
   const [running, setRunning] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [sources, setSources] = useState<Partial<Record<DraftField, string>>>({});
   const [photos, setPhotos] = useState<string[]>([]);
   const [changes, setChanges] = useState<{ list: Change[]; summary: string[] } | null>(null);
+  /** Только что заполнили по ссылке — на шаге «О бизнесе» показываем, что подтянули */
+  const [imported, setImported] = useState<string[] | null>(null);
+  /** Шаги, где уже нажимали «Дальше» с пустыми обязательными полями — там показываем ошибки */
+  const [tried, setTried] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [restored, setRestored] = useState(false);
   const toast = useToast();
   const router = useRouter();
@@ -227,19 +241,21 @@ export function BusinessOnboarding({
   useEffect(() => {
     const s = readSaved(draftKey);
     if (s && JSON.stringify(s.f) !== pristine.current) {
+      const st = Math.max(0, Math.min(LAST, s.step ?? 0));
       setF(s.f);
       setLinks(s.links?.length ? s.links : [""]);
-      setStep(Math.max(0, Math.min(4, s.step ?? 0)));
+      setStep(st);
+      setMax((m) => Math.max(m, st, Math.min(LAST, s.max ?? 0)));
       setDraft(s.draft ?? null);
       setPhotos(s.photos ?? []);
       setSources(s.sources ?? {});
       setRestored(true);
     }
     const h = window.location.hash;
-    if (h === "#org" || h === "#legal") setStep(4);
-    else if (h === "#hours") setStep(1);
+    if (editing && (h === "#org" || h === "#legal")) setStep(4);
+    else if (editing && h === "#hours") setStep(1);
     ready.current = true;
-  }, [draftKey]);
+  }, [draftKey, editing]);
 
   // Автосохранение черновика (только если что-то поменялось)
   useEffect(() => {
@@ -248,14 +264,14 @@ export function BusinessOnboarding({
       try {
         const dirty = JSON.stringify(f) !== pristine.current || draft;
         if (!dirty) return;
-        const data: Saved = { v: 1, f, links, step, draft, photos, sources, at: Date.now() };
+        const data: Saved = { v: 1, f, links, step, max, draft, photos, sources, at: Date.now() };
         window.localStorage.setItem(storageKey(draftKey), JSON.stringify(data));
       } catch {
         /* приватный режим или переполнение — без черновика */
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [f, links, step, draft, photos, sources, draftKey]);
+  }, [f, links, step, max, draft, photos, sources, draftKey]);
 
   const clearSaved = () => {
     try {
@@ -265,27 +281,44 @@ export function BusinessOnboarding({
     }
   };
 
-  const go = (s: number) => {
-    setStep(Math.max(0, Math.min(STEPS.length - 1, s)));
-    requestAnimationFrame(() => top.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  const scrollTop = () => requestAnimationFrame(() => top.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  /** Перейти на шаг: назад — всегда, вперёд — только на уже пройденный */
+  const go = (s: number, opts?: { unlock?: boolean }) => {
+    const to = Math.max(0, Math.min(LAST, s));
+    if (!opts?.unlock && to > max) return;
+    if (opts?.unlock) setMax((m) => Math.max(m, to));
+    setStep(to);
+    setSaveError(null);
+    scrollTop();
   };
+  const scrollToError = () =>
+    requestAnimationFrame(() => setTimeout(() => document.querySelector("[data-missing='true']")?.scrollIntoView({ behavior: "smooth", block: "center" }), 60));
 
   const photoCount = savedPhotos.length + photos.length;
   const comp = useMemo(() => completeness(f, photoCount), [f, photoCount]);
   const miss = useMemo(() => missingOf(f), [f]);
-  const stepDone = [
-    Boolean(draft || f.siteUrl.trim() || f.orgUrl.trim()),
-    Boolean(f.name.trim() && f.niche && f.city.trim().length >= 2),
-    f.services.some((s) => s.name.trim()),
-    photoCount > 0,
-    Boolean(f.phone.trim() || f.whatsapp.trim() || f.telegram.trim()),
-  ];
-  const stepMissing = [0, 1, 2, 3, 4].map((i) => miss.some((m) => REQUIRED_STEP[m] === i));
+  const stepMissing = [0, 1, 2, 3, 4].map((i) => miss.filter((m) => REQUIRED_STEP[m] === i));
+  const tips = comp.todo.filter((t) => t.step === step && !(stepMissing[step].length && ["название", "сфера", "город", "телефон или мессенджер"].includes(t.label))).map((t) => t.label);
+
+  /** «Дальше»: сначала проверяем обязательные поля текущего шага */
+  function next_() {
+    if (stepMissing[step].length) {
+      setTried((t) => new Set(t).add(step));
+      scrollToError();
+      return;
+    }
+    setImported(null);
+    go(step + 1, { unlock: true });
+  }
 
   async function autofill() {
     const urls = links.map((l) => l.trim()).filter(Boolean);
-    if (!urls.length) return toast("Вставьте хотя бы одну ссылку", "error");
+    if (!urls.length) {
+      setImportError("Вставьте ссылку на сайт или карточку в картах — или пропустите этот шаг и заполните вручную.");
+      return;
+    }
     setRunning(true);
+    setImportError(null);
     setRows([]);
     setChanges(null);
     try {
@@ -301,7 +334,7 @@ export function BusinessOnboarding({
       const usable = d.reports.some((r) => r.status === "ok" || r.status === "partial" || r.status === "blocked");
       const anything = d.name || d.address || d.phone || d.services.length || d.orgUrl || d.siteUrl;
       if (!usable || !anything) {
-        toast("По этим ссылкам ничего не нашли. Проверьте адрес или заполните вручную.", "error");
+        setImportError("По этим ссылкам ничего не нашли. Проверьте адрес или нажмите «Пропустить — заполню вручную».");
         setRunning(false);
         return;
       }
@@ -311,15 +344,17 @@ export function BusinessOnboarding({
       setSources((s) => ({ ...d.sources, ...Object.fromEntries(Object.entries(s).filter(([k]) => m.changes.some((c) => c.field === k && c.kind === "kept"))) }));
       setPhotos((cur) => (cur.length ? cur.filter((p) => d.photos.includes(p)) : d.photos.slice(0, photoRoom)));
       setF(m.next);
-      setChanges({ list: m.changes, summary: m.summary });
       setRunning(false);
-      // Первое чтение без расхождений — сразу на проверку; повторное — показываем, что изменилось
+      // Первое чтение без расхождений — сразу на шаг 2; повторное — показываем здесь, что изменилось
       if (!hadData && !m.changes.some((c) => c.kind === "kept")) {
-        await new Promise((r) => setTimeout(r, 700));
-        go(1);
+        setImported([...m.changes.filter((c) => c.kind === "added").map((c) => c.label), ...m.summary]);
+        await new Promise((r) => setTimeout(r, 500));
+        go(1, { unlock: true });
+      } else {
+        setChanges({ list: m.changes, summary: m.summary });
       }
     } catch (e) {
-      toast((e as Error).message, "error");
+      setImportError((e as Error).message);
       setRunning(false);
     }
   }
@@ -327,12 +362,14 @@ export function BusinessOnboarding({
   async function save() {
     const m = missingOf(f);
     if (m.length) {
-      go(REQUIRED_STEP[m[0]]);
-      toast(`Осталось указать: ${m.map((x) => REQUIRED_TEXT[x]).join(", ")}`, "error");
-      requestAnimationFrame(() => setTimeout(() => document.querySelector("[data-missing='true']")?.scrollIntoView({ behavior: "smooth", block: "center" }), 250));
+      const s = REQUIRED_STEP[m[0]];
+      setTried((t) => new Set(t).add(s));
+      go(s, { unlock: true });
+      scrollToError();
       return;
     }
     setBusy("Сохраняем…");
+    setSaveError(null);
     try {
       await api("POST", "/api/business", businessPayload(f));
       if (draft?.photoToken && photos.length) {
@@ -344,7 +381,7 @@ export function BusinessOnboarding({
       router.push(next);
       router.refresh();
     } catch (err) {
-      toast((err as Error).message, "error");
+      setSaveError((err as Error).message);
       setBusy(null);
     }
   }
@@ -352,11 +389,15 @@ export function BusinessOnboarding({
   const set = <K extends keyof BusinessInput>(k: K, v: BusinessInput[K]) => {
     setF((x) => ({ ...x, [k]: v }));
     setSources((s) => (s[k as DraftField] ? { ...s, [k]: undefined } : s));
+    setSaveError(null);
   };
+
+  const showErr = tried.has(step);
+  const errCount = showErr ? stepMissing[step].length : 0;
 
   return (
     <div ref={top} className="grid grid-cols-[minmax(0,1fr)] gap-4 scroll-mt-6">
-      <ProgressHeader step={step} go={go} pct={comp.pct} todo={comp.todo} done={stepDone} missing={stepMissing} />
+      <ProgressHeader step={step} max={max} go={(s) => go(s)} pct={comp.pct} missing={stepMissing.map((x) => x.length > 0)} locked={running || Boolean(busy)} />
 
       {restored ? (
         <div className="card px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
@@ -372,8 +413,12 @@ export function BusinessOnboarding({
               setPhotos([]);
               setSources({});
               setChanges(null);
+              setImported(null);
+              setTried(new Set());
               setRestored(false);
-              go(editing ? 1 : 0);
+              setMax(editing ? LAST : 0);
+              setStep(editing ? 1 : 0);
+              scrollTop();
             }}
           >
             Начать заново
@@ -382,98 +427,113 @@ export function BusinessOnboarding({
       ) : null}
 
       {step === 0 ? (
-        <LinkStep links={links} setLinks={setLinks} rows={rows} running={running} onRun={autofill} editing={editing} changes={changes} otherProjects={otherProjects}
+        <LinkStep links={links} setLinks={(v) => { setLinks(v); setImportError(null); }} rows={rows} running={running} onRun={autofill} revisit={max > 0} changes={changes} otherProjects={otherProjects} editing={editing}
+          error={importError}
           onReplace={(c) => {
             setF((x) => ({ ...x, [c.field]: c.value }));
             setChanges((ch) => (ch ? { ...ch, list: ch.list.map((y) => (y === c ? { ...y, kind: "added" as const } : y)) } : ch));
           }}
-          onNext={() => go(1)}
+          onSkip={() => { setChanges(null); go(1, { unlock: true }); }}
         />
-      ) : step === 1 ? (
-        <AboutStep f={f} set={set} niches={niches} nicheLock={nicheLock} initialNiche={initial.niche} draft={draft} sources={sources} miss={miss} />
-      ) : step === 2 ? (
-        <ServicesStep f={f} set={set} niches={niches} sources={sources} miss={miss} />
-      ) : step === 3 ? (
-        <PhotosStep draft={draft} photos={photos} setPhotos={setPhotos} room={photoRoom} saved={savedPhotos} photoMax={photoMax} sources={sources} onLinks={() => go(0)} editing={editing} />
       ) : (
-        <ContactsStep f={f} set={set} sources={sources} miss={miss} />
-      )}
-
-      <div className="sticky bottom-20 md:bottom-4 z-10">
-        <div className="card shadow-lg p-2.5 sm:p-3 flex items-center gap-2">
-          {step > 0 ? (
-            <button type="button" className="btn btn-ghost h-12 px-3 sm:px-4" onClick={() => go(step - 1)} disabled={Boolean(busy)} aria-label="Назад">
-              <ArrowLeft size={18} /> <span className="max-sm:hidden">Назад</span>
-            </button>
+        <>
+          {step === 1 && imported ? (
+            <div className="card px-4 sm:px-6 py-3.5 flex items-start gap-2.5 text-sm bg-good-soft border-good/30" aria-live="polite">
+              <Check size={17} className="text-good mt-0.5 shrink-0" />
+              <p className="leading-relaxed">
+                <span className="font-semibold">Заполнили по ссылке{imported.length ? `: ${imported.slice(0, 6).join(", ")}${imported.length > 6 ? " и другое" : ""}` : ""}.</span>{" "}
+                Осталось проверить — шаг за шагом.
+              </p>
+            </div>
           ) : null}
-          <div className="flex-1" />
-          {editing && step < STEPS.length - 1 ? (
-            <button type="button" className="btn btn-ghost h-12 px-4" onClick={save} disabled={Boolean(busy) || running}>
-              {busy ? <Loader2 size={18} className="spin" /> : null}
-              {busy ?? "Сохранить"}
-            </button>
-          ) : null}
-          {step < STEPS.length - 1 ? (
-            <button type="button" className="btn btn-primary h-12 px-5 text-base" onClick={() => go(step + 1)} disabled={running || (!editing && Boolean(busy))}>
-              {step === 0 && !draft && !f.name ? "Заполнить вручную" : "Дальше"} <ArrowRight size={18} />
-            </button>
+          {step === 1 ? (
+            <AboutStep f={f} set={set} niches={niches} nicheLock={nicheLock} initialNiche={initial.niche} draft={draft} sources={sources} miss={miss} showErr={showErr} tips={tips} />
+          ) : step === 2 ? (
+            <ServicesStep f={f} set={set} niches={niches} sources={sources} miss={miss} showErr={showErr} tips={tips} />
+          ) : step === 3 ? (
+            <PhotosStep draft={draft} photos={photos} setPhotos={setPhotos} room={photoRoom} saved={savedPhotos} photoMax={photoMax} sources={sources} onLinks={() => go(0)} editing={editing} tips={tips} />
           ) : (
-            <button type="button" className="btn btn-primary h-12 px-6 text-base" onClick={save} disabled={Boolean(busy)}>
-              {busy ? <Loader2 size={18} className="spin" /> : <Check size={18} />}
-              {busy ?? (editing ? "Сохранить" : "Сохранить и продолжить")}
-            </button>
+            <ContactsStep f={f} set={set} sources={sources} miss={miss} showErr={showErr} tips={tips} />
           )}
-        </div>
-      </div>
+
+          <div className="grid gap-3">
+            {errCount ? (
+              <p className="flex items-start gap-2 text-sm font-semibold text-bad" role="alert">
+                <CircleAlert size={16} className="mt-0.5 shrink-0" />
+                Чтобы идти дальше, заполните: {stepMissing[step].map((x) => REQUIRED_TEXT[x]).join(", ")}.
+              </p>
+            ) : null}
+            {saveError ? (
+              <p className="flex items-start gap-2 text-sm font-semibold text-bad" role="alert">
+                <CircleAlert size={16} className="mt-0.5 shrink-0" />
+                <span className="[overflow-wrap:anywhere]">Не сохранили. {saveError}</span>
+              </p>
+            ) : null}
+            <div className="flex items-center gap-3">
+              <button type="button" className={`btn btn-ghost h-12 px-4 ${step === LAST ? "max-sm:px-3.5" : ""}`} onClick={() => go(step - 1)} disabled={Boolean(busy)} aria-label="Назад">
+                <ArrowLeft size={18} /> <span className={step === LAST ? "max-sm:hidden" : ""}>Назад</span>
+              </button>
+              <div className="flex-1" />
+              {step < LAST ? (
+                <button type="button" className="btn btn-primary h-12 px-6 text-base max-sm:flex-1" onClick={next_} disabled={Boolean(busy)}>
+                  Дальше <ArrowRight size={18} />
+                </button>
+              ) : (
+                <button type="button" className="btn btn-primary h-12 px-5 text-base max-sm:flex-1 max-sm:px-3 max-sm:text-[15px]" onClick={save} disabled={Boolean(busy)}>
+                  {busy ? <Loader2 size={18} className="spin shrink-0" /> : <Check size={18} className="shrink-0" />}
+                  {busy ?? saveLabel}
+                </button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 // ─── Прогресс и шаги ─────────────────────────────────────────────────
 
-function ProgressHeader({ step, go, pct, todo, done, missing }: {
-  step: number; go: (s: number) => void; pct: number; todo: { label: string; step: number }[]; done: boolean[]; missing: boolean[];
+function ProgressHeader({ step, max, go, pct, missing, locked }: {
+  step: number; max: number; go: (s: number) => void; pct: number; missing: boolean[]; locked: boolean;
 }) {
   return (
-    <section className="card p-4 sm:p-5 grid gap-4" aria-label="Шаги анкеты">
-      <div className="grid gap-2">
-        <div className="flex items-baseline justify-between gap-3">
-          <p className="font-bold">Заполнено на {pct}%</p>
-          <p className="text-sm text-muted">Шаг {step + 1} из {STEPS.length}</p>
-        </div>
-        <div className="h-2 rounded-full bg-line overflow-hidden" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Заполненность анкеты">
-          <div className="h-full rounded-full bg-mark transition-[width] duration-500" style={{ width: `${Math.max(3, pct)}%` }} />
-        </div>
-        {todo.length ? (
-          <p className="text-sm text-muted leading-snug">
-            Ещё добавьте:{" "}
-            {todo.slice(0, 5).map((t, i) => (
-              <span key={t.label}>
-                <button type="button" className="underline underline-offset-2 hover:text-ink" onClick={() => go(t.step)}>{t.label}</button>
-                {i < Math.min(5, todo.length) - 1 ? ", " : ""}
-              </span>
-            ))}
-            {todo.length > 5 ? ` и ещё ${todo.length - 5}` : ""}
-          </p>
-        ) : <p className="text-sm text-good font-semibold">Всё заполнено — объявления получатся сильнее</p>}
+    <section className="card p-4 sm:p-5 grid gap-3.5" aria-label="Шаги анкеты">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="font-extrabold text-lg leading-tight">
+          <span className="text-muted font-semibold text-base">Шаг {step + 1} из {STEPS.length}</span>
+          <span className="max-sm:block sm:before:content-['·'] sm:before:mx-2 sm:before:text-faint">{STEPS[step].title}</span>
+        </p>
+        <p className="text-sm text-muted whitespace-nowrap">Заполнено на <span className="font-semibold text-ink">{pct}%</span></p>
       </div>
-      <ol className="grid grid-cols-5 gap-1.5 sm:gap-2">
+      <div className="h-1.5 rounded-full bg-line overflow-hidden" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Заполненность анкеты">
+        <div className="h-full rounded-full bg-mark transition-[width] duration-500" style={{ width: `${Math.max(2, pct)}%` }} />
+      </div>
+      <ol className="grid grid-cols-5 gap-1">
         {STEPS.map((s, i) => {
           const cur = i === step;
+          const reached = i <= max;
+          const ok = reached && !cur && !missing[i] && i !== max;
+          const warn = reached && !cur && missing[i] && i < max;
           return (
             <li key={s.title} className="min-w-0">
               <button
                 type="button"
                 onClick={() => go(i)}
+                disabled={!reached || cur || locked}
                 aria-current={cur ? "step" : undefined}
-                className={`w-full grid justify-items-center sm:flex sm:items-center gap-1 sm:gap-2 rounded-lg px-1 sm:px-2.5 py-2 text-left transition-colors ${cur ? "bg-ink text-white" : "hover:bg-paper"}`}
+                title={reached ? s.title : "Сначала заполните предыдущие шаги"}
+                className={`w-full grid justify-items-center gap-1.5 rounded-lg px-1 py-1.5 transition-colors ${reached && !cur ? "hover:bg-paper cursor-pointer" : "cursor-default"} disabled:opacity-100`}
               >
-                <span className={`grid place-items-center size-7 shrink-0 rounded-full text-sm font-bold ${cur ? "bg-white text-ink" : done[i] && !missing[i] ? "bg-good text-white" : missing[i] ? "bg-mark text-ink" : "bg-paper text-muted border border-line"}`}>
-                  {done[i] && !missing[i] && !cur ? <Check size={15} strokeWidth={3} /> : i + 1}
+                <span className="relative w-full grid place-items-center">
+                  {i > 0 ? <span className={`absolute left-[calc(-50%+1.1rem)] right-[calc(50%+1.1rem)] top-1/2 h-0.5 -translate-y-1/2 rounded ${i <= max ? "bg-ink/70" : "bg-line"}`} aria-hidden /> : null}
+                  <span className={`relative grid place-items-center size-7 rounded-full text-sm font-bold ${cur ? "bg-ink text-white ring-4 ring-ink/10" : ok ? "bg-good text-white" : warn ? "bg-mark text-ink" : reached ? "bg-white text-ink border-2 border-ink/70" : "bg-paper text-faint border border-line"}`}>
+                    {ok ? <Check size={15} strokeWidth={3} /> : i + 1}
+                  </span>
                 </span>
-                <span className={`text-[11px] sm:text-sm font-semibold leading-tight text-center sm:text-left truncate max-w-full ${cur ? "" : "text-ink-2"}`}>
-                  <span className="xl:hidden">{s.short}</span>
-                  <span className="max-xl:hidden">{s.title}</span>
+                <span className={`text-[11px] sm:text-sm font-semibold leading-tight text-center truncate max-w-full ${cur ? "text-ink" : reached ? "text-ink-2" : "text-faint"}`}>
+                  <span className="lg:hidden">{s.short}</span>
+                  <span className="max-lg:hidden">{s.title}</span>
                 </span>
               </button>
             </li>
@@ -486,9 +546,9 @@ function ProgressHeader({ step, go, pct, todo, done, missing }: {
 
 // ─── Шаг 1: ссылки ───────────────────────────────────────────────────
 
-function LinkStep({ links, setLinks, rows, running, onRun, editing, changes, onReplace, onNext, otherProjects }: {
-  links: string[]; setLinks: React.Dispatch<React.SetStateAction<string[]>>; rows: Row[]; running: boolean; onRun: () => void; editing: boolean;
-  changes: { list: Change[]; summary: string[] } | null; onReplace: (c: Change) => void; onNext: () => void; otherProjects: number;
+function LinkStep({ links, setLinks, rows, running, onRun, revisit, editing, changes, onReplace, onSkip, otherProjects, error }: {
+  links: string[]; setLinks: React.Dispatch<React.SetStateAction<string[]>>; rows: Row[]; running: boolean; onRun: () => void; revisit: boolean; editing: boolean;
+  changes: { list: Change[]; summary: string[] } | null; onReplace: (c: Change) => void; onSkip: () => void; otherProjects: number; error: string | null;
 }) {
   const setAt = (i: number, v: string) => setLinks((l) => l.map((x, j) => (j === i ? v : x)));
   const done = rows.filter((r) => r.state !== "loading").length;
@@ -498,10 +558,11 @@ function LinkStep({ links, setLinks, rows, running, onRun, editing, changes, onR
     <section className="card overflow-hidden">
       <div className="p-5 sm:p-8 grid grid-cols-[minmax(0,1fr)] gap-5">
         <div className="grid gap-1.5">
-          <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight">{editing ? "Ссылки на ваш бизнес" : "Начнём со ссылки"}</h2>
+          <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight">{revisit ? "Ссылки на ваш бизнес" : "Есть сайт или карточка на картах?"}</h2>
           <p className="text-muted leading-relaxed max-w-xl">
-            Прочитаем адрес, часы, телефон, услуги с ценами по разделам, преимущества и все фото — останется проверить. Лучше сразу две ссылки: сайт и карточку в Яндекс Картах или 2ГИС.
-            {editing ? " Повторное чтение ничего не затрёт — только допишет пустое." : ""}
+            {revisit
+              ? "Добавьте или поменяйте ссылку и прочитайте ещё раз. То, что вы уже заполнили, не затрём — только допишем пустое и покажем, что отличается."
+              : "Вставьте ссылку — сами заполним адрес, часы, телефон, услуги с ценами и фото, вам останется проверить. Нет ссылки — пропустите шаг и заполните вручную."}
           </p>
         </div>
 
@@ -520,7 +581,7 @@ function LinkStep({ links, setLinks, rows, running, onRun, editing, changes, onR
                 <Link2 size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-faint pointer-events-none" aria-hidden />
                 <input
                   id={`link-${i}`}
-                  className="field h-14 text-base sm:text-lg pl-11 pr-28"
+                  className={`field h-14 text-base sm:text-lg pl-11 pr-28 ${error && i === 0 && !v.trim() ? "border-bad" : ""}`}
                   value={v}
                   onChange={(e) => setAt(i, e.target.value)}
                   onPaste={(e) => {
@@ -538,7 +599,9 @@ function LinkStep({ links, setLinks, rows, running, onRun, editing, changes, onR
                   spellCheck={false}
                   disabled={running}
                   maxLength={500}
-                  autoFocus={i === 0 && !editing && !v}
+                  aria-invalid={error && i === 0 ? true : undefined}
+                  aria-describedby={error && i === 0 ? "link-error" : undefined}
+                  autoFocus={i === 0 && !revisit && !v}
                 />
                 <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
                   {kind ? <span className="pill bg-info-soft text-ink-2 max-w-[6.5rem] truncate">{KIND_LABEL[kind]}</span> : null}
@@ -558,52 +621,72 @@ function LinkStep({ links, setLinks, rows, running, onRun, editing, changes, onR
               </button>
             ) : null}
             <p className="text-sm text-faint [overflow-wrap:anywhere]">
-              Например: {EXAMPLES.map((x, i) => (
+              Например: {EXAMPLES.slice(0, 3).map((x, i) => (
                 <span key={x}>
                   <code className="font-sans text-muted">{x}</code>
-                  {i < EXAMPLES.length - 1 ? ", " : ""}
+                  {i < 2 ? ", " : ""}
                 </span>
               ))}
             </p>
           </div>
 
+          {error ? (
+            <p id="link-error" className="flex items-start gap-2 text-sm font-semibold text-bad" role="alert">
+              <CircleAlert size={16} className="mt-0.5 shrink-0" /> {error}
+            </p>
+          ) : null}
+
           {rows.length ? <Progress rows={rows} running={running} done={done} /> : null}
 
-          <div className="grid sm:flex gap-2 sm:gap-3 pt-1">
-            <button className="btn btn-primary h-12 px-6 text-base" disabled={running}>
-              {running ? <Loader2 size={18} className="spin" /> : null}
-              {running ? "Читаем…" : changes || editing ? "Прочитать ещё раз" : "Заполнить автоматически"}
-            </button>
+          {changes ? (
+            <div className="rounded-xl border border-line p-4 grid gap-3" aria-live="polite">
+              <p className="font-semibold">
+                {added.length || changes.summary.length
+                  ? `Добавили: ${[...added.map((c) => c.label), ...changes.summary].join(", ")}.`
+                  : "Нового не нашли — всё уже в анкете."}
+              </p>
+              {kept.length ? (
+                <div className="grid gap-2">
+                  <p className="text-sm text-muted">Оставили ваше — на сайте или в картах указано иначе:</p>
+                  <ul className="grid gap-2">
+                    {kept.map((c) => (
+                      <li key={c.field} className="grid sm:grid-cols-[minmax(0,1fr)_auto] gap-2 items-center rounded-lg bg-paper px-3 py-2.5 text-sm">
+                        <span className="min-w-0 [overflow-wrap:anywhere]">
+                          <span className="font-semibold">{c.label.charAt(0).toUpperCase() + c.label.slice(1)}:</span> у вас «{c.mine}», найдено «{c.value.length > 90 ? `${c.value.slice(0, 90)}…` : c.value}»
+                        </span>
+                        <button type="button" className="btn btn-ghost btn-sm justify-self-start" onClick={() => onReplace(c)}>Заменить</button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Одно главное действие: прочитать ссылку. Пропуск — второстепенная ссылка-кнопка */}
+          <div className="grid sm:flex sm:items-center gap-3 sm:gap-5 pt-1">
+            {changes ? (
+              <>
+                <button type="button" className="btn btn-primary h-12 px-6 text-base" onClick={onSkip}>
+                  Дальше <ArrowRight size={18} />
+                </button>
+                <button className="btn btn-ghost h-12 px-5" disabled={running}>
+                  <RotateCcw size={16} /> Прочитать ещё раз
+                </button>
+              </>
+            ) : (
+              <>
+                <button className="btn btn-primary h-12 px-6 text-base" disabled={running}>
+                  {running ? <Loader2 size={18} className="spin" /> : null}
+                  {running ? "Читаем…" : revisit ? "Прочитать ещё раз" : "Заполнить по ссылке"}
+                </button>
+                <button type="button" className="h-11 text-[15px] font-semibold text-muted hover:text-ink underline underline-offset-4 disabled:opacity-50" onClick={onSkip} disabled={running}>
+                  {revisit ? "Дальше без повторного чтения" : "Пропустить — заполню вручную"}
+                </button>
+              </>
+            )}
           </div>
         </form>
-
-        {changes ? (
-          <div className="rounded-xl border border-line p-4 grid gap-3" aria-live="polite">
-            <p className="font-semibold">
-              {added.length || changes.summary.length
-                ? `Добавили: ${[...added.map((c) => c.label), ...changes.summary].join(", ")}.`
-                : "Нового не нашли — всё уже в анкете."}
-            </p>
-            {kept.length ? (
-              <div className="grid gap-2">
-                <p className="text-sm text-muted">Оставили ваше — на сайте или в картах указано иначе:</p>
-                <ul className="grid gap-2">
-                  {kept.map((c) => (
-                    <li key={c.field} className="grid sm:grid-cols-[minmax(0,1fr)_auto] gap-2 items-center rounded-lg bg-paper px-3 py-2.5 text-sm">
-                      <span className="min-w-0 [overflow-wrap:anywhere]">
-                        <span className="font-semibold">{c.label.charAt(0).toUpperCase() + c.label.slice(1)}:</span> у вас «{c.mine}», найдено «{c.value.length > 90 ? `${c.value.slice(0, 90)}…` : c.value}»
-                      </span>
-                      <button type="button" className="btn btn-ghost btn-sm justify-self-start" onClick={() => onReplace(c)}>Заменить</button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            <button type="button" className="btn btn-mark h-11 justify-self-start" onClick={onNext}>
-              Проверить данные <ArrowRight size={17} />
-            </button>
-          </div>
-        ) : null}
       </div>
       <div className="border-t border-line bg-paper/60 px-5 sm:px-8 py-3.5 text-sm text-muted leading-relaxed">
         Берём только то, что опубликовано на ваших страницах, — ничего не придумываем.
@@ -648,34 +731,47 @@ function SourceChip({ label }: { label?: string }) {
   return <span className={`pill ${warn ? "bg-warn-soft text-warn" : "bg-good-soft text-good"} font-medium`}>{label}</span>;
 }
 
+/** Показывать ли ошибки обязательных полей: только после попытки нажать «Дальше» на этом шаге */
+const ShowErr = createContext(false);
+
 /** Строка карточки: подпись + чип источника слева, значение справа (на телефоне — друг под другом) */
 function Field({ label, htmlFor, chip, missing, missingText, hint, id, children }: { label: string; htmlFor?: string; chip?: string; missing?: boolean; missingText?: string; hint?: string; id?: string; children: React.ReactNode }) {
+  const showErr = useContext(ShowErr);
+  const error = missing && showErr;
   return (
-    <div id={id} data-missing={missing ? "true" : undefined} className={`grid gap-1.5 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4 py-3.5 px-4 sm:px-6 scroll-mt-24 ${missing ? "bg-mark-soft/70" : ""}`}>
+    <div id={id} data-missing={error ? "true" : undefined} className={`grid gap-1.5 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4 py-3.5 px-4 sm:px-6 scroll-mt-24 ${error ? "bg-bad-soft/60" : ""}`}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 sm:block sm:pt-2.5">
         <label htmlFor={htmlFor} className="text-sm font-semibold">{label}</label>
-        {missing ? (
-          <span className="pill bg-mark text-ink sm:mt-1.5 sm:flex sm:w-fit">{missingText ?? "Не нашли — заполните"}</span>
-        ) : chip ? (
+        {missing && !error ? (
+          <span className="pill bg-paper text-muted border border-line sm:mt-1.5 sm:flex sm:w-fit">обязательно</span>
+        ) : chip && !missing ? (
           <span className="sm:mt-1.5 sm:flex"><SourceChip label={chip} /></span>
         ) : null}
       </div>
       <div className="min-w-0">
         {children}
+        {error ? (
+          <p className="mt-1.5 flex items-center gap-1.5 text-sm font-semibold text-bad" role="alert">
+            <CircleAlert size={15} className="shrink-0" /> {missingText ?? "Заполните это поле"}
+          </p>
+        ) : null}
         {hint ? <p className="hint mt-1.5">{hint}</p> : null}
       </div>
     </div>
   );
 }
 
-function StepCard({ title, text, children }: { title: string; text?: string; children: React.ReactNode }) {
+function StepCard({ title, text, tips, showErr = false, children }: { title: string; text?: string; tips?: string[]; showErr?: boolean; children: React.ReactNode }) {
   return (
     <section className="card overflow-hidden">
       <header className="p-5 sm:px-6 sm:pt-6 sm:pb-5 border-b border-line">
         <h2 className="text-xl font-extrabold tracking-tight">{title}</h2>
         {text ? <p className="text-muted mt-1 leading-relaxed">{text}</p> : null}
+        {tips?.length ? <p className="text-sm text-ink-2 mt-2 leading-snug"><span className="font-semibold">Для сильных объявлений добавьте:</span> {tips.join(", ")} — необязательно.</p> : null}
       </header>
-      <div className="divide-y divide-line">{children}</div>
+      <ShowErr.Provider value={showErr}>
+        <div className="divide-y divide-line">{children}</div>
+      </ShowErr.Provider>
     </section>
   );
 }
@@ -684,15 +780,15 @@ type SetF = <K extends keyof BusinessInput>(k: K, v: BusinessInput[K]) => void;
 
 // ─── Шаг 2: о бизнесе ────────────────────────────────────────────────
 
-function AboutStep({ f, set, niches, nicheLock, initialNiche, draft, sources, miss }: {
-  f: BusinessInput; set: SetF; niches: NicheLite[]; nicheLock: "launched" | "plan" | null; initialNiche: string; draft: Draft | null; sources: Partial<Record<DraftField, string>>; miss: Draft["missing"];
+function AboutStep({ f, set, niches, nicheLock, initialNiche, draft, sources, miss, showErr, tips }: {
+  f: BusinessInput; set: SetF; niches: NicheLite[]; nicheLock: "launched" | "plan" | null; initialNiche: string; draft: Draft | null; sources: Partial<Record<DraftField, string>>; miss: Draft["missing"]; showErr: boolean; tips: string[];
 }) {
   const found = draft?.advantagesFound ?? [];
   const advList = f.advantages.filter((a) => a.trim());
   const notes = draft?.reports.filter((r) => r.status !== "ok" && r.message) ?? [];
   const addresses = draft?.addresses ?? [];
   return (
-    <StepCard title="О бизнесе" text={draft ? "Проверьте, что нашли, и поправьте, если что-то не так. Зелёная метка — откуда взяли." : "Главное о вас — из этого робот пишет объявления."}>
+    <StepCard title="О бизнесе" showErr={showErr} tips={tips} text={draft ? "Проверьте, что нашли, и поправьте, если что-то не так. Зелёная метка — откуда взяли." : "Главное о вас — из этого робот пишет объявления. Обязательны название, сфера и город."}>
       {notes.length ? (
         <ul className="grid gap-1.5 px-4 sm:px-6 py-3">
           {notes.map((n) => (
@@ -703,7 +799,7 @@ function AboutStep({ f, set, niches, nicheLock, initialNiche, draft, sources, mi
           ))}
         </ul>
       ) : null}
-      <Field label="Название" htmlFor="r-name" chip={sources.name} missing={miss.includes("name")}>
+      <Field label="Название" htmlFor="r-name" chip={sources.name} missing={miss.includes("name")} missingText="Укажите название">
         <input id="r-name" className="field" value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="Студия «Лак»" maxLength={80} />
       </Field>
 
@@ -788,7 +884,7 @@ function AboutStep({ f, set, niches, nicheLock, initialNiche, draft, sources, mi
 
 // ─── Шаг 3: услуги и цены по разделам ────────────────────────────────
 
-function ServicesStep({ f, set, niches, sources, miss }: { f: BusinessInput; set: SetF; niches: NicheLite[]; sources: Partial<Record<DraftField, string>>; miss: Draft["missing"] }) {
+function ServicesStep({ f, set, niches, sources, miss, showErr, tips }: { f: BusinessInput; set: SetF; niches: NicheLite[]; sources: Partial<Record<DraftField, string>>; miss: Draft["missing"]; showErr: boolean; tips: string[] }) {
   const niche = niches.find((n) => n.id === f.niche);
   const services = f.services.length ? f.services : [{ name: "", price: "" }];
   const groups = groupServices(services);
@@ -808,8 +904,8 @@ function ServicesStep({ f, set, niches, sources, miss }: { f: BusinessInput; set
   const priced = services.filter((s) => s.name.trim() && s.price?.trim()).length;
 
   return (
-    <StepCard title="Услуги и цены" text={`${services.filter((s) => s.name.trim()).length} из ${MAX_SERVICES} услуг, ${priced} с ценами. Разделы прайса — как на вашем сайте: по ним робот сделает отдельные группы объявлений.`}>
-      <Field label="Прайс" chip={sources.services} missing={miss.includes("services")} missingText="Добавьте хотя бы одну">
+    <StepCard title="Услуги и цены" showErr={showErr} tips={tips} text={`${services.filter((s) => s.name.trim()).length} из ${MAX_SERVICES} услуг, ${priced} с ценами. Разделы прайса — как на вашем сайте: по ним робот сделает отдельные группы объявлений.`}>
+      <Field label="Прайс" chip={sources.services} missing={miss.includes("services")} missingText="Добавьте хотя бы одну услугу">
         <div className="grid gap-4">
           {groups.map((g, gi) => {
             const showAll = open.has(g.category) || g.items.length <= SHOW_SERVICES + 2;
@@ -870,14 +966,14 @@ function ServicesStep({ f, set, niches, sources, miss }: { f: BusinessInput; set
 
 // ─── Шаг 4: фото ─────────────────────────────────────────────────────
 
-function PhotosStep({ draft, photos, setPhotos, room, saved, photoMax, sources, onLinks, editing }: {
+function PhotosStep({ draft, photos, setPhotos, room, saved, photoMax, sources, onLinks, editing, tips }: {
   draft: Draft | null; photos: string[]; setPhotos: React.Dispatch<React.SetStateAction<string[]>>; room: number; saved: string[]; photoMax: number;
-  sources: Partial<Record<DraftField, string>>; onLinks: () => void; editing: boolean;
+  sources: Partial<Record<DraftField, string>>; onLinks: () => void; editing: boolean; tips: string[];
 }) {
   const [broken, setBroken] = useState<Set<string>>(new Set());
   const found = (draft?.photos ?? []).filter((p) => !broken.has(p));
   return (
-    <StepCard title="Фото" text="Настоящие фото салона и работ — для объявлений с картинками. Маленькие и неподходящие при сохранении пропустим.">
+    <StepCard title="Фото" tips={tips} text="Настоящие фото салона и работ — для объявлений с картинками. Шаг необязательный: фото можно добавить и позже.">
       {saved.length ? (
         <Field label="Уже загружены">
           <div className="grid grid-cols-5 sm:grid-cols-8 gap-1.5">
@@ -934,10 +1030,10 @@ function PhotosStep({ draft, photos, setPhotos, room, saved, photoMax, sources, 
 
 // ─── Шаг 5: контакты и юр. данные ────────────────────────────────────
 
-function ContactsStep({ f, set, sources, miss }: { f: BusinessInput; set: SetF; sources: Partial<Record<DraftField, string>>; miss: Draft["missing"] }) {
+function ContactsStep({ f, set, sources, miss, showErr, tips }: { f: BusinessInput; set: SetF; sources: Partial<Record<DraftField, string>>; miss: Draft["missing"]; showErr: boolean; tips: string[] }) {
   return (
-    <StepCard title="Контакты и юр. данные" text="Куда писать и звонить клиентам, и данные для маркировки рекламы.">
-      <Field label="Телефон и мессенджеры" htmlFor="r-phone" chip={sources.phone ?? sources.whatsapp ?? sources.telegram} missing={miss.includes("contact")} missingText="Нужен телефон или мессенджер">
+    <StepCard title="Контакты и юр. данные" showErr={showErr} tips={tips} text="Куда писать и звонить клиентам, и данные для маркировки рекламы. Обязателен телефон или мессенджер.">
+      <Field label="Телефон и мессенджеры" htmlFor="r-phone" chip={sources.phone ?? sources.whatsapp ?? sources.telegram} missing={miss.includes("contact")} missingText="Укажите телефон, WhatsApp или Telegram">
         <div className="grid gap-2 sm:grid-cols-3">
           <label className="grid gap-1">
             <span className="text-xs text-muted">Телефон</span>
