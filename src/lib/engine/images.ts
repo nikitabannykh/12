@@ -9,7 +9,24 @@ import type { Business } from "../db/schema";
 import { aiConfigured, art } from "../ai/yandex";
 import { nicheById } from "../niches";
 
-export async function saveImage(businessId: string, kind: "photo" | "generated" | "creative", data: Buffer, meta: { prompt?: string; layout?: string } = {}) {
+/**
+ * Сжимаем перед записью в базу: PNG из рендера весит 1–3 МБ, тот же кадр в JPEG — 150–300 КБ.
+ * Фото владельца уменьшаем до 1600 px по длинной стороне — и база меньше, и макеты рисуются быстрее.
+ */
+async function compact(kind: string, data: Buffer): Promise<Buffer> {
+  try {
+    const sharp = (await import("sharp")).default;
+    const img = sharp(data, { failOn: "none" }).rotate();
+    if (kind === "photo" || kind === "generated") img.resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true });
+    const out = await img.flatten({ background: "#ffffff" }).jpeg({ quality: kind === "creative" ? 88 : 85, mozjpeg: true }).toBuffer();
+    return out.length < data.length ? out : data;
+  } catch {
+    return data; // без sharp сохраняем как есть
+  }
+}
+
+export async function saveImage(businessId: string, kind: "photo" | "generated" | "creative", raw: Buffer, meta: { prompt?: string; layout?: string } = {}) {
+  const data = await compact(kind, raw);
   const size = imageSize(data);
   if (!size || !size.width) throw new Error("Нужна картинка в формате JPEG или PNG");
   const db = await getDb();
@@ -176,4 +193,37 @@ export async function imageSet(b: Business, baseImageId: string, ctx: { headline
   const ids = Object.entries(known).filter(([r]) => r !== own).map(([, id]) => id);
   const imgs = await Promise.all(ids.map((id) => getImage(id)));
   return imgs.filter((x): x is NonNullable<typeof x> => !!x);
+}
+
+
+/**
+ * Уборка: удаляем нарисованные картинки, на которые больше ничего не ссылается
+ * (старые черновики после перегенерации). Фото владельца не трогаем никогда.
+ * ignorePlan — при перегенерации старый черновик всё равно будет заменён.
+ */
+export async function collectGarbageImages(businessId?: string, opts: { ignorePlan?: boolean; minAgeMin?: number } = {}) {
+  const db = await getDb();
+  const { sql } = await import("drizzle-orm");
+  const minAge = opts.minAgeMin ?? 30;
+  const refs = new Set<string>();
+  const add = (v: unknown) => { for (const m of JSON.stringify(v ?? null).matchAll(/img_[A-Za-z0-9_-]+/g)) refs.add(m[0]); };
+  const biz = await db.select({ id: schema.businesses.id, plan: schema.businesses.launchPlan }).from(schema.businesses).where(businessId ? eq(schema.businesses.id, businessId) : sql`true`);
+  for (const b of biz) if (!(opts.ignorePlan && b.id === businessId)) add(b.plan);
+  add(await db.select().from(schema.ads).where(businessId ? eq(schema.ads.businessId, businessId) : sql`true`));
+  add(await db.select().from(schema.adGroups));
+  add(await db.select().from(schema.campaigns));
+  add(await db.select().from(schema.experiments));
+  add(await db.select().from(schema.changes).where(businessId ? eq(schema.changes.businessId, businessId) : sql`true`));
+  add(await db.select({ v: schema.kv.value }).from(schema.kv));
+  const cands = await db
+    .select({ id: schema.images.id })
+    .from(schema.images)
+    .where(and(eq(schema.images.kind, "creative"), businessId ? eq(schema.images.businessId, businessId) : sql`true`, sql`${schema.images.createdAt} < now() - (${minAge} || ' minutes')::interval`));
+  const dead = cands.map((c) => c.id).filter((id) => !refs.has(id));
+  for (let i = 0; i < dead.length; i += 200) await db.delete(schema.images).where(inArray(schema.images.id, dead.slice(i, i + 200)));
+  // Возвращаем место базе сразу, не дожидаясь автоочистки
+  if (dead.length) {
+    try { await db.execute(sql`VACUUM images`); } catch { /* PGlite / транзакция — не страшно */ }
+  }
+  return dead.length;
 }

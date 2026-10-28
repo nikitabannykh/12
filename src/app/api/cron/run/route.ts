@@ -6,6 +6,7 @@ import { getDb, schema } from "@/lib/db";
 import { macEqual } from "@/lib/crypto";
 import { hit } from "@/lib/ratelimit";
 import { errorText } from "@/lib/util";
+import { collectGarbageImages } from "@/lib/engine/images";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -14,6 +15,7 @@ export const dynamic = "force-dynamic";
 async function cleanup() {
   const db = await getDb();
   await db.delete(schema.rateLimits).where(lt(schema.rateLimits.resetAt, new Date()));
+  await collectGarbageImages(undefined, { minAgeMin: 120 }).catch(() => 0);
   await db
     .update(schema.leads)
     .set({ name: null, contact: null, visitorId: null })
