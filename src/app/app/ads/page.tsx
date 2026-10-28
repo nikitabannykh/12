@@ -1,7 +1,7 @@
 import { isLaunched } from "@/lib/util";
 import { redirect } from "next/navigation";
 import { and, eq, inArray } from "drizzle-orm";
-import { FlaskConical, Trophy, Lightbulb, Image as ImageIcon, Eye, ChevronDown, GraduationCap, ExternalLink, MapPin, Users, ChevronRight } from "lucide-react";
+import { FlaskConical, Trophy, Lightbulb, Image as ImageIcon, Eye, ChevronDown, GraduationCap, ExternalLink, MapPin, Users, ChevronRight, Clock } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { accountsFor, channelsFor, getBusinessForUser, landingUrl } from "@/lib/engine/launch";
 import { adStats, reportNow, report, campaignStates, LEARNING_DAYS } from "@/lib/engine/report";
@@ -479,49 +479,99 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                   aud!.state === "off" ? <span className="pill bg-paper text-muted">автозапуск выключен</span> : <span className="pill bg-good-soft text-good"><Users size={13} /> копим аудиторию</span>
                 ) : <CampaignPill s={states.get(camp.id)} ch={ch} />}
               </div>
-              <p className="text-sm text-muted mt-1 max-w-2xl"><Purpose type={typeOf(ch)} />. {CHANNEL_HINT[ch]}.</p>
-              {states.get(camp.id)?.stopped === "platform" ? (
-                <div className="mt-2 rounded-lg bg-bad-soft text-bad px-3 py-2 text-sm flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <span>{states.get(camp.id)?.note ?? "Площадка сейчас не показывает кампанию."}</span>
-                  {/средств|пополн/i.test(states.get(camp.id)?.note ?? "") ? <a className="font-semibold underline" href={camp.platform === "vk" ? "https://ads.vk.ru/hq/budget/transactions" : "https://direct.yandex.ru/"} target="_blank" rel="noreferrer">Пополнить кабинет</a> : null}
-                </div>
-              ) : null}
-              <div className="mt-2 grid gap-0.5 text-sm text-ink-2 max-w-3xl">
-                <div className="flex flex-wrap items-baseline justify-between gap-x-3"><span className="text-faint text-xs uppercase tracking-wide font-semibold">Показ</span><Link href="/app/settings#show" className="text-sm font-semibold underline underline-offset-2 text-ink-2 hover:text-ink">Изменить регион, возраст, время</Link></div>
-                <div><span className="text-muted">Ведёт на:</span> {(() => { const l = landingFor(b, ch, appUrl()); return <><a href={l.url} target="_blank" rel="noreferrer" className="underline underline-offset-2">{l.kind === "page" ? "страницу записи" : l.kind === "site" ? "сайт" : l.label}</a>{l.kind === "link" ? <span className="text-faint"> — заявки там не видим, считаем переходы</span> : null} · <Link href="/app/settings#landing" className="text-ink-2 underline underline-offset-2">изменить</Link></>; })()}</div>
-                <div><span className="text-muted">Кому:</span> {ch === "search" ? `тем, кто ищет в Яндексе — ${pl(cg.reduce((n, g) => n + new Set((g.keywords ?? []).map(displayKeyword)).size, 0), "запрос", "запроса", "запросов")} в ${pl(cg.length, "группе", "группах", "группах")}` : isRetarget(ch) ? `заходили на ${b.siteUrl ? "сайт" : "страницу записи"} и не записались` : (() => { const sh = showOf(b); const own = [sexText(sh.sex), ageText(sh.ageFrom, sh.ageTo)].filter(Boolean).join(", "); return own ? `${own} (вы задали в настройках показа)` : [...new Set(cg.map((g) => g.audience).filter(Boolean))].slice(0, 4).join(" · ") || "подбирает площадка"; })()}</div>
-                <div><span className="text-muted">Где:</span> {(() => { const sh = showOf(b); const extra = sh.extraRegions?.length ? ` + ${sh.extraRegions.join(", ")}` : ""; return ch === "vk" && b.geo && sh.geoMode !== "city" && !extra ? `в ${String(sh.geoMode === "radius" && sh.radiusKm ? sh.radiusKm : Math.round(vkRadiusFor(b.city) / 100) / 10).replace(".", ",")} км от ${b.address ?? "вас"}` : `${b.city}${extra}`; })()}{(() => { const sh = showOf(b); const a = ageText(sh.ageFrom, sh.ageTo); const x = sexText(sh.sex); return a || x ? <> · <span className="text-muted">Пол и возраст:</span> {[x, a].filter(Boolean).join(", ")}</> : null; })()}{(() => { const tt = timeTargeting(b); return tt ? <> · <span className="text-muted">Когда:</span> {tt.note.replace(/^Реклама показывается /, "")}</> : null; })()}</div>
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-                {camp.platform === "demo" ? (
-                  <span className="text-faint">Демо-кабинет{camp.externalId ? ` · кампания № ${camp.externalId}` : ""}</span>
-                ) : cab ? (
-                  <>
-                    <a href={cab} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-ink-2 underline underline-offset-2 hover:text-ink">Открыть в кабинете {PLATFORM_NAME[camp.platform]} <ExternalLink size={13} /></a>
-                    <span className="text-faint">кампания № {camp.externalId}</span>
-                  </>
-                ) : <span className="text-faint">{PLATFORM_NAME[camp.platform]}</span>}
-              </div>
+              <p className="text-sm text-muted mt-0.5"><Purpose type={typeOf(ch)} /></p>
+
+              {states.get(camp.id)?.stopped === "platform" ? (() => {
+                const note = states.get(camp.id)?.note ?? "Площадка сейчас не показывает кампанию.";
+                const money = /средств|пополн/i.test(note);
+                return (
+                  <div className="mt-3 rounded-xl border border-bad/25 bg-bad-soft px-4 py-3 flex flex-wrap items-center gap-3">
+                    <div className="flex-1 min-w-[14rem] text-sm">
+                      <div className="font-semibold text-bad">{money ? "Реклама стоит: на балансе нет денег" : "Площадка не показывает рекламу"}</div>
+                      <div className="text-ink-2">{money ? `Пополните кабинет ${PLATFORM_NAME[camp.platform] ?? ""} — показы начнутся сами.` : note}</div>
+                    </div>
+                    {money ? <a className="btn btn-primary btn-sm" href={camp.platform === "vk" ? "https://ads.vk.ru/hq/budget/transactions" : "https://direct.yandex.ru/"} target="_blank" rel="noreferrer">Пополнить</a> : null}
+                  </div>
+                );
+              })() : null}
+
               {waiting ? (
-                <div className="mt-4 rounded-xl bg-good-soft/50 border border-good/15 p-4">
+                <div className="mt-3 rounded-xl bg-good-soft/50 border border-good/15 p-4">
                   <AudienceBar size={aud!.size} need={aud!.need} />
                   <p className="text-sm text-ink-2 mt-2.5 leading-relaxed max-w-2xl">
-                    Здесь собираются люди, которые заходили на {b.siteUrl ? "сайт" : "страницу записи"} за последние 30 дней, но не оставили заявку.
-                    Площадка начинает показы от {aud!.need} человек — {aud!.state === "off" ? "но вы отключили автозапуск, поэтому робот кампанию не включит." : <>как только наберётся, робот включит кампанию сам{plannedShort ? <>, если бюджета хватит на минимум площадки ({rub(MIN_WEEKLY[ch])} в неделю)</> : <> и выделит ей около {rub(plannedWeekly)} в неделю из общего бюджета</>}. До этого деньги не тратятся.</>}
+                    Копим тех, кто был на {b.siteUrl ? "сайте" : "странице записи"} за 30 дней и не записался. {aud!.state === "off" ? "Автозапуск выключен — робот кампанию не включит." : <>От {aud!.need} человек робот включит кампанию сам{plannedShort ? <>, если хватит бюджета ({rub(MIN_WEEKLY[ch])} в неделю)</> : <> — около {rub(plannedWeekly)} в неделю</>}. До этого деньги не тратятся.</>}
                   </p>
                   {aud!.note ? <p className="text-sm text-warn mt-1.5">{aud!.note}{/бюджет/.test(aud!.note) ? <> · <Link href="/app/settings#budget" className="underline font-semibold">Изменить бюджет</Link></> : null}</p> : null}
                 </div>
               ) : null}
-              {(states.get(camp.id)?.learningLeft ?? 0) > 0 ? (
-                <p className="mt-3 text-sm text-ink-2 rounded-xl bg-info-soft px-4 py-3 leading-relaxed">
-                  После запуска или крупных изменений площадка заново подбирает аудиторию — в это время цифры скачут, и это нормально. Робот не меняет стратегию, бюджет и цену клика ещё {pl(states.get(camp.id)!.learningLeft, "день", "дня", "дней")}, чтобы не сбить обучение.
-                </p>
-              ) : null}
-              <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
-                <div><div className="text-muted">{waiting ? "Лимит после включения" : "Лимит"}</div>{waiting ? <div className="font-semibold">{plannedShort ? "не хватает бюджета" : `≈ ${rub(plannedWeekly)} в неделю`}</div> : <BudgetInline campaignId={camp.id} weekly={camp.weeklyBudget} min={MIN_WEEKLY[ch]} />}</div>
-                <div><div className="text-muted">Как тратится</div><div className="font-semibold">{camp.strategy === "conversions" ? "Ищем тех, кто чаще записывается" : "Ищем больше переходов за бюджет"}</div></div>
-                <div><div className="text-muted">Потрачено</div><div className="font-semibold">{rub(row.s.cost)}</div></div>
-                <div><div className="text-muted">Обращения</div><div className="font-semibold">{num(row.s.conversions)}{row.cpl !== null ? ` · по ${rub(row.cpl)}` : ""}</div>{row.cac !== null ? <div className="text-xs text-muted">клиент {row.estimated ? "≈ " : ""}{rub(row.cac)}</div> : null}</div>
+
+              {/* Цифры */}
+              <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+                <div className="rounded-xl bg-paper px-3.5 py-3">
+                  <div className="text-xs text-muted">{waiting ? "Лимит после включения" : "Лимит"}</div>
+                  <div className="mt-0.5">{waiting ? <span className="font-semibold">{plannedShort ? "не хватает бюджета" : `≈ ${rub(plannedWeekly)} в неделю`}</span> : <BudgetInline campaignId={camp.id} weekly={camp.weeklyBudget} min={MIN_WEEKLY[ch]} />}</div>
+                </div>
+                <div className="rounded-xl bg-paper px-3.5 py-3">
+                  <div className="text-xs text-muted">Потрачено</div>
+                  <div className="mt-0.5 font-semibold">{rub(row.s.cost)}</div>
+                </div>
+                <div className="rounded-xl bg-paper px-3.5 py-3">
+                  <div className="text-xs text-muted">Обращения</div>
+                  <div className="mt-0.5 font-semibold">{num(row.s.conversions)}{row.cpl !== null ? <span className="font-normal text-muted"> · по {rub(row.cpl)}</span> : null}</div>
+                  {row.cac !== null ? <div className="text-xs text-muted">клиент {row.estimated ? "≈ " : ""}{rub(row.cac)}</div> : null}
+                </div>
+                <div className="rounded-xl bg-paper px-3.5 py-3">
+                  <div className="text-xs text-muted">Оптимизация</div>
+                  <div className="mt-0.5 font-semibold text-sm">{camp.strategy === "conversions" ? "по записям" : "по переходам"}</div>
+                </div>
+              </div>
+
+              {/* Настройки показа — коротко, одна ссылка на изменение */}
+              {(() => {
+                const sh = showOf(b);
+                const l = landingFor(b, ch, appUrl());
+                const extra = sh.extraRegions?.length ? ` + ${sh.extraRegions.join(", ")}` : "";
+                const where = ch === "vk" && b.geo && sh.geoMode !== "city" && !extra
+                  ? `${String(sh.geoMode === "radius" && sh.radiusKm ? sh.radiusKm : Math.round(vkRadiusFor(b.city) / 100) / 10).replace(".", ",")} км от ${b.address ?? "вас"}`
+                  : `${b.city}${extra}`;
+                const ages = cg.map((g) => (g.targeting ?? {}) as { ageFrom?: number; ageTo?: number; sex?: string });
+                const lo = Math.min(...ages.map((t) => t.ageFrom ?? 18)), hi = Math.max(...ages.map((t) => t.ageTo ?? 65));
+                const sexes = new Set(ages.map((t) => t.sex ?? "any"));
+                const sexWord = sexes.size === 1 && sexes.has("female") ? "Женщины" : sexes.size === 1 && sexes.has("male") ? "Мужчины" : "Все";
+                const who = ch === "search"
+                  ? `ищут в Яндексе: ${pl(cg.reduce((n, g) => n + new Set((g.keywords ?? []).map(displayKeyword)).size, 0), "запрос", "запроса", "запросов")}`
+                  : isRetarget(ch) ? `были на ${b.siteUrl ? "сайте" : "странице записи"}, не записались`
+                  : `${sexWord}, ${lo}–${hi} лет · ${pl(cg.length, "аудитория", "аудитории", "аудиторий")}`;
+                const tt = timeTargeting(b);
+                const when = tt ? tt.note.replace(/^Реклама показывается /, "").replace(/\s*\(.*?\)/, "").replace(/,?\s*ночью — нет\.?$/, "").replace(/\.$/, "") : "круглосуточно";
+                const Row = ({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) => (
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <span className="mt-0.5 text-faint shrink-0">{icon}</span>
+                    <div className="min-w-0"><div className="text-xs text-muted">{label}</div><div className="text-sm text-ink truncate">{children}</div></div>
+                  </div>
+                );
+                return (
+                  <div className="mt-3 rounded-xl border border-line px-4 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-faint">Показ</div>
+                      <Link href="/app/settings#show" className="text-sm font-semibold text-ink-2 hover:text-ink underline underline-offset-2">Изменить</Link>
+                    </div>
+                    <div className="mt-2 grid sm:grid-cols-2 gap-x-6 gap-y-2.5">
+                      <Row icon={<Users size={15} />} label="Кому">{who}</Row>
+                      <Row icon={<MapPin size={15} />} label="Где">{where}</Row>
+                      <Row icon={<Clock size={15} />} label="Когда">{when}</Row>
+                      <Row icon={<ExternalLink size={15} />} label="Ведёт на"><a href={l.url} target="_blank" rel="noreferrer" className="underline underline-offset-2">{l.kind === "page" ? "страница записи" : l.kind === "site" ? "сайт" : l.label}</a></Row>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+                {camp.platform === "demo" ? (
+                  <span>Демо-кабинет{camp.externalId ? ` · кампания № ${camp.externalId}` : ""}</span>
+                ) : cab ? (
+                  <a href={cab} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-ink-2 hover:text-ink">{PLATFORM_NAME[camp.platform]} · кампания № {camp.externalId} <ExternalLink size={12} /></a>
+                ) : <span>{PLATFORM_NAME[camp.platform]}</span>}
               </div>
               {camp.negativeKeywords?.length && fmt !== "vk" ? (
                 <details className="mt-3 text-sm">
@@ -829,7 +879,7 @@ function Duel({ label, title, note, s, ahead }: { label: string; title?: string;
 function CampaignPill({ s, ch, short = false }: { s?: { stopped: string | null; learningLeft: number; note?: string | null }; ch: string; short?: boolean }) {
   if (s?.stopped === "guard") return <span className="pill bg-bad-soft text-bad">{short ? "Стоит: бюджет" : "Стоит: кончился бюджет месяца"}</span>;
   if (s?.stopped === "error") return <span className="pill bg-bad-soft text-bad">Ошибка площадки</span>;
-  if (s?.stopped === "platform") return <span className="pill bg-bad-soft text-bad" title={s.note ?? undefined}>{/средств|пополн/i.test(s.note ?? "") ? (short ? "Нет денег" : "Не показывается: нет денег на балансе") : /модерац/i.test(s.note ?? "") ? "На модерации" : "Не показывается"}</span>;
+  if (s?.stopped === "platform") return <span className="pill bg-bad-soft text-bad" title={s.note ?? undefined}>{/средств|пополн/i.test(s.note ?? "") ? (short ? "Нет денег" : "Не показывается") : /модерац/i.test(s.note ?? "") ? "На модерации" : "Не показывается"}</span>;
   if (s?.stopped === "audience") return <span className="pill bg-good-soft text-good">Копим аудиторию</span>;
   if (s?.stopped === "robot") return <span className="pill bg-paper text-muted">{short ? "Пауза — робот" : "На паузе — остановил робот"}</span>;
   if (s?.stopped) return <span className="pill bg-paper text-muted">{short ? "Пауза — вы" : "На паузе — вы остановили"}</span>;
