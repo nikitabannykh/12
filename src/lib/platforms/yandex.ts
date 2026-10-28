@@ -992,12 +992,27 @@ export class YandexDirect implements PlatformClient {
 export function yandexAuthUrl(state: string, redirectUri: string) {
   const p = new URLSearchParams({
     response_type: "code",
-    client_id: process.env.YANDEX_CLIENT_ID || "",
+    client_id: yaId(),
     redirect_uri: redirectUri,
     state,
     force_confirm: "yes",
   });
   return `https://oauth.yandex.ru/authorize?${p}`;
+}
+
+/** Значения из настроек Vercel чистим от пробелов и кавычек — частая причина «Wrong client secret» при вставке */
+const envClean = (v?: string) => (v ?? "").trim().replace(/^["']|["']$/g, "").trim();
+const yaId = () => envClean(process.env.YANDEX_CLIENT_ID);
+const yaSecret = () => envClean(process.env.YANDEX_CLIENT_SECRET);
+
+/** Ошибки OAuth Яндекса — по-русски и с подсказкой, что сделать */
+function yaOauthError(j: { error?: string; error_description?: string }, fallback: string) {
+  const d = `${j.error_description ?? ""} ${j.error ?? ""}`.toLowerCase();
+  if (d.includes("client secret") || d.includes("invalid_client") || d.includes("client not found"))
+    return "Яндекс не принял ключи приложения: ClientID и Client secret в настройках сервиса (Vercel → Environment Variables: YANDEX_CLIENT_ID и YANDEX_CLIENT_SECRET) не подходят друг к другу. Скопируйте оба заново со страницы приложения на oauth.yandex.ru и сделайте Redeploy.";
+  if (d.includes("code has expired") || d.includes("invalid_grant") || d.includes("bad verification code"))
+    return "Код подтверждения от Яндекса устарел — нажмите «Подключить Яндекс» ещё раз.";
+  return j.error_description || j.error || fallback;
 }
 
 export async function yandexExchange(code: string) {
@@ -1007,12 +1022,12 @@ export async function yandexExchange(code: string) {
     body: new URLSearchParams({
       grant_type: "authorization_code",
       code,
-      client_id: process.env.YANDEX_CLIENT_ID || "",
-      client_secret: process.env.YANDEX_CLIENT_SECRET || "",
+      client_id: yaId(),
+      client_secret: yaSecret(),
     }),
   });
   const j = await res.json();
-  if (!res.ok || !j.access_token) throw new Error(j.error_description || j.error || "Яндекс не выдал токен");
+  if (!res.ok || !j.access_token) throw new Error(yaOauthError(j, "Яндекс не выдал токен"));
   return { accessToken: j.access_token as string, refreshToken: (j.refresh_token as string) || null, expiresIn: Number(j.expires_in) || 365 * 24 * 3600 };
 }
 
@@ -1023,12 +1038,12 @@ export async function yandexRefresh(refreshToken: string) {
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
-      client_id: process.env.YANDEX_CLIENT_ID || "",
-      client_secret: process.env.YANDEX_CLIENT_SECRET || "",
+      client_id: yaId(),
+      client_secret: yaSecret(),
     }),
   });
   const j = await res.json();
-  if (!res.ok || !j.access_token) throw new Error(j.error_description || "Не удалось обновить доступ к Яндексу");
+  if (!res.ok || !j.access_token) throw new Error(yaOauthError(j, "Не удалось обновить доступ к Яндексу"));
   return { accessToken: j.access_token as string, refreshToken: (j.refresh_token as string) || refreshToken, expiresIn: Number(j.expires_in) || 365 * 24 * 3600 };
 }
 
@@ -1038,7 +1053,7 @@ export async function yandexLogin(token: string): Promise<{ login: string; id: s
   return { login: j.login || j.default_email || "яндекс", id: String(j.id || "") };
 }
 
-export const yandexConfigured = () => Boolean(process.env.YANDEX_CLIENT_ID && process.env.YANDEX_CLIENT_SECRET);
+export const yandexConfigured = () => Boolean(yaId() && yaSecret());
 
 function num(v: string | undefined) {
   const n = Number(String(v ?? "").replace(",", "."));

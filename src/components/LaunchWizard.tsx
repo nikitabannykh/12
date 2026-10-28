@@ -117,6 +117,9 @@ export function LaunchWizard(p: Props) {
   const [imgProgress, setImgProgress] = useState<{ ready: number; total: number } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [edit, setEdit] = useState<{ ad: PlanAd; channel: Channel } | null>(null);
+  /** Новое объявление «написать самому»: та же форма, что и правка */
+  const [newAd, setNewAd] = useState<{ groupId: string; channel: Channel } | null>(null);
+  const [rewriteFor, setRewriteFor] = useState<Channel | null>(null);
   const [progress, setProgress] = useState<Progress | null>(() => progressOf(p.plan));
   const fileRef = useRef<HTMLInputElement>(null);
   const [semantics, setSemantics] = useState<Semantics | null>(null);
@@ -459,7 +462,27 @@ export function LaunchWizard(p: Props) {
               <div className="rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2"><TriangleAlert size={16} className="shrink-0 mt-0.5" /><div>{plan.warnings.filter((w) => !w.startsWith("Медицинские услуги")).map((w) => <div key={w}>{w}</div>)}</div></div>
             ) : null}
             <PlanManager plan={plan} names={CH} platformNames={PLATFORM} biz={p.biz} host={p.host} href={p.href} logo={p.logo} businessName={p.business.name} vkRadiusKm={p.vkRadiusKm ?? null}
-              onPatch={patchPlan} onEdit={(ad, channel) => setEdit({ ad, channel })} />
+              onPatch={patchPlan} onEdit={(ad, channel) => setEdit({ ad, channel })}
+              onRewrite={(channel) => setRewriteFor(channel)}
+              onUndoRewrite={async (channel) => {
+                try {
+                  const r = await api<{ plan: LaunchPlan }>("POST", "/api/launch/plan/rewrite", { channel, undo: true });
+                  setPlan(r.plan);
+                  toast("Вернули прежние тексты");
+                } catch (e) {
+                  toast((e as Error).message, "error");
+                }
+              }}
+              onAddAd={async (groupId) => {
+                try {
+                  const r = await api<{ plan: LaunchPlan; ad: PlanAd }>("POST", "/api/launch/plan/ad", { groupId });
+                  setPlan(r.plan);
+                  toast(r.ad.enabled ? "Робот добавил новое объявление" : "Добавили выключенным: в группе Директа работают 3 объявления — выключите одно, чтобы включить новое");
+                } catch (e) {
+                  toast((e as Error).message, "error");
+                }
+              }}
+              onNewAd={(groupId, channel) => setNewAd({ groupId, channel })} />
           </div>
         ) : null}
       </Section>
@@ -514,13 +537,86 @@ export function LaunchWizard(p: Props) {
       </div>
 
       <EditAdModal edit={edit} onClose={() => setEdit(null)} onSave={async (v) => { if (await patchPlan({ adId: edit!.ad.id, ...v })) setEdit(null); }} />
+      <EditAdModal title="Новое объявление" edit={newAd ? { ad: { title: "", title2: "", text: "" }, channel: newAd.channel } : null} onClose={() => setNewAd(null)}
+        onSave={async (v) => {
+          try {
+            const r = await api<{ plan: LaunchPlan; ad: PlanAd }>("POST", "/api/launch/plan/ad", { groupId: newAd!.groupId, ...v });
+            setPlan(r.plan);
+            setNewAd(null);
+            toast(r.ad.enabled ? "Объявление добавлено" : "Добавили выключенным: в группе Директа работают 3 объявления — выключите одно, чтобы включить новое");
+          } catch (e) {
+            toast((e as Error).message, "error");
+          }
+        }} />
+      <RewriteModal channel={rewriteFor} name={rewriteFor ? CH[rewriteFor].name : ""} count={plan?.channels.find((c) => c.channel === rewriteFor)?.groups.reduce((n, g) => n + g.ads.length, 0) ?? 0}
+        onClose={() => setRewriteFor(null)} onPlan={setPlan} />
     </div>
   );
 }
 
 const LIM: Record<AdFormat, { title: number; title2: number; text: number }> = { search: { title: 56, title2: 30, text: 81 }, network: { title: 40, title2: 30, text: 81 }, vk: { title: 40, title2: 30, text: 90 } };
 
-export function EditAdModal({ edit, onClose, onSave }: { edit: { ad: { title: string; title2?: string | null; text: string }; channel: Channel } | null; onClose: () => void; onSave: (v: { title: string; title2: string; text: string }) => Promise<void> }) {
+const WISHES = ["Живее и проще", "Понятнее, что за услуга", "Больше про результат для клиента", "Упор на цену", "Короче", "Без канцелярита"];
+
+/** «Переписать тексты» канала по пожеланию: идёт порциями, показываем прогресс; вернуть прежние — в списке объявлений */
+function RewriteModal({ channel, name, count, onClose, onPlan }: { channel: Channel | null; name: string; count: number; onClose: () => void; onPlan: (p: LaunchPlan) => void }) {
+  const [wish, setWish] = useState("");
+  const [busy, setBusy] = useState<{ done: number; total: number } | null>(null);
+  const toast = useToast();
+  async function run() {
+    if (!channel) return;
+    setBusy({ done: 0, total: count });
+    try {
+      let start = true;
+      for (let i = 0; i < 20; i++) {
+        const r = await api<{ plan: LaunchPlan; done: boolean; progress: { done: number; total: number }; changed: number; failed: number; ai: boolean }>("POST", "/api/launch/plan/rewrite", { channel, wish, start });
+        start = false;
+        onPlan(r.plan);
+        setBusy(r.progress);
+        if (r.done) {
+          if (!r.ai && wish.trim()) toast("Генерация текстов не подключена — подобрали другие проверенные формулировки, но пожелание учесть не смогли. Точечно поправить можно карандашом", "error");
+          else toast(r.failed ? `Переписали ${r.progress.total - r.failed} из ${r.progress.total}. Остальные оставили как были — новый вариант не прошёл проверку фактов` : `Переписали ${r.progress.total} ${plural(r.progress.total, "объявление", "объявления", "объявлений")}`);
+          setWish("");
+          onClose();
+          return;
+        }
+      }
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+  return (
+    <Modal open={!!channel} onClose={() => { if (!busy) onClose(); }} title={`Переписать тексты — ${name}`}>
+      <div className="grid gap-4">
+        <p className="text-sm text-muted">Робот перепишет все {count} {plural(count, "объявление", "объявления", "объявлений")} канала. Картинки, аудитории и идея каждого объявления останутся. Не понравится — верните прежние тексты одной кнопкой.</p>
+        <div>
+          <label className="label" htmlFor="wish">Что изменить?</label>
+          <textarea id="wish" className="field" rows={3} maxLength={300} placeholder="Например: проще, больше про боль в спине и шее, упомянуть приём для детей" value={wish} onChange={(e) => setWish(e.target.value)} disabled={!!busy} />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {WISHES.map((w) => (
+              <button key={w} type="button" disabled={!!busy} className="pill px-3 py-1 border border-line text-sm hover:border-ink"
+                onClick={() => setWish((x) => (x.trim() ? `${x.trim().replace(/[.,;]$/, "")}, ${w.toLowerCase()}` : w))}>{w}</button>
+            ))}
+          </div>
+        </div>
+        {busy ? (
+          <div className="grid gap-1.5" role="status">
+            <div className="text-sm text-muted">Переписываем… {busy.done} из {busy.total}</div>
+            <div className="h-1.5 rounded-full bg-paper overflow-hidden"><div className="h-full bg-ink transition-all" style={{ width: `${busy.total ? Math.max(5, (busy.done / busy.total) * 100) : 5}%` }} /></div>
+          </div>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <button className="btn btn-ghost" onClick={onClose} disabled={!!busy}>Отмена</button>
+          <button className="btn btn-primary" onClick={run} disabled={!!busy || !count}>{busy ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />} Переписать</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+export function EditAdModal({ edit, onClose, onSave, title = "Текст объявления" }: { edit: { ad: { title: string; title2?: string | null; text: string }; channel: Channel } | null; onClose: () => void; onSave: (v: { title: string; title2: string; text: string }) => Promise<void>; title?: string }) {
   const [v, setV] = useState({ title: "", title2: "", text: "" });
   const [busy, setBusy] = useState(false);
   const [lastKey, setLastKey] = useState<string | null>(null);
@@ -534,7 +630,7 @@ export function EditAdModal({ edit, onClose, onSave }: { edit: { ad: { title: st
   const L = edit ? LIM[formatOf(edit.channel)] : LIM.search;
   const counter = (s: string, max: number) => <span className={`text-xs ${s.length > max ? "text-bad" : "text-faint"}`}>{s.length}/{max}</span>;
   return (
-    <Modal open={!!edit} onClose={onClose} title="Текст объявления">
+    <Modal open={!!edit} onClose={onClose} title={title}>
       <div className="grid gap-4">
         <div>
           <div className="flex justify-between"><label className="label" htmlFor="t1">Заголовок</label>{counter(v.title, L.title)}</div>

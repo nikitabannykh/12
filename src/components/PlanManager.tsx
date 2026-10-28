@@ -7,7 +7,7 @@
  *  - объявления списком (компактно) или карточками (как увидит человек), поиск и фильтр.
  */
 import { useMemo, useState } from "react";
-import { ChevronDown, Clock, LayoutGrid, List, MapPin, Pencil, Search, Users, X } from "lucide-react";
+import { ChevronDown, Clock, LayoutGrid, List, Loader2, MapPin, Pencil, Plus, RotateCcw, Search, Sparkles, Users, X } from "lucide-react";
 import { Toggle } from "./client";
 import { SearchAdPreview, ImageAdPreview, ResponsiveAssets } from "./AdPreview";
 import { TypeBadge } from "./CampaignNav";
@@ -19,7 +19,7 @@ import { LAYER_ITEM, LAYER_LABEL, LAYERS, type Layer } from "@/lib/niches";
 import { showOf, showSummary, type ShowSettings } from "@/lib/engine/show";
 
 type Names = Record<Channel, { name: string; hint: string }>;
-const ANGLE: Record<string, string> = { price: "цена", offer: "предложение новым", proof: "доверие", convenience: "удобство", result: "результат", emotion: "эмоция" };
+const ANGLE: Record<string, string> = { custom: "своё", price: "цена", offer: "предложение новым", proof: "доверие", convenience: "удобство", result: "результат", emotion: "эмоция" };
 const rub = (n: number) => new Intl.NumberFormat("ru-RU").format(Math.round(n)) + " ₽";
 function plural(n: number, one: string, few: string, many: string) {
   const a = Math.abs(n) % 100, b = a % 10;
@@ -56,6 +56,10 @@ export function PlanManager(p: {
   vkRadiusKm: number | null;
   onPatch: (body: Record<string, unknown>) => Promise<unknown>;
   onEdit: (ad: PlanAd, channel: Channel) => void;
+  onRewrite: (channel: Channel) => void;
+  onUndoRewrite: (channel: Channel) => Promise<void>;
+  onAddAd: (groupId: string) => Promise<void>;
+  onNewAd: (groupId: string, channel: Channel) => void;
 }) {
   const { plan } = p;
   const [tab, setTab] = useState<Channel>(plan.channels[0]?.channel ?? "search");
@@ -64,6 +68,8 @@ export function PlanManager(p: {
   const [layer, setLayer] = useState<Layer | "all">("all");
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [adding, setAdding] = useState<string | null>(null);
+  const [undoing, setUndoing] = useState(false);
   const ch = plan.channels.find((c) => c.channel === tab) ?? plan.channels[0];
   const tt = timeTargeting(p.biz);
   const sh = showOf(p.biz);
@@ -202,6 +208,14 @@ export function PlanManager(p: {
                 })}
               </div>
             ) : null}
+            <div className="px-4 pt-3 flex flex-wrap items-center gap-2">
+              <button className="btn btn-ghost btn-sm" onClick={() => p.onRewrite(ch.channel)}><Sparkles size={14} /> Переписать тексты</button>
+              {plan.rewrite?.channel === ch.channel && Object.keys(plan.rewrite.undo).length ? (
+                <button className="btn btn-ghost btn-sm" disabled={undoing} onClick={async () => { setUndoing(true); try { await p.onUndoRewrite(ch.channel); } finally { setUndoing(false); } }}>
+                  {undoing ? <Loader2 size={14} className="spin" /> : <RotateCcw size={14} />} Вернуть прежние тексты
+                </button>
+              ) : null}
+            </div>
             <div className="px-4 pt-3 flex items-center justify-between text-sm text-muted">
               <span>{groups.length} {plural(groups.length, "группа", "группы", "групп")}{searching ? " по фильтру" : ""}</span>
               <button className="font-medium text-ink-2 hover:text-ink" onClick={() => setOpen(allOpen ? {} : Object.fromEntries(groups.map(({ g }) => [g.id, true])))}>{allOpen ? "Свернуть все" : "Развернуть все"}</button>
@@ -288,6 +302,12 @@ export function PlanManager(p: {
                             ))}
                           </div>
                         )}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button className="btn btn-ghost btn-sm" disabled={!!adding} onClick={async () => { setAdding(g.id); try { await p.onAddAd(g.id); } finally { setAdding(null); } }}>
+                            {adding === g.id ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} Ещё вариант от робота
+                          </button>
+                          <button className="btn btn-ghost btn-sm" disabled={!!adding} onClick={() => p.onNewAd(g.id, ch.channel)}><Plus size={14} /> Написать своё</button>
+                        </div>
                       </div>
                     ) : null}
                   </li>

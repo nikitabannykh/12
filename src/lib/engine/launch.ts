@@ -58,6 +58,8 @@ export type LaunchPlan = {
   semantics?: { checks: SemanticChecks; geo: SemanticCore["geo"]; total: number; medical?: boolean };
   /** Ход запуска: запуск идёт по одному каналу за запрос и возобновляется после обрыва */
   launch?: LaunchProgress;
+  /** «Переписать тексты» по пожеланию владельца: идёт порциями; undo — прежние тексты, чтобы вернуть одним нажатием */
+  rewrite?: { channel: Channel; wish: string; done: string[]; failed: number; undo: Record<string, { angle: string; title: string; title2?: string | null; text: string }> };
 };
 export type LaunchProgress = {
   id: string; startedAt: string; warnings: string[]; done: Channel[]; failed: Channel[];

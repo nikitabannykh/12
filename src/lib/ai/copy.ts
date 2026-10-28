@@ -432,6 +432,57 @@ ${p.winner ? `Лучшее объявление в группе сейчас: «
   return { ...t, hypothesis: hypothesisFor(t.angle) };
 }
 
+/**
+ * Переписать пачку объявлений по пожеланию владельца («живее», «больше про боль в спине»…).
+ * Угол подачи каждого объявления сохраняем — A/B-идея группы не ломается. Что не прошло проверку фактов, — null (оставим старое).
+ */
+export async function rewriteAdsBatch(
+  b: Business,
+  ch: keyof typeof LIMITS,
+  items: { key: string; group: string; service?: string; ad: AdDraft }[],
+  wish: string,
+): Promise<Record<string, AdDraft | null>> {
+  const out: Record<string, AdDraft | null> = {};
+  if (!items.length) return out;
+  if (!aiConfigured()) {
+    // Без модели — другой проверенный шаблон с тем же подходом (пожелание учесть не можем)
+    for (const it of items) {
+      const svc = it.service ? b.services?.find((s) => s.name === it.service) : undefined;
+      const pool = [0, 1, 2].flatMap((set) => templateAds(b, ch, svc?.name ?? it.service, svc?.price, set));
+      const alt = pool.find((a) => a.angle === it.ad.angle && a.title !== it.ad.title && a.text !== it.ad.text) ?? pool.find((a) => a.title !== it.ad.title && a.text !== it.ad.text);
+      out[it.key] = alt ?? null;
+    }
+    return out;
+  }
+  const L = LIMITS[ch];
+  const medical = isMedical(b);
+  const facts = ownerFacts(b);
+  const r = await gptJson<{ ads: { n: number; title: string; title2?: string; text: string }[] }>(
+    SYSTEM,
+    `${bizBrief(b)}
+${medical ? `\n${MEDICAL_RULES}\n` : ""}
+Площадка: ${ch === "vk" ? "VK Реклама (лента соцсетей)" : ch === "search" ? "поиск Яндекса" : "сайты-партнёры Яндекса (РСЯ)"}.
+Владельцу не нравятся тексты. Его пожелание: «${wish || "сделать живее, понятнее и конкретнее"}».
+Перепиши каждое объявление с учётом пожелания. Угол подачи (angle) и группу не меняй. Человек из рекламы должен сразу понять, что за услуга и у кого.
+Лимиты: title до ${L.title}${ch === "vk" ? "" : `, title2 до ${L.title2}`}, text до ${L.text} символов.
+
+${items.map((x, i) => `${i + 1}. Группа «${x.group}», подход ${x.ad.angle}
+Заголовок: ${x.ad.title}${x.ad.title2 ? `\nЗаголовок 2: ${x.ad.title2}` : ""}
+Текст: ${x.ad.text}`).join("\n\n")}
+
+JSON: {"ads":[{"n":1,"title":"...",${ch === "vk" ? "" : `"title2":"...",`}"text":"..."}]} — по одному на каждое объявление.`,
+    { temperature: 0.7, maxTokens: Math.min(8000, 300 + items.length * 220) },
+  );
+  for (const a of r.ads ?? []) {
+    const it = items[Number(a.n) - 1];
+    if (!it) continue;
+    const n = normalizeAd({ angle: it.ad.angle, title: String(a.title ?? ""), title2: a.title2 ? String(a.title2) : null, text: String(a.text ?? "") }, ch);
+    const checked = n.title && n.text ? factCheckAd(n, facts, medical) : null;
+    out[it.key] = checked && validateAdText(ch, checked, { medical }).length === 0 ? { ...checked, angle: it.ad.angle } : null;
+  }
+  return out;
+}
+
 function hypothesisFor(angle: string) {
   const a = ANGLES[angle] ?? ANGLES.price;
   return `приведёт ли больше клиентов подход «${a.name}» — ${a.hint.charAt(0).toLowerCase()}${a.hint.slice(1)}`;

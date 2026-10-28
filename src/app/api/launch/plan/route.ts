@@ -3,6 +3,7 @@ import { route, json, fail, needBusiness } from "@/lib/api";
 import { rebalancePlan, savePlan, type LaunchPlan } from "@/lib/engine/launch";
 import { tidyText, validateAdText } from "@/lib/ai/copy";
 import { isMedical } from "@/lib/niches";
+import { formatOf } from "@/lib/channels";
 
 export const GET = route(async ({ business }) => {
   needBusiness(business);
@@ -39,7 +40,7 @@ export const PATCH = route(async ({ business, req }) => {
             text: typeof body.text === "string" ? body.text : ad.text,
           };
           // Текст владельца не обрезаем молча — объясняем, что поправить
-          const errs = validateAdText(ch.channel, next, { medical: isMedical(business) });
+          const errs = validateAdText(formatOf(ch.channel), next, { medical: isMedical(business) });
           if (errs.length) return fail(errs.join(" "));
           ad.title = tidyText(next.title);
           ad.title2 = tidyText(next.title2) || null;
