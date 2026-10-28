@@ -16,7 +16,7 @@ import { CHANNEL_HINT, CHANNEL_NAME, PLATFORM_NAME } from "@/lib/platforms";
 import { MAX_MONTHLY, MIN_WEEKLY, allocate } from "@/lib/engine/budget";
 import { ANGLES, LAYERS, LAYER_ITEM, LAYER_LABEL, type Layer } from "@/lib/niches";
 import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
-import { adExtras, responsiveAssets, withPlanCallouts } from "@/lib/engine/extras";
+import { adExtras, responsiveAssets, timeTargeting, withPlanCallouts } from "@/lib/engine/extras";
 import { displayKeyword } from "@/lib/engine/semantics";
 import { placeName, scoreGroup, liftBy, addS, zeroS, ctrOf, VERDICT, type S, type AdScore } from "@/lib/engine/insights";
 import Link from "next/link";
@@ -468,6 +468,10 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                 ) : <CampaignPill s={states.get(camp.id)} ch={ch} />}
               </div>
               <p className="text-sm text-muted mt-1 max-w-2xl"><Purpose type={typeOf(ch)} />. {CHANNEL_HINT[ch]}.</p>
+              <div className="mt-2 grid gap-0.5 text-sm text-ink-2 max-w-3xl">
+                <div><span className="text-muted">Кому:</span> {ch === "search" ? `тем, кто ищет в Яндексе — ${pl(cg.reduce((n, g) => n + new Set((g.keywords ?? []).map(displayKeyword)).size, 0), "запрос", "запроса", "запросов")} в ${pl(cg.length, "группе", "группах", "группах")}` : isRetarget(ch) ? `заходили на ${b.siteUrl ? "сайт" : "страницу записи"} и не записались` : [...new Set(cg.map((g) => g.audience).filter(Boolean))].slice(0, 4).join(" · ") || "подбирает площадка"}</div>
+                <div><span className="text-muted">Где:</span> {ch === "vk" && b.geo ? `рядом с ${b.address ?? "вами"}, ${b.city}` : b.city}{(() => { const tt = timeTargeting(b); return tt ? <> · <span className="text-muted">Когда:</span> {tt.note.replace(/^Реклама показывается /, "")}</> : null; })()}</div>
+              </div>
               <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
                 {camp.platform === "demo" ? (
                   <span className="text-faint">Демо-кабинет{camp.externalId ? ` · кампания № ${camp.externalId}` : ""}</span>
@@ -538,13 +542,29 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                       <div className="text-sm text-muted">{pl(head.groups, "группа", "группы", "групп")} · {pl(head.keywords, "запрос", "запроса", "запросов")}{head.on < head.groups ? ` · включено ${head.on}` : ""}</div>
                     </div>
                   ) : null}
-                  <div className={`p-5 sm:p-7 border-b border-line last:border-b-0 ${g.status !== "active" ? "bg-paper/60" : ""}`}>
-                    <div className={`grid items-start gap-3 ${cg.length > 1 ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-1"}`}>
-                      <div className="min-w-0">
+                  <div className={`relative border-b border-line last:border-b-0 ${g.status !== "active" ? "bg-paper/60" : ""}`}>
+                  <details className="group/g" open={cg.length === 1}>
+                    <summary className="list-none cursor-pointer px-5 sm:px-7 py-4 pr-24 flex items-start gap-2.5 hover:bg-paper/50">
+                      <ChevronRight size={18} className="shrink-0 mt-0.5 text-muted transition group-open/g:rotate-90" />
+                      <div className="min-w-0 flex-1">
                         <div className="font-bold break-words">{item}: {g.name}</div>
                         <div className="text-sm text-muted">
-                          {g.audience ? `${g.audience} · ` : ""}{rub(gs.cost)}, {pl(gs.conversions, "обращение", "обращения", "обращений")}{gs.conversions ? ` по ${rub(gs.cost / gs.conversions)}` : ""}
+                          {pl(gAds.length, "объявление", "объявления", "объявлений")} · {rub(gs.cost)}, {pl(gs.conversions, "обращение", "обращения", "обращений")}{gs.conversions ? ` по ${rub(gs.cost / gs.conversions)}` : ""}{ch === "search" && gTv !== null ? ` · ${placeName(gTv)}` : ""}
                         </div>
+                        <div className="text-xs text-faint mt-0.5 truncate">
+                          {ch === "search" ? `${pl(new Set((g.keywords ?? []).map(displayKeyword)).size, "запрос", "запроса", "запросов")}: ${[...new Set((g.keywords ?? []).map(displayKeyword))].slice(0, 3).join(", ")}…` : [(() => { const t = (g.targeting ?? {}) as { ageFrom?: number; ageTo?: number; sex?: string }; const sx = t.sex === "female" ? "женщины" : t.sex === "male" ? "мужчины" : "все"; return t.ageFrom || t.ageTo ? `${sx}, ${t.ageFrom ?? 18}–${t.ageTo ?? 65} лет` : sx === "все" ? "" : sx; })(), g.audience].filter(Boolean).join(" · ")}
+                        </div>
+                      </div>
+                    </summary>
+                    <div className="px-5 sm:px-7 pb-5 sm:pb-7">
+                    <div className="grid items-start gap-3 grid-cols-1">
+                      <div className="min-w-0">
+                        {ch !== "search" ? (
+                          <div className="text-sm grid gap-0.5">
+                            <div><span className="text-muted">Кто:</span> {(() => { const t = (g.targeting ?? {}) as { ageFrom?: number; ageTo?: number; sex?: string }; const sx = t.sex === "female" ? "женщины" : t.sex === "male" ? "мужчины" : "все"; return t.ageFrom || t.ageTo ? `${sx}, ${t.ageFrom ?? 18}–${t.ageTo ?? 65} лет` : sx === "все" ? "" : sx; })() || "все"}{g.audience ? ` · ${g.audience}` : ""}</div>
+                            <div><span className="text-muted">Где:</span> {isRetarget(ch) ? "только те, кто уже был на сайте" : b.city}</div>
+                          </div>
+                        ) : null}
                         {g.keywords?.length && ch === "search" ? (() => {
                           const kws = [...new Set(g.keywords.map(displayKeyword))];
                           const neg = ((g.targeting ?? {}) as { negatives?: string[] }).negatives ?? [];
@@ -571,11 +591,6 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                           </div>
                         ) : null}
                       </div>
-                      {cg.length > 1 ? (
-                        <label className="flex items-center gap-2 text-sm font-semibold justify-self-end">
-                          <LiveToggle url={`/api/groups/${g.id}`} on={g.status === "active"} label={`${item} ${g.name}`} />
-                        </label>
-                      ) : null}
                     </div>
 
                     {ch === "search" && gTv !== null && gAds[0] ? (
@@ -666,6 +681,13 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                       })}
                     </ol>
                     {hidden ? <p className="hint mt-3">Ещё {pl(hidden, "объявление", "объявления", "объявлений")} — {hidden === 1 ? "заменено более удачным вариантом или не принято" : "заменены более удачными вариантами или не приняты"} площадкой. Подробности — в «Истории».</p> : null}
+                    </div>
+                  </details>
+                  {cg.length > 1 ? (
+                    <label className="absolute right-5 sm:right-7 top-4 flex items-center gap-2 text-sm font-semibold">
+                      <LiveToggle url={`/api/groups/${g.id}`} on={g.status === "active"} label={`${item} ${g.name}`} />
+                    </label>
+                  ) : null}
                   </div>
                   </Fragment>
                 );
