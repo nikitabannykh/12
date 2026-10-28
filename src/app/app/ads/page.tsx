@@ -537,6 +537,42 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
               })() : null}
             </div>
 
+            {ch !== "search" && groupStats.length > 1 ? (() => {
+              // A/B аудиторий: те же объявления, разные люди. Сравниваем по обращениям на рубль, пока их мало — по кликабельности
+              const sc = scoreGroup(groupStats.map(({ g, s: gs }) => ({ id: g.id, s: gs, live: g.status === "active" && !campOff })), ch);
+              const byId = new Map(sc.map((x) => [x.id, x]));
+              const rows = [...groupStats].sort((a, b) => rankKey(byId.get(a.g.id)) - rankKey(byId.get(b.g.id)));
+              return (
+                <div className="px-5 sm:px-7 py-4 border-b border-line bg-paper/40">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <div className="font-semibold flex items-center gap-2"><FlaskConical size={16} /> Сравнение аудиторий (A/B-тест)</div>
+                    <div className="text-xs text-muted">за {pl(DAYS, "день", "дня", "дней")}</div>
+                  </div>
+                  <div className="mt-2.5 overflow-x-auto">
+                    <table className="w-full text-sm min-w-[36rem]">
+                      <thead><tr className="text-left text-xs text-muted"><th className="font-medium py-1.5 pr-3">Аудитория</th><th className="font-medium pr-3 text-right">Показы</th><th className="font-medium pr-3 text-right">Кликают</th><th className="font-medium pr-3 text-right">Обращения</th><th className="font-medium pr-3 text-right">Обращение</th><th className="font-medium text-right">Итог</th></tr></thead>
+                      <tbody>
+                        {rows.map(({ g, s: gs }) => {
+                          const x = byId.get(g.id);
+                          const V = VERDICT[x?.verdict ?? "learning"];
+                          return (
+                            <tr key={g.id} className="border-t border-line">
+                              <td className="py-2 pr-3"><div className="font-medium">{g.name}</div><div className="text-xs text-muted">{g.audience}</div></td>
+                              <td className="pr-3 text-right tabular-nums">{num(gs.impressions)}</td>
+                              <td className="pr-3 text-right tabular-nums">{gs.impressions ? pct(ctrOf(gs)) : "—"}</td>
+                              <td className="pr-3 text-right tabular-nums">{num(gs.conversions)}</td>
+                              <td className="pr-3 text-right tabular-nums">{gs.conversions ? rub(gs.cost / gs.conversions) : "—"}</td>
+                              <td className="text-right"><span className={`pill ${V.cls}`} title={x?.why}>{V.label}</span></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-xs text-muted mt-2 leading-relaxed max-w-3xl">Во всех аудиториях одни и те же объявления — различаются только люди, поэтому видно, какая аудитория приводит обращения дешевле. Робот отключает аудиторию, когда у лучшей набралось от 3 обращений, а у этой обращение вдвое дороже (или их нет при сопоставимых тратах) и разница не случайна. Деньги отключённой переходят лучшим.</p>
+                </div>
+              );
+            })() : null}
             {campOff ? (
               <div className="px-5 sm:px-7 py-3 bg-paper border-b border-line text-sm text-ink-2 flex items-center gap-2">
                 <span className="pill bg-line text-muted">Не показываются</span>
@@ -567,7 +603,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                     <summary className="list-none cursor-pointer px-5 sm:px-7 py-4 pr-24 flex items-start gap-2.5 hover:bg-paper/50">
                       <ChevronRight size={18} className="shrink-0 mt-0.5 text-muted transition group-open/g:rotate-90" />
                       <div className="min-w-0 flex-1">
-                        <div className="font-bold break-words">{item}: {g.name}</div>
+                        <div className="font-bold break-words">{ch !== "search" && /:|«/.test(g.name) ? g.name : `${item}: ${g.name}`}</div>
                         <div className="text-sm text-muted">
                           {pl(gAds.length, "объявление", "объявления", "объявлений")} · {rub(gs.cost)}, {pl(gs.conversions, "обращение", "обращения", "обращений")}{gs.conversions ? ` по ${rub(gs.cost / gs.conversions)}` : ""}{ch === "search" && gTv !== null ? ` · ${placeName(gTv)}` : ""}
                         </div>

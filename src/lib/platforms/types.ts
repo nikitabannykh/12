@@ -45,6 +45,10 @@ export type GroupSpec = {
    * remarketing/segments). Группа без ключевых фраз и автотаргетинга, показ — только этой аудитории.
    */
   retargetingId?: string | null;
+  /** VK: аудитория «вводили поисковые запросы» (список фраз → сегмент) */
+  searchPhrases?: string[];
+  /** VK: интересы — названия категорий, ищем их в дереве интересов кабинета */
+  interests?: string[];
   ads: AdSpec[];
 };
 

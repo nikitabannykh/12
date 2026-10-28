@@ -303,6 +303,54 @@ export class VkAds implements PlatformClient {
     }
   }
 
+  private segmentCache = new Map<string, string | null>();
+  /**
+   * Аудитория «вводили поисковые запросы»: список фраз (v3/search_phrases, https://ads.vk.ru/en/doc/api/info/SearchPhrases)
+   * и сегмент на его основе (remarketing_search_phrases, за последние 30 дней). Один и тот же список переиспользуем по имени.
+   */
+  async ensureSearchSegment(name: string, phrases: string[]): Promise<string> {
+    const key = `sp:${name}`;
+    const hit = this.segmentCache.get(key);
+    if (hit) return hit;
+    const listName = name.slice(0, 200);
+    const lists = await this.req("GET", "v3/search_phrases.json").catch(() => null);
+    let listId: number | null = Number(((lists?.items ?? lists ?? []) as any[]).find?.((x: any) => x?.name === listName)?.id) || null;
+    if (!listId) {
+      const j = await this.req("POST", "v3/search_phrases.json", { query: { name: listName }, body: { phrases: phrases.slice(0, 1000), expires: "30d" } });
+      listId = Number(j?.id) || null;
+    }
+    if (!listId) throw new PlatformError("vk", "VK не создал список поисковых фраз");
+    const segName = `${listName} — сегмент`.slice(0, 200);
+    const seg = await this.req("GET", "v2/remarketing/segments.json", { query: { limit: VK_PAGE, _name: segName } }).catch(() => null);
+    const found = ((seg?.items ?? []) as any[]).find((x) => x.name === segName);
+    const id = found
+      ? String(found.id)
+      : String((await this.req("POST", "v2/remarketing/segments.json", { body: { name: segName, pass_condition: 1, relations: [{ object_type: "remarketing_search_phrases", params: { source_id: listId, type: "positive", left: 30, right: 0 } }] } })).id);
+    this.segmentCache.set(key, id);
+    return id;
+  }
+
+  private interestTree?: { id: number; name: string }[];
+  /** ID интересов по названиям категорий (дерево интересов кабинета, ищем по вхождению названия) */
+  async interestIds(names: string[]): Promise<number[]> {
+    if (!this.interestTree) {
+      const j = await this.req("GET", "v2/targetings_tree.json", { query: { targetings: "interests" } }).catch(() => null);
+      const flat: { id: number; name: string }[] = [];
+      const walk = (x: any) => {
+        if (Array.isArray(x)) return x.forEach(walk);
+        if (x && typeof x === "object") {
+          if (typeof x.id === "number" && typeof x.name === "string") flat.push({ id: x.id, name: x.name });
+          for (const v of Object.values(x)) if (v && typeof v === "object") walk(v);
+        }
+      };
+      walk(j?.interests ?? j);
+      this.interestTree = flat;
+    }
+    const want = names.map((n) => n.toLowerCase());
+    const ids = this.interestTree.filter((x) => want.some((w) => x.name.toLowerCase() === w || x.name.toLowerCase().startsWith(w))).map((x) => x.id);
+    return [...new Set(ids)].slice(0, 20);
+  }
+
   async createUrl(href: string): Promise<number> {
     const j = await this.req("POST", "v2/urls.json", { body: { url: href } });
     return Number(j.id);
@@ -453,6 +501,19 @@ export class VkAds implements PlatformClient {
           const geo = level < 2 && !g.retargetingId && biz.localGeo?.locations.length ? { local_geo: biz.localGeo } : { regions: g.regionIds.length ? g.regionIds : [188] };
           const targetings: Record<string, unknown> = { geo, age: { age_list: this.age(g.ageFrom, g.ageTo) } };
           if (g.retargetingId) targetings.segments = [Number(g.retargetingId)];
+          // Аудитории для A/B: кто искал услугу (сегмент поисковых фраз) и интересы. Не получилось — группа идёт на всех рядом
+          if (level < 2 && !g.retargetingId && g.searchPhrases?.length) {
+            try {
+              targetings.segments = [Number(await this.ensureSearchSegment(`${spec.name} · ${g.name}`, g.searchPhrases))];
+            } catch (e) {
+              if (level === 0) warnings.push(`Аудитория «${g.name}»: VK не принял список поисковых фраз (${(e as Error).message}) — группа показывается всем рядом`);
+            }
+          }
+          if (level < 2 && !g.retargetingId && g.interests?.length) {
+            const ids = await this.interestIds(g.interests).catch(() => [] as number[]);
+            if (ids.length) targetings.interests = ids;
+            else if (level === 0) warnings.push(`Аудитория «${g.name}»: не нашли интересы «${g.interests.join(", ")}» в кабинете VK — группа показывается всем рядом`);
+          }
           if (g.sex && g.sex !== "any") targetings.sex = [g.sex];
           if (level < 2 && biz.fulltime) targetings.fulltime = biz.fulltime;
           const group: Record<string, unknown> = { name: g.name.slice(0, 120), package_id: packageId, targetings, budget_limit_day: daily, date_start: spec.startDate, banners };

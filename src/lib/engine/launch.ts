@@ -35,6 +35,9 @@ export type PlanGroup = {
   negatives?: string[];
   /** Поиск: слой семантики — услуга, проблема клиента, смежный запрос, аудитория (робот сравнивает слои по цене обращения) */
   layer?: Layer;
+  /** VK: кто искал услугу (фразы поиска) и интересы — разные аудитории для A/B-сравнения */
+  searchPhrases?: string[];
+  interests?: string[];
 };
 export type PlanChannel = { channel: Channel; accountId: string; platform: string; weekly: number; enabled: boolean; groups: PlanGroup[] };
 export type LaunchPlan = {
@@ -235,6 +238,8 @@ function channelFromCopy(b: Business, copy: CopyPlan, channel: Channel, acc: AdA
     ...(g.services?.length ? { services: g.services } : {}),
     ...(g.negatives?.length && channel === "search" ? { negatives: g.negatives } : {}),
     ...(g.layer && channel === "search" ? { layer: g.layer } : {}),
+    ...(channel === "vk" && g.searchPhrases?.length ? { searchPhrases: g.searchPhrases } : {}),
+    ...(channel === "vk" && g.interests?.length ? { interests: g.interests } : {}),
     autotargeting: fmt !== "vk" && !isRetarget(channel) && g.autotargeting !== false,
     ageFrom: g.ageFrom ?? n.audience.ageFrom,
     ageTo: g.ageTo ?? n.audience.ageTo,
@@ -596,7 +601,7 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
       });
     }
     if (!ads.length && !build.groups[g.id]) continue;
-    spec.groups.push({ localId: g.id, name: g.name, keywords: vkFormat || audienceId ? [] : g.keywords, negatives: vkFormat || audienceId ? [] : g.negatives ?? [], autotargeting: audienceId ? false : g.autotargeting, regionIds, ...ageSexOf(b, g), retargetingId: audienceId, ads });
+    spec.groups.push({ localId: g.id, name: g.name, keywords: vkFormat || audienceId ? [] : g.keywords, negatives: vkFormat || audienceId ? [] : g.negatives ?? [], autotargeting: audienceId ? false : g.autotargeting, regionIds, ...ageSexOf(b, g), retargetingId: audienceId, ...(vkFormat && !audienceId && g.searchPhrases?.length ? { searchPhrases: g.searchPhrases } : {}), ...(vkFormat && !audienceId && g.interests?.length ? { interests: g.interests } : {}), ads });
   }
   if (!spec.groups.length) {
     warnings.push(`${CHANNEL_NAME[ch.channel]}: нет ни одного объявления с заголовком и текстом — канал пропущен`);

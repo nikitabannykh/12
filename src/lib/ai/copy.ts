@@ -37,6 +37,9 @@ export type GroupDraft = {
   negatives?: string[];
   /** Слой семантики: услуга, проблема клиента, смежный запрос, аудитория */
   layer?: Layer;
+  /** VK: аудитория «искали услугу» (фразы) и интересы */
+  searchPhrases?: string[];
+  interests?: string[];
 };
 export type CopyPlan = {
   search: GroupDraft[];
@@ -348,7 +351,8 @@ ${list(fallback.network)}
     return {
       search: channels.search ? fill(raw.search, "search", fallback.search) : [],
       network: channels.network ? fill(raw.network, "network", fallback.network) : [],
-      vk: channels.vk ? (vk.length ? vk : fallback.vk) : [],
+      // Аудитории VK — наши (поиск, интересы, все рядом), объявления — от модели, если прошли проверку
+      vk: channels.vk ? fallback.vk.map((g) => (vk.length && vk[0].ads.length ? { ...g, ads: vk[0].ads } : g)) : [],
       negatives: [...new Set([...fallback.negatives, ...aiNeg])].filter(Boolean).slice(0, 150),
       callouts: [...new Map([...(raw.callouts ?? []).map((c) => cleanText(c)).filter((c) => c && c.length <= 25 && supportedBy(c, facts) && !hasClaims(c, medical)), ...fallback.callouts].map((c) => [c.toLowerCase(), c])).values()].slice(0, 6),
       imageIdeas: (raw.imageIdeas?.length ? raw.imageIdeas : fallback.imageIdeas).slice(0, 3),
@@ -533,6 +537,20 @@ export function humanService(b: Pick<Business, "name" | "description" | "service
   const k = kind === "консультация" ? (first ? `${first.replace("ый", "ая").trim()} консультация` : "Консультация") : kind === "сеанс" ? `${first}сеанс`.replace(/^с/, "С") : kind === "диагностика" ? "Диагностика" : `${first}приём`.replace(/^п/, "П");
   const tail = l.match(/\d+\s*(мин|минут|час)\S*/)?.[0];
   return `${k} ${sp.gen}${who}${tail ? `, ${tail}` : ""}`.replace(/\s+/g, " ").trim();
+}
+
+/** Интересы VK по теме бизнеса — названия категорий дерева интересов (ищем по ним в кабинете) */
+export function vkInterestTopics(b: Pick<Business, "niche">, specialist?: string | null): { label: string; names: string[] } {
+  if (specialist && /остеопат|мануальн|хиропракт|невролог|реабилит|массажист/.test(specialist)) return { label: "здоровье", names: ["Здоровье", "Медицина", "Здоровый образ жизни"] };
+  if (specialist && /стоматолог|гинеколог|дерматолог|психотерап|психолог|логопед|нутрициолог/.test(specialist)) return { label: "здоровье", names: ["Здоровье", "Медицина"] };
+  switch (b.niche) {
+    case "nails": case "brows": case "hair": case "cosmetology": return { label: "красота", names: ["Красота", "Уход за собой", "Мода"] };
+    case "barber": return { label: "мужской стиль", names: ["Красота", "Мода"] };
+    case "massage": return { label: "здоровье и отдых", names: ["Здоровье", "Красота", "Отдых"] };
+    case "yoga": case "fitness": return { label: "спорт и здоровье", names: ["Спорт", "Фитнес", "Здоровый образ жизни"] };
+    case "dance": return { label: "танцы и спорт", names: ["Танцы", "Спорт", "Хобби"] };
+    default: return { label: "семья и дом", names: ["Семья", "Здоровье"] };
+  }
 }
 
 /** Название услуги, если владелец услуг не указал: нейтральное слово ниши, без выдуманных деталей */
@@ -808,9 +826,17 @@ export function templatePlan(b: Business, core: SemanticCore = buildSemanticCore
     { name: "Похожие на клиентов", audience: "Интересы как у ваших клиентов — подбирает Яндекс", keywords: [], ads: templateAds(b, "network", undefined, undefined, 1), autotargeting: true },
   ];
   const who = n.audience.sex === "male" ? "Мужчины" : n.audience.sex === "female" ? "Женщины" : "Люди";
+  // VK: три разные аудитории с одними и теми же объявлениями — A/B-тест, кто приводит обращения дешевле:
+  //  1) искали услугу в поиске (сегмент «вводили поисковые запросы» из нашего семантического ядра);
+  //  2) интересы по теме ниши; 3) все рядом с вами нужного пола и возраста — для сравнения.
+  const phrases = [...new Set(core.groups.filter((g) => (g.layer ?? "service") !== "adjacent").flatMap((g) => g.core.length ? g.core : g.keywords).map((k) => displayKeyword(k).replace(/["!+\[\]]/g, "").trim()).filter((k) => k && k.split(" ").length <= 5))].slice(0, 300);
+  const sp = specialistOf(b);
+  const topic = vkInterestTopics(b, sp?.nom);
+  const ages = { ageFrom: n.audience.ageFrom, ageTo: n.audience.ageTo };
   const vk: GroupDraft[] = [
-    { name: `${n.audience.ageFrom}–34 года`, audience: `${who} ${n.audience.ageFrom}–34 лет рядом с вами`, ageFrom: n.audience.ageFrom, ageTo: 34, keywords: [], ads: templateAds(b, "vk") },
-    { name: `35–${n.audience.ageTo} лет`, audience: `${who} 35–${n.audience.ageTo} лет рядом с вами`, ageFrom: 35, ageTo: n.audience.ageTo, keywords: [], ads: templateAds(b, "vk", undefined, undefined, 1) },
+    ...(phrases.length >= 5 ? [{ name: `Искали «${sp ? sp.nom : phrases[0]}»`, audience: `Искали в поиске «${phrases[0]}» и ещё ${phrases.length - 1} похожих запросов за 30 дней`, ...ages, keywords: [], searchPhrases: phrases, ads: templateAds(b, "vk") }] : []),
+    { name: `Интересы: ${topic.label}`, audience: `${who} ${ages.ageFrom}–${ages.ageTo} лет, интересуются: ${topic.names.join(", ").toLowerCase()}`, ...ages, keywords: [], interests: topic.names, ads: templateAds(b, "vk") },
+    { name: "Рядом с вами", audience: `${who} ${ages.ageFrom}–${ages.ageTo} лет рядом с вами — без уточнений, для сравнения`, ...ages, keywords: [], ads: templateAds(b, "vk") },
   ];
   return {
     search,
