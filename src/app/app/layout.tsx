@@ -1,3 +1,4 @@
+import { isLaunched } from "@/lib/util";
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { Nav } from "@/components/Nav";
@@ -16,7 +17,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const b = await getBusinessForUser(user.id);
   const projects = await listProjects(user.id);
   const limit = projectLimit(user.email);
-  const launched = b?.status === "active";
+  const launched = isLaunched(b?.status);
   // Подпункты «Рекламы»: сколько кампаний на каждой площадке
   let ads: { yandex: number; vk: number } | undefined;
   if (launched && b) {

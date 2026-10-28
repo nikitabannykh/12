@@ -1,3 +1,4 @@
+import { isLaunched } from "@/lib/util";
 import { redirect } from "next/navigation";
 import { and, eq, inArray } from "drizzle-orm";
 import { FlaskConical, Trophy, Lightbulb, Image as ImageIcon, Eye, ChevronDown, GraduationCap, ExternalLink, MapPin, Users, ChevronRight } from "lucide-react";
@@ -22,6 +23,8 @@ import { vkRadiusFor } from "@/lib/platforms/vk-formats";
 import { displayKeyword } from "@/lib/engine/semantics";
 import { placeName, scoreGroup, liftBy, addS, zeroS, ctrOf, VERDICT, type S, type AdScore } from "@/lib/engine/insights";
 import Link from "next/link";
+import { PauseAll } from "@/components/PauseAll";
+import { pausedSince } from "@/lib/util";
 import { Fragment } from "react";
 import { addDays, hostOf, isoDay, num, pl, plural, rub } from "@/lib/util";
 import type { Channel } from "@/lib/platforms/types";
@@ -61,7 +64,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
   const user = await requireUser();
   const b = await getBusinessForUser(user.id);
   if (!b) redirect("/app/start");
-  if (b.status !== "active") redirect("/app/launch");
+  if (!isLaunched(b.status)) redirect("/app/launch");
   const db = await getDb();
   const camps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused"])));
   const ids = camps.map((c) => c.id);
@@ -184,10 +187,14 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
 
   return (
     <div className="grid grid-cols-1 gap-6">
-      <div>
-        <h1 className="text-3xl font-extrabold tracking-tight">Реклама</h1>
-        <p className="text-muted mt-1 max-w-2xl">Все кампании по площадкам и типам. Цифры за последние {pl(DAYS, "день", "дня", "дней")}. Можно менять всё вручную: робот учтёт ваши решения.</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-extrabold tracking-tight">Реклама</h1>
+          <p className="text-muted mt-1 max-w-2xl">Все кампании по площадкам и типам. Цифры за последние {pl(DAYS, "день", "дня", "дней")}. Можно менять всё вручную: робот учтёт ваши решения.</p>
+        </div>
+        {b.status === "active" ? <PauseAll paused={false} compact /> : null}
       </div>
+      {b.status === "paused" ? <PauseAll paused since={pausedSince(b.updatedAt)} /> : null}
 
       <CampaignFilters p={fp} t={ft} families={famCount} types={typeCount} />
 

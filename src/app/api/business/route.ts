@@ -1,3 +1,4 @@
+import { isLaunched } from "@/lib/util";
 import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { route, json, fail } from "@/lib/api";
@@ -169,7 +170,7 @@ export const POST = route(async ({ user, business, req }) => {
     if (err) return fail(err);
   }
   // Бюджет сохраняем только до запуска (у запущенной рекламы он меняется через /api/budget) — минимум тот же, что там
-  if (d.monthlyBudget !== undefined && business?.status !== "active" && d.monthlyBudget !== business?.monthlyBudget) {
+  if (d.monthlyBudget !== undefined && !isLaunched(business?.status) && d.monthlyBudget !== business?.monthlyBudget) {
     const channels = await budgetChannels(business?.id ?? null, user.id);
     const min = minMonthlyFor(channels);
     if (d.monthlyBudget < min) return fail(`Бюджет в месяц: минимум ${rub(min)} — меньше площадка «${CHANNEL_NAME[firstChannel(channels)]}» не принимает`);
@@ -197,8 +198,8 @@ export const POST = route(async ({ user, business, req }) => {
     const reset = nicheChanged && plan ? { launchPlan: null } : {};
     // Месячный бюджет у запущенной рекламы меняется отдельно (/api/budget) — с пересчётом кампаний
     const { monthlyBudget, ...rest } = values;
-    await db.update(schema.businesses).set(business.status === "active" ? rest : { ...rest, ...reset, monthlyBudget: monthlyBudget ?? business.monthlyBudget }).where(eq(schema.businesses.id, business.id));
-    if (business.status === "active") {
+    await db.update(schema.businesses).set(isLaunched(business.status) ? rest : { ...rest, ...reset, monthlyBudget: monthlyBudget ?? business.monthlyBudget }).where(eq(schema.businesses.id, business.id));
+    if (isLaunched(business.status)) {
       await logChange({ businessId: business.id, actor: "owner", kind: "profile", title: "Обновлено описание бизнеса", reason: "Новые объявления робот будет писать с учётом изменений. Уже работающие объявления не трогаем — их можно поправить в разделе «Объявления»." });
     }
     return json({ id: business.id, planReset: Boolean(nicheChanged && plan) });

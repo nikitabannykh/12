@@ -1,3 +1,4 @@
+import { isLaunched } from "@/lib/util";
 import { and, eq, inArray } from "drizzle-orm";
 import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
@@ -35,7 +36,7 @@ export const PATCH = route(async ({ user, business, req }) => {
   }
   if (m === business.monthlyBudget) return json({ ok: true });
   try {
-    if (business.status !== "active") {
+    if (!isLaunched(business.status)) {
       const db = await getDb();
       await db.update(schema.businesses).set({ monthlyBudget: m, updatedAt: new Date() }).where(eq(schema.businesses.id, business.id));
       return json({ ok: true });

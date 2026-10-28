@@ -1,3 +1,4 @@
+import { isLaunched } from "@/lib/util";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { desc, eq } from "drizzle-orm";
@@ -19,7 +20,7 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
   const user = await requireUser();
   const b = await getBusinessForUser(user.id);
   if (!b) redirect("/app/start");
-  if (b.status !== "active") redirect("/app/launch");
+  if (!isLaunched(b.status)) redirect("/app/launch");
   const days = (await searchParams).days === "30" ? 30 : 7;
   const r = await report(b, days);
   const weeks = await weeksForMarking(b, 4);

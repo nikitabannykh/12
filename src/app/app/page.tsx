@@ -1,4 +1,7 @@
+import { isLaunched } from "@/lib/util";
 import Link from "next/link";
+import { PauseAll } from "@/components/PauseAll";
+import { pausedSince } from "@/lib/util";
 import { redirect } from "next/navigation";
 import { and, eq, gte, inArray } from "drizzle-orm";
 import { RefreshCw, TriangleAlert, FastForward, PauseCircle, GraduationCap, Wallet, CheckCircle2, CircleAlert, ExternalLink } from "lucide-react";
@@ -27,7 +30,7 @@ export default async function Dashboard() {
   const user = await requireUser();
   const b = await getBusinessForUser(user.id);
   if (!b) redirect("/app/start");
-  if (b.status !== "active") redirect("/app/launch");
+  if (!isLaunched(b.status)) redirect("/app/launch");
 
   const db = await getDb();
   const [r, changes, accounts, weeks] = await Promise.all([report(b, 7), recentChanges(b.id, 5), accountsFor(user.id), weeksForMarking(b, 2)]);
@@ -82,10 +85,14 @@ export default async function Dashboard() {
           <h1 className="text-3xl font-extrabold tracking-tight">Главное</h1>
           <p className="text-muted mt-1">Последние 7 дней{isDemo ? " · демо-данные" : ""}</p>
         </div>
-        <ActionButton url="/api/run" done="Проверили рекламу и обновили статистику" className="btn btn-ghost btn-sm">
-          <RefreshCw size={15} /> Проверить сейчас
-        </ActionButton>
+        <div className="flex flex-wrap items-center gap-2">
+          {b.status === "active" ? <PauseAll paused={false} compact /> : null}
+          <ActionButton url="/api/run" done="Проверили рекламу и обновили статистику" className="btn btn-ghost btn-sm">
+            <RefreshCw size={15} /> Проверить сейчас
+          </ActionButton>
+        </div>
       </div>
+      {b.status === "paused" ? <PauseAll paused since={pausedSince(b.updatedAt)} /> : null}
 
       {/* ─── Реклама стоит: причина и что делать ─── */}
       {guardStopped.length ? (
@@ -109,7 +116,7 @@ export default async function Dashboard() {
           <Link href="/app/settings#budget" className="btn btn-primary btn-sm">Поднять бюджет</Link>
         </StopBanner>
       ) : null}
-      {ownerStopped.length ? (
+      {ownerStopped.length && b.status !== "paused" ? (
         <StopBanner
           tone={allStopped ? "warn" : "info"}
           title={allStopped ? "Реклама на паузе — объявления никто не видит" : `На паузе: ${names(ownerStopped)}`}

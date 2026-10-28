@@ -1,3 +1,4 @@
+import { isLaunched } from "@/lib/util";
 import { timeTargeting } from "@/lib/engine/extras";
 import type { ShowSettings } from "@/lib/engine/show";
 import { vkRadiusFor } from "@/lib/platforms/vk-formats";
@@ -22,7 +23,7 @@ export default async function Launch() {
   const user = await requireUser();
   const b = await getBusinessForUser(user.id);
   if (!b) redirect("/app/start");
-  if (b.status === "active") redirect("/app");
+  if (isLaunched(b.status)) redirect("/app");
   const accounts = await accountsFor(user.id);
   const photos = await listPhotos(b.id);
   const plan = (b.launchPlan as LaunchPlan | null) ?? null;

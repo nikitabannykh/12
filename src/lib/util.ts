@@ -73,3 +73,13 @@ export function normalizeUrl(url?: string | null) {
   if (!u) return null;
   return u.startsWith("http") ? u : "https://" + u;
 }
+
+/** «с 28 октября, 17:40» — когда остановили рекламу (по Москве) */
+export function pausedSince(d: Date | string | null | undefined) {
+  if (!d) return null;
+  const x = new Date(d);
+  return `с ${x.toLocaleDateString("ru-RU", { day: "numeric", month: "long", timeZone: "Europe/Moscow" })}, ${x.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow" })}`;
+}
+
+/** Реклама запущена (идёт или остановлена владельцем целиком) */
+export const isLaunched = (status: string | null | undefined) => status === "active" || status === "paused";

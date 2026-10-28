@@ -1,3 +1,4 @@
+import { isLaunched } from "@/lib/util";
 import { requireUser } from "@/lib/auth";
 import { getBusinessForUser, listProjects } from "@/lib/engine/launch";
 import { MAX_PHOTOS, ownerPhotoIds } from "@/lib/engine/images";
@@ -18,7 +19,7 @@ export default async function Start({ searchParams }: { searchParams: Promise<{ 
   const projects = await listProjects(user.id);
   const savedPhotos = b ? await ownerPhotoIds(b.id) : [];
   const isNewProject = !b && projects.length > 0;
-  const active = b?.status === "active";
+  const active = isLaunched(b?.status);
   const links = b ? businessLinks(b) : [];
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:gap-6">
@@ -39,8 +40,8 @@ export default async function Start({ searchParams }: { searchParams: Promise<{ 
         photoMax={MAX_PHOTOS}
         otherProjects={Math.max(0, projects.length - (b ? 1 : 0))}
         nicheLock={!b ? null : b.status !== "draft" || (b.launchPlan as { launch?: unknown } | null)?.launch ? "launched" : b.launchPlan ? "plan" : null}
-        next={editing && b?.status === "active" ? "/app/settings" : "/app/launch"}
-        saveLabel={editing && b?.status === "active" ? "Сохранить изменения" : "Сохранить и перейти к запуску"}
+        next={editing && isLaunched(b?.status) ? "/app/settings" : "/app/launch"}
+        saveLabel={editing && isLaunched(b?.status) ? "Сохранить изменения" : "Сохранить и перейти к запуску"}
         initialLinks={links.map((l) => l.url)}
         niches={NICHES.map((n) => ({ id: n.id, label: n.label, examples: n.examples }))}
         initial={{

@@ -1,3 +1,4 @@
+import { isLaunched } from "@/lib/util";
 import { route, json, fail, needBusiness } from "@/lib/api";
 import { rebalancePlan, savePlan, type LaunchPlan } from "@/lib/engine/launch";
 import { tidyText, validateAdText } from "@/lib/ai/copy";
@@ -11,7 +12,7 @@ export const GET = route(async ({ business }) => {
 /** Правки владельца перед запуском: текст объявления, вкл/выкл объявления или канала */
 export const PATCH = route(async ({ business, req }) => {
   needBusiness(business);
-  if (business.status === "active") return fail("Реклама уже запущена — объявления меняются на странице «Реклама»");
+  if (isLaunched(business.status)) return fail("Реклама уже запущена — объявления меняются на странице «Реклама»");
   const plan = business.launchPlan as LaunchPlan | null;
   if (!plan) return fail("План не найден — начните подготовку заново");
   if (plan.launch) return fail("Запуск уже начат — дождитесь окончания", 409);

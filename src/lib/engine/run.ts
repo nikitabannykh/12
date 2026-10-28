@@ -112,7 +112,8 @@ export async function resumeLaunch(businessId: string, budgetMs = 40_000) {
 export async function runAll(deadlineMs = 50_000, concurrency = 3) {
   const started = Date.now();
   const db = await getDb();
-  const rows = await db.select().from(schema.businesses).where(inArray(schema.businesses.status, ["active", "launching"]));
+  // На паузе тоже синхронизируем (статистика, баланс), но робот ничего не меняет — см. runBusiness
+  const rows = await db.select().from(schema.businesses).where(inArray(schema.businesses.status, ["active", "launching", "paused"]));
   const stalled = new Set(rows.filter((b) => launchStalled(b, LAUNCH_IDLE_MS)).map((b) => b.id));
   // Бизнесы в запуске тоже синхронизируем: если кампания всё же тратит, расход должен попасть в статистику
   const list = rows.map((b) => ({ id: b.id }));
