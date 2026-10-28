@@ -145,8 +145,12 @@ export function LaunchWizard(p: Props) {
       const a = await api<{ plan: LaunchPlan }>("POST", "/api/launch/copy");
       setPlan(a.plan);
       setPhase("images");
-      const b = await api<{ plan: LaunchPlan }>("POST", "/api/launch/images");
-      setPlan(b.plan);
+      // Картинки готовятся шагами: сервер отвечает done=false, если не успел за один вызов
+      for (let i = 0; i < 20; i++) {
+        const b = await api<{ plan: LaunchPlan; done?: boolean }>("POST", "/api/launch/images");
+        setPlan(b.plan);
+        if (b.done !== false) break;
+      }
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {

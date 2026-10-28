@@ -37,7 +37,11 @@ export type PlanGroup = {
 export type PlanChannel = { channel: Channel; accountId: string; platform: string; weekly: number; enabled: boolean; groups: PlanGroup[] };
 export type LaunchPlan = {
   createdAt: string;
-  stage: "copy" | "ready";
+  stage: "copy" | "images" | "ready";
+  /** Подготовка картинок идёт шагами (лимит времени функции): одинаковые креативы переиспользуем по ключу */
+  creatives?: Record<string, string>;
+  /** Картинки, для которых уже сделан набор пропорций Директа */
+  imageSetsDone?: string[];
   channels: PlanChannel[];
   negatives: string[];
   callouts: string[];
@@ -308,35 +312,59 @@ export async function prepareCopy(b: Business, accounts: AdAccount[]): Promise<L
 export const MEDICAL_NOTE =
   "Медицинские услуги: загрузите копию лицензии (со всеми приложениями, с адресом приёма) в кабинете Директа — без неё объявления не пройдут модерацию. Предупреждение «Есть противопоказания. Посоветуйтесь с врачом» Директ добавит к тексту сам, на картинки мы его уже поставили. Для VK Рекламы лицензия тоже нужна.";
 
-/** Шаг 2: фото и рекламные картинки */
-export async function prepareImages(b: Business, plan: LaunchPlan): Promise<LaunchPlan> {
-  const own = await listPhotos(b.id);
-  let photoIds = own.filter((p) => p.kind === "photo").map((p) => p.id);
-  const generatedBefore = own.filter((p) => p.kind === "generated").map((p) => p.id);
+/**
+ * Шаг 2: фото и рекламные картинки. Работает шагами: за один вызов — пока не кончилось время (deadline),
+ * затем возвращает план с done=false; следующий вызов продолжает с того же места. Одинаковые картинки
+ * (тот же макет, фото, размер, услуга и цена) рисуем один раз и переиспользуем.
+ */
+export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Date.now() + 40_000): Promise<{ plan: LaunchPlan; done: boolean; made: number; total: number }> {
   const warnings = [...plan.warnings];
-  if (photoIds.length < 3) {
-    if (generatedBefore.length) photoIds = [...photoIds, ...generatedBefore].slice(0, 4);
-    else {
-      const g = await generatePhotos(b, plan.imageIdeas, 3 - photoIds.length);
-      photoIds = [...photoIds, ...g.ids];
-      if (g.errors.length) warnings.push(`Часть картинок не сгенерировалась: ${g.errors[0]}`);
+  let photoIds = plan.stage === "images" ? plan.photoIds : [];
+  if (plan.stage !== "images") {
+    const own = await listPhotos(b.id);
+    photoIds = own.filter((p) => p.kind === "photo").map((p) => p.id);
+    const generatedBefore = own.filter((p) => p.kind === "generated").map((p) => p.id);
+    if (photoIds.length < 3) {
+      if (generatedBefore.length) photoIds = [...photoIds, ...generatedBefore].slice(0, 4);
+      else {
+        const g = await generatePhotos(b, plan.imageIdeas, 3 - photoIds.length);
+        photoIds = [...photoIds, ...g.ids];
+        if (g.errors.length) warnings.push(`Часть картинок не сгенерировалась: ${g.errors[0]}`);
+      }
     }
   }
+  const creatives: Record<string, string> = { ...(plan.creatives ?? {}) };
+  const setsDone = new Set(plan.imageSetsDone ?? []);
   const layouts = availableLayouts(b, photoIds.length > 0);
   const svc = b.services?.[0];
+  let made = 0;
+  let outOfTime = false;
+  const timeUp = () => (outOfTime ||= Date.now() > deadline);
+  const creative = async (p: { layout: Layout; photoId: string | null; width: number; height: number; headline?: string; price?: string }) => {
+    const key = [p.layout, p.photoId ?? "-", p.width, p.height, p.headline ?? "", p.price ?? ""].join("|");
+    if (creatives[key]) return creatives[key];
+    const img = await makeCreative(b, p);
+    creatives[key] = img.id;
+    made++;
+    return img.id;
+  };
   let k = 0;
   const channels: PlanChannel[] = [];
   for (const ch of plan.channels) {
     if (ch.channel === "search") {
-      // Поиск в ЕПК тоже показывает картинку рядом с текстом — делаем одну на услугу (16:9)
+      // Поиск в ЕПК тоже показывает картинку рядом с текстом — одна на услугу (16:9), группы одной услуги делят её
       const groups: PlanGroup[] = [];
       for (const g of ch.groups) {
+        if (g.ads.every((a) => a.imageId) || timeUp()) {
+          groups.push(g);
+          continue;
+        }
         const service = b.services?.find((x) => x.name === (g.service ?? g.name)) ?? svc;
         let imageId: string | null = null;
         try {
           const layout: Layout = photoIds.length ? "tag" : layouts.includes("tag") ? "tag" : layouts[0] ?? "tag";
-          const img = await makeCreative(b, { layout, photoId: photoIds.length ? photoIds[k++ % photoIds.length] : null, width: 1080, height: 607, headline: service?.name ?? g.name, price: service?.price });
-          imageId = img.id;
+          const photoId = photoIds.length ? photoIds[(service ? (b.services ?? []).indexOf(service) : k++) % photoIds.length] ?? photoIds[0] : null;
+          imageId = await creative({ layout, photoId, width: 1080, height: 607, headline: service?.name ?? g.name, price: service?.price });
         } catch (e) {
           warnings.push(`Картинка для поиска «${g.name}»: ${errorText(e)}`);
         }
@@ -349,17 +377,21 @@ export async function prepareImages(b: Business, plan: LaunchPlan): Promise<Laun
     for (const g of ch.groups) {
       const ads: PlanAd[] = [];
       for (const [i, ad] of g.ads.entries()) {
+        if (ad.imageId || timeUp()) {
+          ads.push(ad);
+          continue;
+        }
         // Директ: чистое фото и фото с ценником; VK: все макеты по кругу — так тест покажет, что работает
         const net = formatOf(ch.channel) === "network";
         const pool: Layout[] = net
           ? photoIds.length ? (["photo", "tag"] as Layout[]) : layouts
           : layouts.filter((l) => l !== "photo");
         const layout = pool[(i + groups.length) % pool.length] ?? "tag";
-        const photoId = photoIds.length ? photoIds[k++ % photoIds.length] : null;
+        const photoId = photoIds.length ? photoIds[(i + groups.length) % photoIds.length] : null;
         const wide = net && i % 2 === 1;
         try {
-          const img = await makeCreative(b, { layout, photoId, width: 1080, height: wide ? 607 : 1080, headline: svc?.name, price: svc?.price });
-          ads.push({ ...ad, imageId: img.id, layout });
+          const imageId = await creative({ layout, photoId, width: 1080, height: wide ? 607 : 1080, headline: svc?.name, price: svc?.price });
+          ads.push({ ...ad, imageId, layout });
         } catch (e) {
           warnings.push(`Картинка для «${ad.title}»: ${errorText(e)}`);
           ads.push({ ...ad, imageId: null, layout: null });
@@ -372,17 +404,20 @@ export async function prepareImages(b: Business, plan: LaunchPlan): Promise<Laun
   // Директ: та же картинка в других пропорциях для комбинаторных объявлений (1:1, 16:9, 4:3, 3:4) — готовим заранее,
   // чтобы запуск не тратил на это время
   for (const ch of channels.filter((c) => isDirectChannel(c.channel) && c.platform !== "vk")) {
-    const done = new Set<string>();
     for (const g of ch.groups) {
       const service = ch.channel === "search" ? b.services?.find((x) => x.name === (g.service ?? g.name)) ?? svc : svc;
       for (const ad of g.ads) {
-        if (!ad.imageId || done.has(ad.imageId)) continue;
-        done.add(ad.imageId);
+        if (!ad.imageId || setsDone.has(ad.imageId) || timeUp()) continue;
         await imageSet(b, ad.imageId, { headline: ch.channel === "search" ? service?.name ?? g.name : svc?.name, price: service?.price }).catch(() => []);
+        setsDone.add(ad.imageId);
       }
     }
   }
-  return { ...plan, channels, photoIds, stage: "ready", warnings };
+  const allAds = channels.flatMap((c) => c.groups.flatMap((g) => g.ads));
+  const pending = allAds.filter((a) => !a.imageId).length;
+  const done = !outOfTime;
+  const next: LaunchPlan = { ...plan, channels, photoIds, creatives, imageSetsDone: [...setsDone], stage: done ? "ready" : "images", warnings: done ? [...new Set(warnings)] : plan.warnings };
+  return { plan: next, done, made, total: allAds.length - pending };
 }
 
 export async function savePlan(businessId: string, plan: LaunchPlan) {
@@ -1020,8 +1055,8 @@ export async function addChannelStep(b: Business, accounts: AdAccount[], channel
     return { done: false, ok: true, stage: "copy", warnings: [] };
   }
 
-  if (st.plan.stage === "copy") {
-    st.plan = await prepareImages(b, st.plan);
+  if (st.plan.stage === "copy" || st.plan.stage === "images") {
+    st.plan = (await prepareImages(b, st.plan, (opts.deadline ?? Date.now() + 40_000) - 5_000)).plan;
     await writeAddState(b.id, st);
     return { done: false, ok: true, stage: "images", warnings: st.plan.warnings };
   }
