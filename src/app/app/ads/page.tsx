@@ -440,6 +440,8 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
         const row = chRows.find((r) => r.c.id === camp.id)!;
         const aud = audiences.get(camp.id);
         const waiting = isRetarget(ch) && camp.status === "paused" && aud && aud.state !== "on";
+        // Канал выключен целиком — его группы и объявления не показываются, даже если сами по себе включены
+        const campOff = camp.status !== "active" && !waiting;
         const cab = cabinetUrl(camp.platform, camp.externalId, loginOf.get(camp.accountId));
         // Лимит, который ретаргетинг получит при включении: доля от текущего бюджета вместе с работающими каналами
         const planned = waiting ? allocate(b.monthlyBudget, [...new Set(camps.filter((x) => x.status === "active").map((x) => x.channel as Channel)), ch]) : null;
@@ -533,6 +535,12 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
               })() : null}
             </div>
 
+            {campOff ? (
+              <div className="px-5 sm:px-7 py-3 bg-paper border-b border-line text-sm text-ink-2 flex items-center gap-2">
+                <span className="pill bg-line text-muted">Не показываются</span>
+                Канал выключен — все его группы и объявления неактивны. Включите канал переключателем вверху, и они вернутся в том же виде.
+              </div>
+            ) : null}
             {groupStats
               .sort((x, y) => LAYERS.indexOf(layerOf(x.g)) - LAYERS.indexOf(layerOf(y.g)) || (y.g.status === "active" ? 1 : 0) - (x.g.status === "active" ? 1 : 0) || y.s.conversions - x.s.conversions || ctrOf(y.s) - ctrOf(x.s))
               .map(({ g, s: gs }, gi, arr) => {
@@ -552,7 +560,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                       <div className="text-sm text-muted">{pl(head.groups, "группа", "группы", "групп")} · {pl(head.keywords, "запрос", "запроса", "запросов")}{head.on < head.groups ? ` · включено ${head.on}` : ""}</div>
                     </div>
                   ) : null}
-                  <div className={`relative border-b border-line last:border-b-0 ${g.status !== "active" ? "bg-paper/60" : ""}`}>
+                  <div className={`relative border-b border-line last:border-b-0 ${g.status !== "active" || campOff ? "bg-paper/60" : ""} ${campOff ? "opacity-60" : ""}`}>
                   <details className="group/g" open={cg.length === 1}>
                     <summary className="list-none cursor-pointer px-5 sm:px-7 py-4 pr-24 flex items-start gap-2.5 hover:bg-paper/50">
                       <ChevronRight size={18} className="shrink-0 mt-0.5 text-muted transition group-open/g:rotate-90" />
@@ -629,7 +637,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                         const s = sc.s;
                         const inTest = running.some((e) => e.controlId === ad.id || e.variantId === ad.id);
                         const V = VERDICT[sc.verdict];
-                        const special = waiting && ad.status === "moderation" ? { text: "Ждёт включения", cls: "bg-paper text-muted" } : STATUS[ad.status];
+                        const special = waiting && ad.status === "moderation" ? { text: "Ждёт включения", cls: "bg-paper text-muted" } : campOff && ad.status !== "archived" ? { text: "Не показывается — канал выключен", cls: "bg-paper text-muted" } : STATUS[ad.status];
                         const layout = ad.imageId ? layoutOf.get(ad.imageId) : null;
                         return (
                           <li key={ad.id} className={`rounded-xl border ${sc.verdict === "leader" ? "border-good/40 bg-good-soft/40" : "border-line"} ${ad.status === "paused" ? "opacity-60" : ""}`}>
@@ -695,7 +703,9 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                   </details>
                   {cg.length > 1 ? (
                     <label className="absolute right-5 sm:right-7 top-4 flex items-center gap-2 text-sm font-semibold">
-                      <LiveToggle url={`/api/groups/${g.id}`} on={g.status === "active"} label={`${item} ${g.name}`} />
+                      {campOff ? (
+                        <span className="pointer-events-none opacity-50" title="Канал выключен"><LiveToggle key="off" url={`/api/groups/${g.id}`} on={false} label={`${item} ${g.name}: канал выключен`} /></span>
+                      ) : <LiveToggle url={`/api/groups/${g.id}`} on={g.status === "active"} label={`${item} ${g.name}`} />}
                     </label>
                   ) : null}
                   </div>
