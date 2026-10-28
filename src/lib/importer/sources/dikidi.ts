@@ -13,7 +13,7 @@ import { fetchJson, fetchPage } from "../fetch";
 
 type O = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-export const isDikidi = (u: URL) => /(^|\.)dikidi\.(net|ru|app)$/i.test(u.hostname);
+export { isDikidi } from "../hosts";
 
 export function dikidiId(url: string): string | null {
   try {

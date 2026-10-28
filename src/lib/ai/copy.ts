@@ -1,9 +1,10 @@
 import "server-only";
 import type { Business, Service } from "../db/schema";
-import { groupServices, hasCategories, spreadServices } from "../services";
+import { groupServices, hasCategories } from "../services";
 import { ANGLES, nicheById } from "../niches";
 import { badChars, cleanText, factCallouts, hasSuperlative, SUPERLATIVE as SUPERLATIVE_ONE, withoutSuperlatives } from "../engine/extras";
 import { plural } from "../util";
+import { addPhrases, buildSemanticCore, displayKeyword, finalizeCore, networkInterests, conflicts, type SemanticCore } from "../engine/semantics";
 import { aiConfigured, gptJson } from "./yandex";
 
 /**
@@ -28,7 +29,13 @@ export const MAX_WORD = 22;
 export const KEYWORD_LIMITS = { words: 7, wordLength: 35 } as const;
 
 export type AdDraft = { angle: string; title: string; title2?: string | null; text: string };
-export type GroupDraft = { name: string; audience: string; keywords: string[]; ads: AdDraft[]; ageFrom?: number; ageTo?: number; autotargeting?: boolean };
+export type GroupDraft = {
+  name: string; audience: string; keywords: string[]; ads: AdDraft[]; ageFrom?: number; ageTo?: number; autotargeting?: boolean;
+  /** Основная услуга группы (цена, заголовки) и все услуги прайса, которые она покрывает */
+  service?: string; services?: string[];
+  /** Минус-слова группы (кросс-минусовка между группами поиска) */
+  negatives?: string[];
+};
 export type CopyPlan = {
   search: GroupDraft[];
   network: GroupDraft[];
@@ -252,21 +259,29 @@ const SYSTEM = `Ты — сильный директолог и копирайт
 - Каждое объявление проверяет свою гипотезу (угол подачи): price, offer, proof, convenience, result, emotion.
 Ответ — строго JSON без пояснений.`;
 
-export async function generateCopyPlan(b: Business, channels: { search: boolean; network: boolean; vk: boolean }): Promise<CopyPlan> {
+/** Сколько групп отдаём модели: остальным — шаблонные объявления (ответ модели ограничен по длине) */
+const AI_GROUPS = 8;
+
+export async function generateCopyPlan(b: Business, channels: { search: boolean; network: boolean; vk: boolean }, core: SemanticCore = buildSemanticCore(b)): Promise<CopyPlan> {
   const n = nicheById(b.niche);
-  const fallback = templatePlan(b);
+  const fallback = templatePlan(b, core);
   if (!aiConfigured()) return fallback;
 
+  const list = (gs: GroupDraft[]) => gs.slice(0, AI_GROUPS).map((g, i) => `${i + 1}. ${g.name}${g.service && g.service !== g.name ? ` (услуга: ${g.service})` : ""}${g.services && g.services.length > 1 ? `; ещё: ${g.services.filter((x) => x !== g.service).slice(0, 4).join(", ")}` : ""}`).join("\n");
   const user = `${bizBrief(b)}
+
+Группы поиска (семантика уже собрана, нужны только объявления):
+${list(fallback.search)}
+Группы РСЯ:
+${list(fallback.network)}
 
 Подготовь рекламу. Верни JSON:
 {
- "search": [ // 2–4 группы для поиска Яндекса: по одной на основную услугу (если есть разделы прайса — из разных разделов); name группы — точное название услуги из описания
-   {"name": "название группы (услуга)", "audience": "кто ищет, простыми словами", "keywords": ["8–15 коротких запросов 2–4 слова (не больше 7), как люди реально ищут, с городом/районом и без, без знаков + ! -"],
-    "ads": [3 объявления: {"angle": "price|offer|proof|convenience|result|emotion", "title": "до 56 символов", "title2": "до 30 символов", "text": "до 81 символа"}]}
+ "search": [ // по элементу на каждую группу поиска из списка, в том же порядке
+   {"group": 1, "ads": [3 объявления про услугу этой группы, с разными подходами: {"angle": "price|offer|proof|convenience|result|emotion", "title": "до 56 символов, с услугой группы", "title2": "до 30 символов", "text": "до 81 символа"}]}
  ],
- "network": [ // 2 группы для рекламы с картинками на сайтах (РСЯ): разные аудитории
-   {"name": "...", "audience": "...", "keywords": ["5–10 тематических фраз-интересов"], "ads": [3 объявления, title до 56 символов, text до 81]}
+ "network": [ // по элементу на каждую группу РСЯ из списка, в том же порядке
+   {"group": 1, "ads": [3 объявления, title до 56 символов, text до 81]}
  ],
  "vk": [ // 2 группы для ВКонтакте: разные возрастные аудитории (проверим, какая лучше)
    {"name": "...", "audience": "...", "ageFrom": 20, "ageTo": 34, "keywords": [], "ads": [3 объявления, title до 40 символов, text до 90]}
@@ -278,39 +293,80 @@ export async function generateCopyPlan(b: Business, channels: { search: boolean;
 Каналы, которые нужны: ${Object.entries(channels).filter(([, v]) => v).map(([k]) => k).join(", ")}. Для ненужных верни пустой массив.`;
 
   try {
-    const raw = await gptJson<Partial<CopyPlan>>(SYSTEM, user, { temperature: 0.55, maxTokens: 6000 });
+    type Raw = { search?: { group?: number; ads?: AdDraft[] }[]; network?: { group?: number; ads?: AdDraft[] }[]; vk?: GroupDraft[]; negatives?: string[]; callouts?: string[]; imageIdeas?: string[] };
+    const raw = await gptJson<Raw>(SYSTEM, user, { temperature: 0.55, maxTokens: 8000 });
     const facts = ownerFacts(b);
-    const groups = (list: GroupDraft[] | undefined, ch: keyof typeof LIMITS, fb: GroupDraft[]) => {
-      const out = (list ?? [])
-        .filter((g) => g && g.name && Array.isArray(g.ads) && g.ads.length)
-        .map((g, gi) => {
-          // Модель выдумала факт — убираем предложение; если выдуман заголовок — берём шаблонное объявление
-          const ads = g.ads.slice(0, 4).map((a, i) => {
-            const n = normalizeAd(a, ch);
-            const checked = n.title && n.text ? factCheckAd(n, facts) : null;
-            return checked ?? fb[gi % Math.max(1, fb.length)]?.ads[i % 3] ?? null;
-          });
-          return {
-            ...g,
-            name: fit(g.name, 60),
-            audience: fit(g.audience || "", 120),
-            keywords: [...new Set((g.keywords ?? []).map(cleanKeyword).filter((k) => k.length > 2))].slice(0, 40),
-            ads: uniqueAds(ads.filter((a): a is AdDraft => !!a && !!a.title && !!a.text)),
-          };
-        })
-        .filter((g) => g.ads.length);
-      return out.length ? out : fb;
-    };
+    // Объявления модели — в группы семантики по номеру; выдуманный факт — шаблонное объявление того же места
+    const fill = (items: Raw["search"], ch: keyof typeof LIMITS, fb: GroupDraft[]): GroupDraft[] =>
+      fb.map((g, gi) => {
+        const got = (items ?? []).find((x, xi) => (x?.group ?? xi + 1) === gi + 1);
+        if (!got?.ads?.length) return g;
+        const ads = got.ads.slice(0, 3).map((a, i) => {
+          const nz = normalizeAd(a, ch);
+          const checked = nz.title && nz.text ? factCheckAd(nz, facts) : null;
+          return checked ?? g.ads[i % Math.max(1, g.ads.length)] ?? null;
+        });
+        const merged = uniqueAds(ads.filter((a): a is AdDraft => !!a && !!a.title && !!a.text));
+        // Меньше трёх после проверки — добираем шаблонными с другими подходами
+        for (const t of g.ads) if (merged.length < 3 && !merged.some((m) => m.angle === t.angle || titleKey(m.title) === titleKey(t.title))) merged.push(t);
+        return { ...g, ads: merged.length ? merged : g.ads };
+      });
+    const vk = (raw.vk ?? [])
+      .filter((g) => g && g.name && Array.isArray(g.ads) && g.ads.length)
+      .map((g, gi) => {
+        const fb = fallback.vk;
+        const ads = g.ads.slice(0, 4).map((a, i) => {
+          const nz = normalizeAd(a, "vk");
+          const checked = nz.title && nz.text ? factCheckAd(nz, facts) : null;
+          return checked ?? fb[gi % Math.max(1, fb.length)]?.ads[i % 3] ?? null;
+        });
+        return { ...g, name: fit(g.name, 60), audience: fit(g.audience || "", 120), keywords: [], ads: uniqueAds(ads.filter((a): a is AdDraft => !!a && !!a.title && !!a.text)) };
+      })
+      .filter((g) => g.ads.length);
+    // Минус-слова модели — только те, что не блокируют наши же фразы
+    const allKw = fallback.search.flatMap((g) => g.keywords);
+    const aiNeg = (raw.negatives ?? []).map(cleanKeyword).filter((w) => w && !allKw.some((k) => conflicts(w, k)));
     return {
-      search: channels.search ? groups(raw.search, "search", fallback.search) : [],
-      network: channels.network ? groups(raw.network, "network", fallback.network) : [],
-      vk: channels.vk ? groups(raw.vk, "vk", fallback.vk) : [],
-      negatives: [...new Set([...(raw.negatives ?? []).map(cleanKeyword), ...fallback.negatives])].filter(Boolean).slice(0, 120),
+      search: channels.search ? fill(raw.search, "search", fallback.search) : [],
+      network: channels.network ? fill(raw.network, "network", fallback.network) : [],
+      vk: channels.vk ? (vk.length ? vk : fallback.vk) : [],
+      negatives: [...new Set([...fallback.negatives, ...aiNeg])].filter(Boolean).slice(0, 150),
       callouts: [...new Map([...(raw.callouts ?? []).map((c) => cleanText(c)).filter((c) => c && c.length <= 25 && supportedBy(c, facts)), ...fallback.callouts].map((c) => [c.toLowerCase(), c])).values()].slice(0, 6),
       imageIdeas: (raw.imageIdeas?.length ? raw.imageIdeas : fallback.imageIdeas).slice(0, 3),
     };
   } catch {
     return fallback;
+  }
+}
+
+/**
+ * Расширение семантики моделью: синонимы и переформулировки, как люди ищут. Каждую фразу проверяем
+ * (semantics.acceptPhrase): есть слово услуги группы, нет слов соседних групп и услуг, которых у владельца нет.
+ */
+export async function expandSemantics(b: Business, core: SemanticCore): Promise<SemanticCore> {
+  if (!aiConfigured() || !core.groups.length) return core;
+  const groups = core.groups.slice(0, 12);
+  try {
+    const r = await gptJson<{ groups: { group: number; phrases: string[] }[] }>(
+      "Ты — директолог. Подбираешь поисковые запросы для Яндекс Директа. Только запросы людей, которые хотят получить именно эту услугу. Ответ — строго JSON.",
+      `${bizBrief(b)}
+
+Группы и уже собранные запросы:
+${groups.map((g, i) => `${i + 1}. ${g.name}: ${g.core.slice(0, 8).map(displayKeyword).join(", ")}`).join("\n")}
+
+Для каждой группы предложи до 15 других запросов (2–5 слов): синонимы и разговорные названия этой же услуги, как реально ищут.
+Нельзя: другие услуги, которых нет в списке; город, цены и слова «рядом», «недорого» (их мы добавим сами); обучение, товары, «своими руками».
+JSON: {"groups":[{"group":1,"phrases":["..."]}]}`,
+      { temperature: 0.4, maxTokens: 3000 },
+    );
+    let added = 0;
+    for (const x of r.groups ?? []) {
+      const gi = Number(x.group) - 1;
+      if (gi >= 0 && gi < groups.length) added += addPhrases(core, gi, (x.phrases ?? []).map(String), b.niche, 15);
+    }
+    return finalizeCore({ ...core, checks: { ...core.checks, ai: { added } } }, b.niche);
+  } catch {
+    return core;
   }
 }
 
@@ -554,22 +610,47 @@ function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string,
   return uniqueAds(sets[set % 2].map((a) => normalizeAd(a, ch)));
 }
 
-export function templatePlan(b: Business): CopyPlan {
+/** Три объявления группы с разными подходами: основной набор, недостающие — из второго (без повторов подходов и заголовков) */
+function threeAds(b: Business, ch: keyof typeof LIMITS, service?: string, price?: string, set = 0): AdDraft[] {
+  const out: AdDraft[] = [];
+  const pool = [...templateAds(b, ch, service, price, set), ...templateAds(b, ch, service, price, set + 1)];
+  // Сначала разные подходы; если заголовки совпали (длинное название услуги) — хотя бы разные заголовки
+  for (const strict of [true, false]) {
+    for (const a of pool) {
+      if (out.length >= 3) break;
+      if (out.includes(a) || out.some((x) => (strict && x.angle === a.angle) || titleKey(x.title) === titleKey(a.title))) continue;
+      out.push(a);
+    }
+  }
+  return out;
+}
+
+export function templatePlan(b: Business, core: SemanticCore = buildSemanticCore(b)): CopyPlan {
   const n = nicheById(b.niche);
-  // По услуге из каждого раздела прайса (маникюр, педикюр…), а не первые три подряд
-  const services = b.services?.length ? spreadServices(b.services, 3) : [{ name: genericService(b), price: undefined as string | undefined }];
+  const priceOf = (name?: string) => b.services?.find((s) => s.name === name)?.price;
   const city = cleanKeyword(b.city);
-  const search: GroupDraft[] = services.map((s) => {
-    const base = keywordBase(s.name) || cleanKeyword(genericService(b));
-    const kws = [base, `${base} ${city}`, `${base} рядом`, `${base} цена`, `${base} запись`].map(cleanKeyword);
-    return { name: s.name, audience: `Ищут «${low(cleanText(s.name), b.name)}» в Яндексе`, keywords: [...new Set(kws)], ads: templateAds(b, "search", s.name, s.price) };
-  });
   const seeds = n.searchSeeds.map((k) => cleanKeyword(k.replace("{city}", city)));
-  // Общие запросы ниши — в первую группу, но без запросов про другие услуги (иначе группы конкурируют)
-  const otherWords = services.slice(1).map((s) => keywordBase(s.name).split(" ")[0]).filter((w) => w && w.length > 3);
-  if (search[0]) search[0].keywords = [...new Set([...search[0].keywords, ...seeds.filter((k) => !otherWords.some((w) => k.includes(w.slice(0, -1))))])];
+  // Поиск: группа на услугу (или раздел) из семантического ядра; у каждой — 3 объявления с разными подходами.
+  // Наборы подходов чередуем между группами: так гипотезы проверяются шире
+  let search: GroupDraft[] = core.groups.map((g, i) => ({
+    name: g.name,
+    service: g.service,
+    services: g.services,
+    audience: `Ищут «${low(cleanText(g.name), b.name)}» в Яндексе — ${core.groups.length > 1 ? plural(g.keywords.length, `${g.keywords.length} запрос`, `${g.keywords.length} запроса`, `${g.keywords.length} запросов`) : "все запросы услуги"}`,
+    keywords: g.keywords,
+    negatives: g.negatives,
+    ads: threeAds(b, "search", g.service, priceOf(g.service), i % 2),
+  }));
+  if (!search.length) {
+    const base = keywordBase(mainService(b)) || cleanKeyword(genericService(b));
+    search = [{ name: mainService(b), audience: `Ищут «${low(mainService(b), b.name)}» в Яндексе`, keywords: [...new Set([base, `${base} ${city}`, `${base} рядом`, `${base} цена`, ...seeds])], ads: templateAds(b, "search") }];
+  }
+  // РСЯ: интересы по разделам услуг (фразы из ядра) и «похожие на клиентов»
+  const interests = networkInterests(core, 3);
   const network: GroupDraft[] = [
-    { name: "Интересуются услугой", audience: "Недавно искали похожие услуги", keywords: seeds.slice(0, 8), ads: templateAds(b, "network"), autotargeting: true },
+    ...(interests.length > 1
+      ? interests.map((x, i) => ({ name: `Интересуются: ${low(cleanText(x.name), b.name)}`, service: x.service, audience: `Недавно искали «${x.keywords[0] ?? low(x.name)}» и похожее`, keywords: x.keywords, ads: threeAds(b, "network", x.service, priceOf(x.service), i % 2), autotargeting: true }))
+      : [{ name: "Интересуются услугой", audience: "Недавно искали похожие услуги", keywords: interests[0]?.keywords.length ? interests[0].keywords : seeds.slice(0, 8), ads: templateAds(b, "network"), autotargeting: true }]),
     { name: "Похожие на клиентов", audience: "Интересы как у ваших клиентов — подбирает Яндекс", keywords: [], ads: templateAds(b, "network", undefined, undefined, 1), autotargeting: true },
   ];
   const who = n.audience.sex === "male" ? "Мужчины" : n.audience.sex === "female" ? "Женщины" : "Люди";
@@ -581,7 +662,7 @@ export function templatePlan(b: Business): CopyPlan {
     search,
     network,
     vk,
-    negatives: n.negatives,
+    negatives: core.groups.length ? core.negatives : n.negatives,
     callouts: factCallouts(b).slice(0, 6),
     imageIdeas: n.visuals,
   };

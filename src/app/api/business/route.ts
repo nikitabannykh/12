@@ -10,6 +10,7 @@ import type { Channel } from "@/lib/platforms/types";
 import { NICHES } from "@/lib/niches";
 import { logChange } from "@/lib/engine/ops";
 import { parseOrgId, stripEmoji } from "@/lib/engine/extras";
+import { cleanLinks, linkKey, normalizeLink, MAX_SOURCE_LINKS, type SourceLink } from "@/lib/links";
 
 const Body = z.object({
   name: z.string().trim().min(1, "Укажите название").max(80),
@@ -22,6 +23,8 @@ const Body = z.object({
   hours: z.string().trim().max(80).optional().nullable(),
   siteUrl: z.string().trim().max(300).optional().nullable(),
   orgUrl: z.string().trim().max(500).optional().nullable(),
+  // Все ссылки на бизнес из блока ссылок: строки или { kind, url } (kind определяем сами по адресу)
+  sourceLinks: z.array(z.union([z.string().trim().max(500), z.object({ url: z.string().trim().max(500), kind: z.string().max(20).optional() }).transform((x) => x.url)])).max(MAX_SOURCE_LINKS).optional(),
   legalInfo: z.string().trim().max(200).optional().nullable(),
   description: z.string().trim().max(1500).optional().default(""),
   services: z.array(z.object({ name: z.string().trim().min(1).max(80), price: z.string().trim().max(40).optional(), note: z.string().trim().max(120).optional(), category: z.string().trim().max(40).optional() })).max(40).default([]),
@@ -35,7 +38,7 @@ const Body = z.object({
 
 const FIELD: Record<string, string> = {
   name: "Название", niche: "Чем занимаетесь", city: "Город", address: "Адрес", phone: "Телефон", whatsapp: "WhatsApp", telegram: "Telegram",
-  hours: "Часы работы", siteUrl: "Сайт", orgUrl: "Ссылка на организацию в Яндекс Картах", legalInfo: "Юр. данные для рекламы", description: "Что ещё важно знать", services: "Услуги", advantages: "Преимущества",
+  hours: "Часы работы", siteUrl: "Сайт", sourceLinks: "Ссылки на бизнес", orgUrl: "Ссылка на организацию в Яндекс Картах", legalInfo: "Юр. данные для рекламы", description: "Что ещё важно знать", services: "Услуги", advantages: "Преимущества",
   audience: "Кто ваши клиенты", offer: "Предложение для новых клиентов", review: "Отзыв клиента", monthlyBudget: "Бюджет в месяц",
   leadToClientRate: "Сколько обратившихся записываются",
 };
@@ -99,6 +102,7 @@ function ruIssue(iss: z.core.$ZodIssue): string {
   let label = FIELD[String(key)] ?? "Поле";
   if (key === "services" && typeof idx === "number") label = `Услуга ${idx + 1}${sub === "price" ? " — цена" : sub === "note" ? " — примечание" : sub === "category" ? " — раздел" : ""}`;
   if (key === "advantages" && typeof idx === "number") label = `Преимущество ${idx + 1}`;
+  if (key === "sourceLinks" && typeof idx === "number") label = `Ссылка ${idx + 1}`;
   const x = iss as unknown as { origin?: string; maximum?: number | bigint; minimum?: number | bigint; expected?: string };
   const n = Number(x.maximum ?? x.minimum ?? 0);
   switch (iss.code) {
@@ -140,6 +144,25 @@ export const POST = route(async ({ user, business, req }) => {
     if ("error" in p) return fail(p.error);
     org = { orgUrl: p.url, orgId: p.orgId };
   }
+  // Ссылки на бизнес: только http(s), без повторов. Сайт и Яндекс Карты из блока ссылок становятся «главными»,
+  // если отдельные поля пустые; и наоборот — главные всегда есть в общем списке.
+  const rawLinks = (d.sourceLinks ?? (business?.sourceLinks ?? []).map((l) => l.url)).filter(Boolean);
+  const badLink = rawLinks.find((l) => !normalizeLink(l));
+  if (badLink) return fail(`Ссылка «${badLink.slice(0, 60)}» не похожа на адрес сайта. Нужна ссылка вида https://… — скопируйте её из браузера.`);
+  let links: SourceLink[] = cleanLinks(rawLinks);
+  if (!org.orgUrl) {
+    for (const l of links.filter((x) => x.kind === "yandex")) {
+      const p = orgFromUrl(l.url);
+      if (!("error" in p)) {
+        org = { orgUrl: p.url, orgId: p.orgId };
+        break;
+      }
+    }
+  }
+  const siteUrl = normalizeUrl(d.siteUrl) ?? links.find((l) => l.kind === "site")?.url ?? null;
+  const main = [siteUrl, org.orgUrl].filter((x): x is string => Boolean(x));
+  const keys = new Set(links.map((l) => linkKey(l.url)));
+  if (main.some((m) => !keys.has(linkKey(normalizeLink(m) ?? m)))) links = cleanLinks([...main, ...links.map((l) => l.url)]);
   const legalInfo = d.legalInfo ? stripEmoji(d.legalInfo).replace(/\s+/g, " ").trim() || null : null;
   if (legalInfo) {
     const err = legalError(legalInfo);
@@ -154,8 +177,9 @@ export const POST = route(async ({ user, business, req }) => {
   const db = await getDb();
   const values = {
     ...d,
-    siteUrl: normalizeUrl(d.siteUrl),
+    siteUrl,
     ...org,
+    sourceLinks: links,
     legalInfo,
     services: d.services.filter((s) => s.name).map((s) => ({ name: s.name, ...(s.price ? { price: s.price } : {}), ...(s.note ? { note: s.note } : {}), ...(s.category ? { category: s.category } : {}) })),
     advantages: d.advantages.filter(Boolean),

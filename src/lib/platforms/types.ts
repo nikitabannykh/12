@@ -33,6 +33,8 @@ export type GroupSpec = {
   localId: string;
   name: string;
   keywords: string[];
+  /** Минус-слова группы (Директ: AdGroup.NegativeKeywords, до 4096 символов вместе) — кросс-минусовка между группами */
+  negatives?: string[];
   autotargeting: boolean;
   regionIds: number[];
   ageFrom?: number;

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS businesses (
   legal_info text,
   geo jsonb,
   site_url text,
+  source_links jsonb NOT NULL DEFAULT '[]',
   description text NOT NULL DEFAULT '',
   services jsonb NOT NULL DEFAULT '[]',
   advantages jsonb NOT NULL DEFAULT '[]',
@@ -255,4 +256,5 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at timestamptz;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version integer NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS current_business_id text;
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS source_links jsonb NOT NULL DEFAULT '[]';
 `;

@@ -18,6 +18,7 @@ import { getNotify, getUnlinked, tgConfigured } from "@/lib/notify";
 import { minMonthlyFor } from "@/lib/engine/budget";
 import { nicheById } from "@/lib/niches";
 import { appUrl, pl, rub } from "@/lib/util";
+import { businessLinks, linkKey, shortLink, LINK_LABEL } from "@/lib/links";
 
 export default async function Settings() {
   const user = await requireUser();
@@ -30,6 +31,7 @@ export default async function Settings() {
   const notify = await getNotify(b.id);
   const connected = Boolean(notify?.telegramChatId);
   const me = await findUserById(user.id);
+  const links = businessLinks(b);
   const notifyStatus = { configured: tgConfigured(), connected, name: notify?.telegramName ?? null, digest: notify ? notify.digest === 1 : true, unlinked: connected ? null : await getUnlinked(b.id) };
 
   return (
@@ -42,9 +44,47 @@ export default async function Settings() {
             <h2 className="text-lg font-bold">{b.name}</h2>
             <p className="text-muted mt-1">{nicheById(b.niche).label} · {b.city}{b.address ? `, ${b.address}` : ""}</p>
             <p className="text-sm text-muted mt-2">{b.services.length ? `${pl(b.services.length, "услуга", "услуги", "услуг")} в описании` : "Услуги не указаны"}{b.offer ? ` · предложение: ${b.offer}` : ""}</p>
+            {links.length ? (
+              <p className="text-sm text-muted mt-1">
+                Ссылки:{" "}
+                {links.map((l, i) => (
+                  <span key={l.url}>
+                    <a href={l.url} target="_blank" rel="noreferrer" className="font-semibold text-ink-2 underline underline-offset-2 hover:text-ink">{LINK_LABEL[l.kind]}</a>
+                    {i < links.length - 1 ? ", " : ""}
+                  </span>
+                ))}
+              </p>
+            ) : null}
           </div>
           <Link href="/app/start" className="btn btn-ghost btn-sm">Изменить описание</Link>
         </div>
+      </section>
+
+      <section id="links" className="card p-5 sm:p-7 scroll-mt-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold">Ссылки на бизнес</h2>
+            <p className="hint mt-1 max-w-2xl">Сайт, карточки в Яндекс Картах и 2ГИС, онлайн-запись и соцсети — из них заполняется описание. Объявления ведут на {b.siteUrl ? "сайт" : "вашу страницу записи"}.</p>
+          </div>
+          <Link href="/app/start#links" className="btn btn-ghost btn-sm">{links.length ? "Изменить" : "Добавить ссылки"}</Link>
+        </div>
+        {links.length ? (
+          <ul className="mt-4 divide-y divide-line">
+            {links.map((l) => (
+              <li key={l.url} className="py-2.5 grid gap-0.5 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4 sm:items-center">
+                <span className="text-sm font-semibold">{LINK_LABEL[l.kind]}{l.kind === "yandex" && b.orgUrl && b.orgId && linkKey(l.url) === linkKey(b.orgUrl) ? <span className="ml-2 pill bg-good-soft text-good">для Директа</span> : null}</span>
+                <a href={l.url} target="_blank" rel="noreferrer" title={l.url} className="min-w-0 inline-flex items-center gap-1.5 text-ink-2 hover:text-ink underline underline-offset-2 [overflow-wrap:anywhere]">
+                  {shortLink(l.url, 70)} <ExternalLink size={13} className="shrink-0" />
+                </a>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-muted mt-3">Ссылок пока нет. Добавьте сайт или карточку в Яндекс Картах или 2ГИС.</p>
+        )}
+        {links.some((l) => l.kind === "dgis") && !b.orgId ? (
+          <p className="mt-3 text-sm text-warn max-w-2xl">Карточка в 2ГИС есть, а в Яндекс Картах — нет. Для показов на Картах и подсчёта звонков в Директе добавьте и ссылку на Яндекс Карты.</p>
+        ) : null}
       </section>
 
       <section id="notify" className="card p-5 sm:p-7 scroll-mt-6">

@@ -3,8 +3,13 @@ import { getBusinessForUser, listProjects } from "@/lib/engine/launch";
 import { MAX_PHOTOS, ownerPhotoIds } from "@/lib/engine/images";
 import { NICHES } from "@/lib/niches";
 import { BusinessOnboarding } from "@/components/BusinessOnboarding";
+import { StageBar } from "@/components/StageBar";
+import { businessLinks } from "@/lib/links";
 
-/** ?new=<метка> — «+ Новый проект»: каждый раз чистая анкета с шага 1, даже если мы уже на этой странице */
+/**
+ * Этап 1 «Данные о бизнесе». ?new=<метка> — «+ Новый проект»: каждый раз чистая анкета (ссылки сверху),
+ * даже если мы уже на этой странице.
+ */
 export default async function Start({ searchParams }: { searchParams: Promise<{ new?: string }> }) {
   const sp = await searchParams;
   const user = await requireUser();
@@ -13,14 +18,17 @@ export default async function Start({ searchParams }: { searchParams: Promise<{ 
   const projects = await listProjects(user.id);
   const savedPhotos = b ? await ownerPhotoIds(b.id) : [];
   const isNewProject = !b && projects.length > 0;
+  const active = b?.status === "active";
+  const links = b ? businessLinks(b) : [];
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:gap-6">
+      {active ? null : <StageBar current={1} dataDone={editing} canLaunch={editing} />}
       <div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">{editing ? "О бизнесе" : isNewProject ? "Новый проект" : "Расскажите о бизнесе"}</h1>
+        <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">{active ? "О бизнесе" : isNewProject ? "Новый проект: данные о бизнесе" : "Данные о бизнесе"}</h1>
         <p className="text-muted mt-2 max-w-2xl leading-relaxed max-sm:hidden">
-          {editing
+          {active
             ? "Новые объявления робот пишет по этому описанию. Уже запущенные не меняются — их можно поправить в разделе «Реклама»."
-            : "Из этого робот напишет объявления, подберёт запросы и аудитории. Пять коротких шагов — по ссылке заполним сами, вам останется проверить."}
+            : "Из этого робот напишет объявления, подберёт запросы и аудитории. Дайте ссылку — заполним сами, вам останется проверить."}
         </p>
       </div>
       <BusinessOnboarding
@@ -33,6 +41,7 @@ export default async function Start({ searchParams }: { searchParams: Promise<{ 
         nicheLock={!b ? null : b.status !== "draft" || (b.launchPlan as { launch?: unknown } | null)?.launch ? "launched" : b.launchPlan ? "plan" : null}
         next={editing && b?.status === "active" ? "/app/settings" : "/app/launch"}
         saveLabel={editing && b?.status === "active" ? "Сохранить изменения" : "Сохранить и перейти к запуску"}
+        initialLinks={links.map((l) => l.url)}
         niches={NICHES.map((n) => ({ id: n.id, label: n.label, examples: n.examples }))}
         initial={{
           name: b?.name ?? "",
@@ -45,6 +54,7 @@ export default async function Start({ searchParams }: { searchParams: Promise<{ 
           hours: b?.hours ?? "",
           siteUrl: b?.siteUrl ?? "",
           orgUrl: b?.orgUrl ?? "",
+          dgisUrl: links.find((l) => l.kind === "dgis")?.url ?? "",
           legalInfo: b?.legalInfo ?? "",
           description: b?.description ?? "",
           services: b?.services ?? [],

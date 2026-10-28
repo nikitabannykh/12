@@ -65,7 +65,7 @@ export function ProjectSwitcher({ projects, current, limit, variant }: { project
     if (id === current) return setOpen(false);
     const fresh = id === "new";
     // Уже на несохранённой анкете — начать заново можно, но сначала спросим, если там что-то введено
-    if (fresh && !current && hasNewProjectDraft() && !window.confirm("Начать новую анкету с первого шага? Несохранённые данные текущей анкеты удалятся.")) return;
+    if (fresh && !current && hasNewProjectDraft() && !window.confirm("Начать новый проект с чистой анкеты? Несохранённые данные текущей анкеты удалятся.")) return;
     setBusy(id);
     try {
       const r = await api<{ next: string }>("POST", "/api/projects", { id });

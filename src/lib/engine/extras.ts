@@ -438,19 +438,24 @@ export const RESPONSIVE_LIMITS = { title: 56, text: 81, word: 22, textWord: 23, 
  * (услуга, цена, адрес, предложение, преимущества, часы). Ничего не придумываем — только то, что написал владелец,
  * и правда о продукте (онлайн-запись). Детерминированно: одинаково при запуске, у робота и в предпросмотре,
  * поэтому в БД хранится только основной заголовок и текст.
+ *
+ * Группа поиска может покрывать несколько услуг прайса (o.services): их названия с ценами — тоже заголовки (факты из
+ * прайса). Порядок кандидатов зависит от подхода объявления (ad.angle): у «Цены» первыми идут цены, у «Удобства» —
+ * адрес и часы, у «Предложения» — предложение; так три объявления группы различаются не только основным заголовком.
  */
-export function responsiveAssets(b: ExtrasBiz, ad: { title: string; title2?: string | null; text: string }, o: { service?: string | null } = {}) {
+export function responsiveAssets(b: ExtrasBiz, ad: { title: string; title2?: string | null; text: string; angle?: string | null }, o: { service?: string | null; services?: string[] | null } = {}) {
   const L = RESPONSIVE_LIMITS;
   const services = b.services ?? [];
   const svcRow = (o.service && services.find((s) => s.name === o.service)) || null;
   const svc = clean(svcRow?.name ?? o.service ?? services[0]?.name ?? "") || (nicheById(b.niche).id === "other" ? clean(b.name) : nicheById(b.niche).generic);
-  const priceRaw = clean((svcRow ?? (o.service ? null : services[0]))?.price ?? "");
   // «1900» → «1 900 ₽», «от 1900р» → «от 1 900 ₽» (как в объявлениях из шаблонов)
-  const p = priceRaw
-    ? priceRaw
-        .replace(/\s*(р\.?|руб\.?|рублей|₽)\s*$/i, "")
-        .replace(/\d[\d\s]*\d|\d/g, (m) => new Intl.NumberFormat("ru-RU").format(Number(m.replace(/\s/g, ""))).replace(/[\u00a0\u202f]/g, " ")) + " ₽"
-    : null;
+  const fmtPrice = (raw: string) =>
+    raw
+      ? raw
+          .replace(/\s*(р\.?|руб\.?|рублей|₽)\s*$/i, "")
+          .replace(/\d[\d\s]*\d|\d/g, (m) => new Intl.NumberFormat("ru-RU").format(Number(m.replace(/\s/g, ""))).replace(/[\u00a0\u202f]/g, " ")) + " ₽"
+      : null;
+  const p = fmtPrice(clean((svcRow ?? (o.service ? null : services[0]))?.price ?? ""));
   const name = clean(b.name);
   const street = b.address ? clean(b.address.split(/[,—–]/)[0]) : null;
   const where = street ? `${b.city}, ${street}` : b.city;
@@ -495,25 +500,31 @@ export function responsiveAssets(b: ExtrasBiz, ad: { title: string; title2?: str
 
   const title = clean(ad.title);
   const title2 = clean(ad.title2 ?? "");
-  const titles = pickList(
-    [
-      title,
-      // Так Директ сам склеивает второй заголовок текстово-графического объявления (если влезает в 56)
-      title2 && `${title.replace(/[.!]$/, "")}. ${title2}`,
-      // Второго заголовка у комбинаторного объявления нет: если склейка не влезла, факт из него — отдельным заголовком с услугой
-      title2 && !norm(title2).includes(norm(svc)) && `${svc}: ${low(title2)}`,
-      p && `${svc} — ${p}`,
-      p && `${svc} — ${p}, ${b.city}`,
-      street ? `${svc} — ${b.city}, ${street}` : `${svc} — ${b.city}`,
-      `${name}: ${low(svc)}`,
-      offer && `${svc}: ${low(offer)}`,
-      // Преимущество — отдельным заголовком, не приписывая его конкретной услуге
-      adv[0] && adv[0].length >= 12 && adv[0],
-      adv[1] && adv[1].length >= 12 && adv[1],
-      `${svc} — онлайн-запись`,
-    ],
-    L.title, L.word, L.titles,
-  );
+  // Другие услуги группы с ценами из прайса: «Японский маникюр — 2 500 ₽»
+  const siblings = (o.services ?? [])
+    .filter((x) => x && x !== svcRow?.name)
+    .map((x) => services.find((s) => s.name === x))
+    .filter((s): s is NonNullable<typeof s> => !!s)
+    .map((s) => {
+      const sp = fmtPrice(clean(s.price ?? ""));
+      return sp ? `${clean(s.name)} — ${sp}` : null;
+    });
+  const pool = {
+    lead: [title, title2 && `${title.replace(/[.!]$/, "")}. ${title2}`, title2 && !norm(title2).includes(norm(svc)) && `${svc}: ${low(title2)}`],
+    price: [p && `${svc} — ${p}`, p && `${svc} — ${p}, ${b.city}`, ...siblings],
+    place: [street ? `${svc} — ${b.city}, ${street}` : `${svc} — ${b.city}`, hours && `${svc} — ${hours}`, `${svc} — онлайн-запись`],
+    brand: [`${name}: ${low(svc)}`, `${svc} в ${name}`],
+    offer: [offer && `${svc}: ${low(offer)}`],
+    // Преимущество — отдельным заголовком, не приписывая его конкретной услуге
+    adv: [adv[0] && adv[0].length >= 12 && adv[0], adv[1] && adv[1].length >= 12 && adv[1]],
+  };
+  const order: (keyof typeof pool)[] =
+    ad.angle === "convenience" ? ["lead", "place", "price", "brand", "adv", "offer"]
+    : ad.angle === "offer" ? ["lead", "offer", "price", "place", "adv", "brand"]
+    : ad.angle === "proof" || ad.angle === "result" ? ["lead", "adv", "price", "brand", "place", "offer"]
+    : ad.angle === "emotion" ? ["lead", "brand", "adv", "place", "price", "offer"]
+    : ["lead", "price", "place", "brand", "offer", "adv"];
+  const titles = pickList(order.flatMap((k) => pool[k]), L.title, L.word, L.titles);
   const texts = pickList(
     [
       clean(ad.text),

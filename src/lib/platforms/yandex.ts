@@ -108,6 +108,20 @@ export function responsiveTexts(ad: Pick<AdSpec, "title" | "title2" | "text" | "
  * https://yandex.ru/dev/direct/doc/ru/keywords/add). Категории без явного YES/NO Директ считает включёнными,
  * поэтому передаём все. В сетях «широкие» оставляем: там это охват интересов, а не мусорные запросы.
  */
+/** Минус-слова группы в лимите Директа: до 7 слов во фразе, слово до 35 символов, все вместе — до 4096 символов */
+export function groupNegatives(words: string[]) {
+  const out: string[] = [];
+  let len = 0;
+  for (const w0 of words) {
+    const w = w0.replace(/^-+/, "").replace(/\s+/g, " ").trim();
+    if (!w || w.split(" ").length > 7 || w.split(" ").some((x) => x.replace(/^[!+]/, "").length > 35) || out.includes(w)) continue;
+    if (len + w.length + 1 > 4096) break;
+    out.push(w);
+    len += w.length + 1;
+  }
+  return out;
+}
+
 export function autotargetingSettings(channel: Channel) {
   return {
     Categories: { Exact: "YES", Narrow: "YES", Alternative: "YES", Accessory: "NO", Broader: channel === "network" ? "YES" : "NO" },
@@ -452,10 +466,25 @@ export class YandexDirect implements PlatformClient {
    * Ретаргетинг (retargetingId): без фраз и автотаргетинга, только условие ретаргетинга — audiencetargets.add
    * (https://yandex.ru/dev/direct/doc/ru/audiencetargets/add; при автостратегии ставка не нужна, приоритет — обычный).
    */
-  private async createGroup(campaignExt: string, g: Pick<GroupSpec, "name" | "regionIds" | "keywords" | "autotargeting" | "retargetingId">, channel: Channel, warnings: string[]) {
-    const gr = await this.call("adgroups", "add", {
-      AdGroups: [{ Name: g.name.slice(0, 255), CampaignId: Number(campaignExt), RegionIds: g.regionIds, UnifiedAdGroup: { OfferRetargeting: "NO" } }],
-    });
+  private async createGroup(campaignExt: string, g: Pick<GroupSpec, "name" | "regionIds" | "keywords" | "autotargeting" | "retargetingId" | "negatives">, channel: Channel, warnings: string[]) {
+    const group: Record<string, unknown> = { Name: g.name.slice(0, 255), CampaignId: Number(campaignExt), RegionIds: g.regionIds, UnifiedAdGroup: { OfferRetargeting: "NO" } };
+    // Минус-слова группы (кросс-минусовка): AdGroupAddItem.NegativeKeywords, до 4096 символов вместе (adgroups/add).
+    // Не приняли — создаём группу без них: группа важнее
+    const neg = groupNegatives(g.negatives ?? []);
+    let gr;
+    if (neg.length && !g.retargetingId) {
+      try {
+        gr = await this.call("adgroups", "add", { AdGroups: [{ ...group, NegativeKeywords: { Items: neg } }] });
+        if ((gr.AddResults as DirectItemResult[] | undefined)?.[0]?.Errors?.length) {
+          warnings.push(`Группа «${g.name}»: Директ не принял минус-слова группы — ${gr.AddResults[0].Errors[0].Message}; создали без них`);
+          gr = null;
+        }
+      } catch (e) {
+        warnings.push(`Группа «${g.name}»: Директ не принял минус-слова группы — ${(e as Error).message}; создали без них`);
+        gr = null;
+      }
+    }
+    gr ??= await this.call("adgroups", "add", { AdGroups: [group] });
     const [gi] = this.items(gr.AddResults, `Группа «${g.name}»`, warnings);
     const groupExt = String(gi.Id);
     if (g.retargetingId) {
@@ -483,6 +512,36 @@ export class YandexDirect implements PlatformClient {
       }
     }
     return groupExt;
+  }
+
+  /**
+   * Есть ли показы по фразам в регионах (keywordsresearch.hasSearchVolume: до 10 000 фраз, без повторов;
+   * https://yandex.ru/dev/direct/doc/ru/keywordsresearch/hasSearchVolume). Фраза → AllDevices === "YES".
+   */
+  async hasSearchVolume(keywords: string[], regionIds: number[]): Promise<Map<string, boolean>> {
+    const out = new Map<string, boolean>();
+    const list = [...new Set(keywords)];
+    for (let i = 0; i < list.length; i += 10_000) {
+      const res = await this.call("keywordsresearch", "hasSearchVolume", {
+        SelectionCriteria: { Keywords: list.slice(i, i + 10_000), RegionIds: regionIds.length ? regionIds : [0] },
+        FieldNames: ["Keyword", "AllDevices"],
+      });
+      for (const r of (res?.HasSearchVolumeResults ?? []) as { Keyword: string; AllDevices?: string }[]) out.set(r.Keyword, r.AllDevices === "YES");
+    }
+    return out;
+  }
+
+  /**
+   * Дубли фраз с точки зрения Директа (keywordsresearch.deduplicate, MERGE_DUPLICATES; до 400 000 фраз;
+   * https://yandex.ru/dev/direct/doc/ru/keywordsresearch/deduplicate). Пересечения (ELIMINATE_OVERLAPPING) не включаем:
+   * между группами их разводят минус-слова групп, а внутри группы минус-хвосты лишь режут показы автостратегии.
+   */
+  async deduplicateKeywords(items: { id: number; keyword: string }[]): Promise<{ update: { id: number; keyword: string }[]; remove: number[] }> {
+    const res = await this.call("keywordsresearch", "deduplicate", { Keywords: items.map((x) => ({ Id: x.id, Keyword: x.keyword })), Operation: ["MERGE_DUPLICATES"] });
+    return {
+      update: ((res?.Update ?? []) as { Id: number; Keyword: string }[]).map((u) => ({ id: Number(u.Id), keyword: u.Keyword })),
+      remove: ((res?.Delete?.Ids ?? []) as number[]).map(Number),
+    };
   }
 
   /** Новая группа в работающей кампании — когда в старой исчерпан лимит в 10 объявлений */

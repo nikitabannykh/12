@@ -1,8 +1,13 @@
 "use client";
 
+/**
+ * Этап 2 «Запуск рекламы» — разделы одной страницы: Кабинеты → Бюджет → Объявления → Запуск.
+ * Без своей нумерации (номера этапов — в StageBar сверху). Главное действие одно и всегда внизу:
+ * «Подготовить объявления», пока их нет, потом «Запустить рекламу».
+ */
 import { useRouter } from "next/navigation";
-import { useMemo, useRef, useState } from "react";
-import { Check, ImagePlus, Loader2, Pencil, Sparkles, Trash2, TriangleAlert } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Check, ImagePlus, Loader2, Pencil, Rocket, Search, Sparkles, Trash2, TriangleAlert } from "lucide-react";
 import { api, Modal, Toggle, useToast, resizeToJpeg } from "./client";
 import { VkConnect } from "./VkConnect";
 import { SearchAdPreview, ImageAdPreview, ResponsiveAssets } from "./AdPreview";
@@ -56,21 +61,36 @@ type Props = {
   logo?: string | null;
 };
 
-function Step({ n, title, done, active, children, aside }: { n: number; title: string; done: boolean; active: boolean; children: React.ReactNode; aside?: React.ReactNode }) {
+/** Раздел этапа: заголовок, справа — состояние («Готово», «Необязательно», «Сначала подключите кабинет») */
+function Section({ id, title, done, active, note, children, aside }: { id: string; title: string; done: boolean; active: boolean; note?: string; children: React.ReactNode; aside?: React.ReactNode }) {
   return (
-    <section className={`card p-5 sm:p-7 ${active ? "" : "opacity-60"}`} aria-disabled={!active}>
-      <div className="flex items-start gap-4">
-        <span className={`shrink-0 w-9 h-9 rounded-full grid place-items-center font-extrabold ${done ? "bg-good text-white" : "bg-mark"}`}>{done ? <Check size={18} /> : n}</span>
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-xl font-bold leading-9">{title}</h2>
-            {aside}
-          </div>
-          <div className="mt-3">{children}</div>
+    <section id={id} className={`card p-5 sm:p-7 scroll-mt-6 ${active ? "" : "opacity-60"}`} aria-disabled={!active} aria-labelledby={`${id}-h`}>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <h2 id={`${id}-h`} className="text-xl font-extrabold tracking-tight">{title}</h2>
+        <div className="flex items-center gap-3">
+          {aside}
+          {done ? <span className="text-sm font-semibold text-good inline-flex items-center gap-1"><Check size={15} /> Готово</span> : note ? <span className="text-sm text-muted">{note}</span> : null}
         </div>
       </div>
+      <div className="mt-3">{children}</div>
     </section>
   );
+}
+
+/** Семантика поиска от движка (GET /api/launch/semantics) — если эндпоинта нет, блок просто не показываем */
+type Semantics = { name: string; keywords: string[] }[];
+function parseSemantics(data: unknown): Semantics | null {
+  const raw = (data && typeof data === "object" && "groups" in data ? (data as { groups: unknown }).groups : data) as unknown;
+  if (!Array.isArray(raw)) return null;
+  const out: Semantics = [];
+  for (const g of raw) {
+    if (!g || typeof g !== "object") continue;
+    const o = g as Record<string, unknown>;
+    const name = String(o.name ?? o.title ?? o.group ?? "").trim();
+    const kw = (Array.isArray(o.keywords) ? o.keywords : Array.isArray(o.phrases) ? o.phrases : []).map((k) => (typeof k === "string" ? k : String((k as { phrase?: string; text?: string })?.phrase ?? (k as { text?: string })?.text ?? ""))).filter(Boolean);
+    if (name || kw.length) out.push({ name: name || "Без названия", keywords: kw });
+  }
+  return out.length ? out : null;
 }
 
 export function LaunchWizard(p: Props) {
@@ -84,6 +104,7 @@ export function LaunchWizard(p: Props) {
   const [edit, setEdit] = useState<{ ad: PlanAd; channel: Channel } | null>(null);
   const [progress, setProgress] = useState<Progress | null>(() => progressOf(p.plan));
   const fileRef = useRef<HTMLInputElement>(null);
+  const [semantics, setSemantics] = useState<Semantics | null>(null);
 
   const real = p.accounts.filter((a) => a.platform !== "demo");
   const usable = real.length ? real.filter((a) => a.status === "ok") : p.accounts;
@@ -212,13 +233,56 @@ export function LaunchWizard(p: Props) {
   const enabledAds = plan?.channels.filter((c) => c.enabled).flatMap((c) => c.groups.flatMap((g) => g.ads.filter(publishable))).length ?? 0;
   const enabledChannels = plan?.channels.filter((c) => c.enabled && c.groups.some((g) => g.ads.some(publishable))).length ?? 0;
   const resuming = Boolean(plan?.launch);
+  const preparing = phase === "copy" || phase === "images";
+
+  // Запросы по группам — когда объявления готовы. Нет эндпоинта (404) или ошибка — молча без блока
+  const planKey = ready ? plan?.createdAt ?? "" : "";
+  useEffect(() => {
+    if (!planKey) return;
+    let off = false;
+    fetch("/api/launch/semantics", { headers: { Accept: "application/json" } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!off) setSemantics(d ? parseSemantics(d) : null); })
+      .catch(() => { if (!off) setSemantics(null); });
+    return () => { off = true; };
+  }, [planKey]);
+  const semKw = semantics?.reduce((n, g) => n + g.keywords.length, 0) ?? 0;
+
+  // Одно главное действие этапа — внизу
+  const action = !hasAccounts
+    ? { label: "Подготовить объявления", icon: <Sparkles size={18} />, run: prepare, disabled: true, cls: "btn-primary", note: "Сначала подключите рекламный кабинет — Яндекс Директ, VK или демо." }
+    : !ready || preparing
+      ? { label: phase === "copy" ? "Пишем тексты и подбираем запросы…" : phase === "images" ? "Готовим картинки…" : "Подготовить объявления", icon: preparing ? <Loader2 size={18} className="spin" /> : <Sparkles size={18} />, run: prepare, disabled: preparing, cls: "btn-primary", note: preparing ? "Обычно это занимает до минуты." : "Робот напишет объявления и подберёт запросы — до минуты. Перед запуском вы всё увидите и сможете поправить." }
+      : { label: phase === "publish" ? "Создаём кампании…" : resuming ? "Продолжить запуск" : "Запустить рекламу", icon: phase === "publish" ? <Loader2 size={18} className="spin" /> : <Rocket size={18} />, run: launch, disabled: phase === "publish" || !enabledAds, cls: "btn-mark", note: enabledAds ? `${enabledAds} ${plural(enabledAds, "объявление", "объявления", "объявлений")} в ${enabledChannels} ${plural(enabledChannels, "канале", "каналах", "каналах")} уйдут на модерацию.` : "Включите хотя бы одно объявление." };
+
+  const photoStrip = (
+    <div className="grid gap-2">
+      <p className="text-sm text-muted leading-relaxed"><span className="font-semibold text-ink">Фото для объявлений с картинками</span> (необязательно). Лучше всего — настоящие: работа крупным планом, интерьер, мастер за работой. {p.flags.ai ? "Нет фото — сгенерируем по вашей нише." : ""}</p>
+      <div className="flex flex-wrap gap-2.5">
+          {p.photos.map((ph) => (
+            <div key={ph.id} className="relative w-20 h-20 rounded-xl overflow-hidden border border-line group">
+              <img src={`/api/images/${ph.id}`} alt="" className="w-full h-full object-cover" />
+              {ph.kind === "generated" ? <span className="absolute left-1 bottom-1 pill bg-white/90 text-[10px]">ИИ</span> : null}
+              <button className="absolute right-1 top-1 bg-white/90 rounded-md p-1 opacity-0 group-hover:opacity-100 focus:opacity-100" aria-label="Удалить фото"
+                onClick={async () => { try { await api("DELETE", `/api/photos/${ph.id}`); setPlan(null); router.refresh(); } catch (e) { toast((e as Error).message, "error"); } }}>
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+          <button className="w-20 h-20 rounded-xl border-2 border-dashed border-line-2 grid place-items-center text-muted hover:border-ink hover:text-ink" onClick={() => fileRef.current?.click()} disabled={uploading || !hasAccounts}>
+            {uploading ? <Loader2 className="spin" /> : <span className="flex flex-col items-center gap-1 text-xs font-semibold"><ImagePlus size={22} />Добавить</span>}
+          </button>
+          <input ref={fileRef} type="file" accept="image/jpeg,image/png" multiple hidden onChange={(e) => upload(e.target.files)} />
+      </div>
+    </div>
+
+  );
 
   return (
-    <div className="grid gap-5">
-      {/* 1. Кабинеты */}
-      <Step n={1} title="Подключите рекламные кабинеты" done={hasAccounts} active>
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
+      <Section id="accounts" title="Кабинеты" done={hasAccounts} active>
         <p className="text-muted leading-relaxed">Реклама будет идти с ваших кабинетов — деньги на них вы пополняете сами, мы только управляем. Доступ можно отозвать в любой момент.</p>
-        <div className="mt-4 grid sm:grid-cols-2 gap-3">
+        <div className="mt-4 grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 gap-3">
           {[
             { platform: "yandex", name: "Яндекс Директ", desc: "Поиск Яндекса, Карты, Дзен и тысячи сайтов", href: "/api/connect/yandex/start?back=/app/launch", on: p.flags.yandex },
             { platform: "vk", name: "VK Реклама", desc: "ВКонтакте, Одноклассники, Дзен", href: "/api/connect/vk/start?back=/app/launch", on: p.flags.vk },
@@ -260,10 +324,9 @@ export function LaunchWizard(p: Props) {
         {real.some((a) => a.platform === "yandex") ? (
           <p className="hint mt-3">Маркировка: если вы рекламируете свой бизнес со своего кабинета, Яндекс маркирует рекламу сам. Один раз заполните данные рекламодателя в кабинете Директа (раздел «Маркировка рекламы»).</p>
         ) : null}
-      </Step>
+      </Section>
 
-      {/* 2. Бюджет */}
-      <Step n={2} title="Сколько тратить в месяц" done={hasAccounts && savedBudget === budget} active={hasAccounts}>
+      <Section id="budget" title="Бюджет в месяц" done={false} active={hasAccounts} note={hasAccounts ? undefined : "После кабинета"}>
         <div className="grid lg:grid-cols-[1fr_17rem] gap-6">
           <div>
             <div className="flex items-end gap-3">
@@ -306,44 +369,31 @@ export function LaunchWizard(p: Props) {
           </div>
         </div>
         <p className="hint mt-4">Бюджет — жёсткая граница: робот следит за расходами каждый день и не выйдет за неё. Пополнять кабинеты нужно самим, примерно на эту сумму в месяц.</p>
-      </Step>
+      </Section>
 
-      {/* 3. Фото */}
-      <Step n={3} title="Фотографии для рекламы" done={p.photos.length > 0} active={hasAccounts}
-        aside={<span className="text-sm text-muted">Необязательно</span>}>
-        <p className="text-muted leading-relaxed">Лучше всего работают настоящие фото: готовая работа крупным планом, интерьер, мастер за работой. Можно с телефона. {p.flags.ai ? "Если фото нет, сгенерируем реалистичные картинки по вашей нише." : ""}</p>
-        <div className="mt-4 flex flex-wrap gap-3">
-          {p.photos.map((ph) => (
-            <div key={ph.id} className="relative w-24 h-24 rounded-xl overflow-hidden border border-line group">
-              <img src={`/api/images/${ph.id}`} alt="" className="w-full h-full object-cover" />
-              {ph.kind === "generated" ? <span className="absolute left-1 bottom-1 pill bg-white/90 text-[10px]">ИИ</span> : null}
-              <button className="absolute right-1 top-1 bg-white/90 rounded-md p-1 opacity-0 group-hover:opacity-100 focus:opacity-100" aria-label="Удалить фото"
-                onClick={async () => { try { await api("DELETE", `/api/photos/${ph.id}`); setPlan(null); router.refresh(); } catch (e) { toast((e as Error).message, "error"); } }}>
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
-          <button className="w-24 h-24 rounded-xl border-2 border-dashed border-line-2 grid place-items-center text-muted hover:border-ink hover:text-ink" onClick={() => fileRef.current?.click()} disabled={uploading || !hasAccounts}>
-            {uploading ? <Loader2 className="spin" /> : <span className="flex flex-col items-center gap-1 text-xs font-semibold"><ImagePlus size={22} />Добавить</span>}
-          </button>
-          <input ref={fileRef} type="file" accept="image/jpeg,image/png" multiple hidden onChange={(e) => upload(e.target.files)} />
-        </div>
-      </Step>
-
-      {/* 4. Объявления */}
-      <Step n={4} title="Объявления" done={ready} active={hasAccounts}
-        aside={ready ? <button className="btn btn-ghost btn-sm" onClick={prepare} disabled={!!phase}><Sparkles size={15} /> Написать заново</button> : null}>
-        {!plan || phase === "copy" || phase === "images" ? (
-          <div>
-            <p className="text-muted leading-relaxed">Робот напишет объявления для каждого канала, подберёт поисковые запросы и минус-слова, сделает картинки. Каждое объявление проверяет свою идею — какая сработает лучше, покажет статистика.</p>
-            <button className="btn btn-primary mt-4" onClick={prepare} disabled={!!phase || !hasAccounts}>
-              {phase ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
-              {phase === "copy" ? "Пишем тексты и подбираем запросы…" : phase === "images" ? "Готовим картинки…" : "Подготовить объявления"}
-            </button>
-            {phase ? <p className="hint mt-2">Обычно это занимает до минуты.</p> : null}
+      <Section id="ads" title="Объявления" done={ready && !preparing} active={hasAccounts} note={hasAccounts ? undefined : "После кабинета"}
+        aside={ready && !preparing ? <button className="btn btn-ghost btn-sm" onClick={prepare} disabled={!!phase}><Sparkles size={15} /> Написать заново</button> : null}>
+        {photoStrip}
+        {!ready || preparing ? (
+          <div className="mt-5 rounded-xl border-2 border-dashed border-line p-5 grid gap-1.5 justify-items-start">
+            {preparing ? <p className="font-semibold inline-flex items-center gap-2"><Loader2 size={16} className="spin" /> {phase === "copy" ? "Пишем тексты и подбираем запросы…" : "Готовим картинки…"}</p> : <p className="font-semibold">Здесь появятся объявления</p>}
+            <p className="text-muted leading-relaxed text-sm max-w-xl">Робот напишет объявления для каждого канала, подберёт поисковые запросы и минус-слова, сделает картинки. Каждое объявление проверяет свою идею — какая сработает лучше, покажет статистика.{!preparing && hasAccounts ? " Нажмите «Подготовить объявления» внизу." : ""}</p>
           </div>
-        ) : (
-          <div className="grid gap-6">
+        ) : plan ? (
+          <div className="grid gap-6 mt-5">
+            {semantics ? (
+              <details className="rounded-xl bg-paper px-4 py-3 text-sm">
+                <summary className="cursor-pointer font-semibold inline-flex items-center gap-2"><Search size={15} /> Поиск: {semantics.length} {plural(semantics.length, "группа", "группы", "групп")}, {semKw} {plural(semKw, "запрос", "запроса", "запросов")}</summary>
+                <ul className="mt-3 grid gap-2.5">
+                  {semantics.map((g, gi) => (
+                    <li key={gi}>
+                      <div className="font-semibold">{g.name} <span className="font-normal text-muted">· {g.keywords.length}</span></div>
+                      <div className="text-muted leading-relaxed [overflow-wrap:anywhere]">{g.keywords.join(", ")}</div>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
             {plan.warnings.length ? (
               <div className="rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2"><TriangleAlert size={16} className="shrink-0 mt-0.5" /><div>{plan.warnings.map((w) => <div key={w}>{w}</div>)}</div></div>
             ) : null}
@@ -406,11 +456,10 @@ export function LaunchWizard(p: Props) {
               </details>
             ) : null}
           </div>
-        )}
-      </Step>
+        ) : null}
+      </Section>
 
-      {/* 5. Запуск */}
-      <Step n={5} title="Запуск" done={false} active={ready}>
+      <Section id="launch" title="Запуск" done={false} active={ready && !preparing} note={ready ? undefined : "После объявлений"}>
         <ul className="grid gap-2 text-[0.95rem]">
           <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> {enabledAds} {plural(enabledAds, "объявление", "объявления", "объявлений")} в {enabledChannels} {plural(enabledChannels, "канале", "каналах", "каналах")} {enabledAds === 1 ? "уйдёт" : "уйдут"} на модерацию — обычно это занимает несколько часов.</li>
           {plan?.channels.some((c) => c.enabled && isRetarget(c.channel)) ? (
@@ -427,10 +476,6 @@ export function LaunchWizard(p: Props) {
             <div>Запуск прервался на середине. Нажмите «Продолжить запуск» — уже созданные кампании не задублируются, недосозданные пересоздадим.</div>
           </div>
         ) : null}
-        <button className="btn btn-mark h-12 px-7 mt-5 text-base" onClick={launch} disabled={!ready || phase === "publish" || !enabledAds}>
-          {phase === "publish" ? <Loader2 size={18} className="spin" /> : null}
-          {phase === "publish" ? "Создаём кампании…" : resuming ? "Продолжить запуск" : "Запустить рекламу"}
-        </button>
         {progress && (phase === "publish" || resuming) ? (
           <ul className="mt-4 grid gap-1.5 text-sm" aria-live="polite">
             {progress.channels.map((c, i) => {
@@ -445,7 +490,18 @@ export function LaunchWizard(p: Props) {
             })}
           </ul>
         ) : phase === "publish" ? <p className="hint mt-2">Создаём кампании по очереди, это может занять пару минут. Показы включим все разом, когда создадим всё, — до этого деньги не тратятся. Если закроете страницу, робот доведёт запуск сам.</p> : null}
-      </Step>
+      </Section>
+
+      {/* Одна главная кнопка этапа — прилипает к низу экрана */}
+      <div className="sticky bottom-[3.375rem] md:bottom-0 z-30 -mx-4 px-4 sm:mx-0 sm:px-0 pt-4 pb-2 md:pb-4 bg-linear-to-t from-paper from-65% to-paper/0">
+        <div className="card shadow-lg px-4 py-3 sm:px-5 grid gap-2.5 sm:flex sm:items-center sm:gap-4">
+          <p className="min-w-0 flex-1 text-sm text-ink-2 leading-snug">{action.note}</p>
+          <button className={`btn ${action.cls} h-12 px-6 text-base shrink-0`} onClick={action.run} disabled={action.disabled}>
+            {action.icon}
+            {action.label}
+          </button>
+        </div>
+      </div>
 
       <EditAdModal edit={edit} onClose={() => setEdit(null)} onSave={async (v) => { await patchPlan({ adId: edit!.ad.id, ...v }); setEdit(null); }} />
     </div>

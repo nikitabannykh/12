@@ -1,44 +1,41 @@
 "use client";
 
 /**
- * Анкета бизнеса по шагам: 1. Ссылки → 2. О бизнесе → 3. Услуги и цены → 4. Фото → 5. Контакты и юр. данные.
- *  - Строго по порядку: виден один шаг, внизу только «Назад» и «Дальше». «Дальше» проверяет обязательные поля шага
- *    (ошибки — прямо у полей). Вперёд по точкам шагов нельзя, назад — можно, в том числе к ссылкам: добавить ссылку и
- *    прочитать заново. Повторное чтение не трогает то, что владелец уже заполнил, — только дописывает пустое
- *    и показывает, что изменилось («на сайте другое — заменить?»).
- *  - Шаг 1: «Заполнить по ссылке» (после чтения — сразу шаг 2) или «Пропустить — заполню вручную».
- *  - Сверху — «Шаг N из 5», тонкая полоса «Заполнено на N%» и точки шагов.
- *  - Черновик сохраняется в браузере (localStorage) — перезагрузка страницы ничего не теряет.
- *  - Тот же мастер открывается из «Настройки → Изменить описание».
+ * Этап 1 «Данные о бизнесе» — одна страница, без пошагового мастера.
+ *  - Сверху блок ссылок: «Заполнить по ссылке» или «Заполнить вручную». Пока не выбрано — видно только его.
+ *  - Потом ниже открываются разделы: Основное, Услуги и цены, Фото, Контакты и юр. данные. Метки источника у полей,
+ *    ошибки — прямо у поля (после того как поле потрогали или нажали «Сохранить»).
+ *  - Блок ссылок остаётся сверху свёрнутым («Данные из: … · Изменить ссылки»): можно добавить ссылку и прочитать
+ *    заново. Повторное чтение не трогает то, что владелец уже заполнил, — только дописывает пустое и показывает,
+ *    что отличается («на сайте другое — заменить?»).
+ *  - «Заполнено на N%» и чего не хватает — ссылками на поля. Внизу одна кнопка «Сохранить и перейти к запуску»;
+ *    пока обязательное не заполнено, она неактивна и рядом написано, чего не хватает.
+ *  - Черновик сохраняется в браузере (localStorage) отдельно для каждого проекта — перезагрузка ничего не теряет.
+ *  - Та же страница открывается из «Настройки → Изменить описание».
  */
 import { useRouter } from "next/navigation";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, CircleAlert, ImageOff, Link2, Loader2, Plus, RotateCcw, Star, Trash2, TriangleAlert, X } from "lucide-react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, CircleAlert, ImageOff, Link2, Loader2, PenLine, Plus, RotateCcw, Star, Trash2, TriangleAlert, X } from "lucide-react";
 import { api, useToast } from "./client";
 import { businessPayload, type BusinessInput } from "./BusinessForm";
 import type { Draft, DraftField, ImportEvent, ImportReport, SourceKind } from "@/lib/importer/types";
 import { SOURCE_NAME } from "@/lib/importer/types";
 import type { Service } from "@/lib/db/schema";
 import { groupServices } from "@/lib/services";
+import { cleanLinks, linkKey, linkKind, normalizeLink, shortLink, LINK_LABEL, MAX_SOURCE_LINKS, type LinkKind, type SourceLink } from "@/lib/links";
 
 type NicheLite = { id: string; label: string; examples: string[] };
 type Row = { key: string; kind: SourceKind; state: "loading" | ImportReport["status"]; text: string };
 type Change = { field: ScalarKey; label: string; kind: "added" | "kept"; value: string; mine?: string };
 type ScalarKey = "name" | "city" | "address" | "phone" | "whatsapp" | "telegram" | "hours" | "siteUrl" | "orgUrl" | "description" | "review" | "legalInfo" | "offer";
 
-const MAX_LINKS = 5;
+/** Сколько ссылок можно держать в блоке (сохраняются все); прочитать за раз можно первые READ_LINKS */
+const MAX_LINKS = MAX_SOURCE_LINKS;
+const READ_LINKS = 5;
 const MAX_SERVICES = 40;
 /** Сколько фото можно выбрать из найденных за раз */
 const PHOTO_PICK = 20;
 const SHOW_SERVICES = 6;
-
-const STEPS = [
-  { title: "Ссылки", short: "Ссылки" },
-  { title: "О бизнесе", short: "О вас" },
-  { title: "Услуги и цены", short: "Услуги" },
-  { title: "Фото", short: "Фото" },
-  { title: "Контакты и юр. данные", short: "Контакты" },
-] as const;
 
 const LABEL: Record<ScalarKey, string> = {
   name: "название", city: "город", address: "адрес", phone: "телефон", whatsapp: "WhatsApp", telegram: "Telegram", hours: "часы работы",
@@ -63,7 +60,9 @@ const KIND_LABEL: Record<SourceKind, string> = { ...SOURCE_NAME, site: "Сайт
 const EXAMPLES = ["lak-studio.ru", "yandex.ru/maps/org/…", "2gis.ru/kazan/firm/…", "taplink.cc/lak", "vk.com/lak_studio"];
 
 const REQUIRED_TEXT: Record<Draft["missing"][number], string> = { name: "название", niche: "сферу", city: "город", contact: "телефон или мессенджер", services: "хотя бы одну услугу" };
-const REQUIRED_STEP: Record<Draft["missing"][number], number> = { name: 1, niche: 1, city: 1, services: 2, contact: 4 };
+/** Куда вести по ссылке «не хватает: …» — id блока поля на странице */
+const REQUIRED_ANCHOR: Record<Draft["missing"][number], string> = { name: "f-name", niche: "f-niche", city: "f-city", services: "f-services", contact: "f-contact" };
+type Req = Draft["missing"][number];
 
 function missingOf(f: BusinessInput): Draft["missing"] {
   const m: Draft["missing"] = [];
@@ -128,19 +127,19 @@ function completeness(f: BusinessInput, photoCount: number) {
   const priced = f.services.filter((s) => s.name.trim() && s.price?.trim()).length;
   const adv = f.advantages.filter((a) => a.trim()).length;
   const items = [
-    { label: "название", w: 8, v: f.name.trim() ? 1 : 0, step: 1 },
-    { label: "сфера", w: 8, v: f.niche ? 1 : 0, step: 1 },
-    { label: "город", w: 8, v: f.city.trim().length >= 2 ? 1 : 0, step: 1 },
-    { label: "адрес", w: 8, v: f.address.trim() ? 1 : 0, step: 1 },
-    { label: "часы работы", w: 6, v: f.hours.trim() ? 1 : 0, step: 1 },
-    { label: "преимущества", w: 8, v: Math.min(1, adv / 2), step: 1 },
-    { label: "отзыв клиента", w: 5, v: f.review.trim() ? 1 : 0, step: 1 },
-    { label: "3 услуги с ценами", w: 14, v: Math.min(1, priced / 3), step: 2 },
-    { label: "предложение для новых", w: 5, v: f.offer.trim() ? 1 : 0, step: 2 },
-    { label: "3 фото", w: 8, v: Math.min(1, photoCount / 3), step: 3 },
-    { label: "телефон или мессенджер", w: 10, v: f.phone.trim() || f.whatsapp.trim() || f.telegram.trim() ? 1 : 0, step: 4 },
-    { label: "Яндекс Карты", w: 6, v: f.orgUrl.trim() ? 1 : 0, step: 4 },
-    { label: "юр. данные", w: 6, v: f.legalInfo.trim() ? 1 : 0, step: 4 },
+    { label: "название", w: 8, v: f.name.trim() ? 1 : 0, anchor: "f-name", req: true },
+    { label: "сфера", w: 8, v: f.niche ? 1 : 0, anchor: "f-niche", req: true },
+    { label: "город", w: 8, v: f.city.trim().length >= 2 ? 1 : 0, anchor: "f-city", req: true },
+    { label: "адрес", w: 8, v: f.address.trim() ? 1 : 0, anchor: "f-city" },
+    { label: "часы работы", w: 6, v: f.hours.trim() ? 1 : 0, anchor: "hours" },
+    { label: "преимущества", w: 8, v: Math.min(1, adv / 2), anchor: "f-adv" },
+    { label: "отзыв клиента", w: 5, v: f.review.trim() ? 1 : 0, anchor: "f-review" },
+    { label: "3 услуги с ценами", w: 14, v: Math.min(1, priced / 3), anchor: "f-services" },
+    { label: "предложение для новых", w: 5, v: f.offer.trim() ? 1 : 0, anchor: "f-offer" },
+    { label: "3 фото", w: 8, v: Math.min(1, photoCount / 3), anchor: "f-photos" },
+    { label: "телефон или мессенджер", w: 10, v: f.phone.trim() || f.whatsapp.trim() || f.telegram.trim() ? 1 : 0, anchor: "f-contact", req: true },
+    { label: "Яндекс Карты", w: 6, v: f.orgUrl.trim() ? 1 : 0, anchor: "org" },
+    { label: "юр. данные", w: 6, v: f.legalInfo.trim() ? 1 : 0, anchor: "legal" },
   ];
   const total = items.reduce((s, x) => s + x.w, 0);
   const pct = Math.round((items.reduce((s, x) => s + x.w * x.v, 0) / total) * 100);
@@ -181,7 +180,7 @@ async function runImport(urls: string[], onEvent: (e: ImportEvent) => void): Pro
   return draft;
 }
 
-type Saved = { v: 1; f: BusinessInput; links: string[]; step: number; max?: number; draft: Draft | null; photos: string[]; sources: Partial<Record<DraftField, string>>; at: number };
+type Saved = { v: 1; f: BusinessInput; links: string[]; started?: boolean; /** старый мастер по шагам */ step?: number; draft: Draft | null; photos: string[]; sources: Partial<Record<DraftField, string>>; at: number };
 const storageKey = (k: string) => `pz:onboarding:${k}`;
 function readSaved(k: string): Saved | null {
   try {
@@ -193,12 +192,76 @@ function readSaved(k: string): Saved | null {
   }
 }
 
-const LAST = STEPS.length - 1;
+function hostOf(url: string) {
+  const s = url.trim().replace(/^[a-z]+:\/\//i, "").replace(/^www\./i, "");
+  return s.split(/[/?#]/)[0] || s;
+}
+
+/** Поля анкеты, которые дублируют ссылку из блока ссылок */
+type LinkField = "siteUrl" | "orgUrl" | "dgisUrl";
+const LINK_FIELDS: [LinkField, LinkKind][] = [["siteUrl", "site"], ["orgUrl", "yandex"], ["dgisUrl", "dgis"]];
+const keyOf = (raw: string) => {
+  const u = normalizeLink(raw);
+  return u ? linkKey(u) : raw.trim().toLowerCase();
+};
+/** Готовая ссылка нужной площадки (а не набираемый текст) */
+const completeOf = (list: string[], kind: LinkKind) => list.find((l) => {
+  const u = normalizeLink(l);
+  return u && linkKind(u) === kind && (kind === "site" || new URL(u).pathname.length > 1);
+}) ?? "";
+
+/** Поле анкеты поменялось → та же ссылка в блоке ссылок: заменить, убрать или добавить */
+function linksWithField(links: string[], old: string, next: string): string[] {
+  const i = old.trim() ? links.findIndex((l) => l.trim() && keyOf(l) === keyOf(old)) : -1;
+  if (i >= 0) {
+    const out = next.trim() ? links.map((l, j) => (j === i ? next : l)) : links.filter((_, j) => j !== i);
+    return out.length ? out : [""];
+  }
+  if (!next.trim() || links.some((l) => l.trim() && keyOf(l) === keyOf(next))) return links;
+  const filled = links.filter((l) => l.trim());
+  return filled.length >= MAX_LINKS ? links : [...filled, next];
+}
+
+/** Блок ссылок поменялся → поля «Сайт», «Яндекс Карты», «2ГИС»: правка той же ссылки, удаление, первая новая */
+function fieldsFromLinks(f: BusinessInput, old: string[], next: string[]): Partial<BusinessInput> {
+  const out: Partial<BusinessInput> = {};
+  for (const [field, kind] of LINK_FIELDS) {
+    const cur = (f[field] ?? "").trim();
+    if (cur) {
+      const i = old.findIndex((l) => l.trim() && keyOf(l) === keyOf(cur));
+      if (i < 0) continue; // поле заполнено отдельно — не трогаем
+      if (next.length === old.length) {
+        if (next[i] !== old[i]) {
+          const u = normalizeLink(next[i]);
+          out[field] = u && linkKind(u) === kind ? next[i] : completeOf(next, kind);
+        }
+      } else if (!next.some((l) => l.trim() && keyOf(l) === keyOf(cur))) out[field] = completeOf(next, kind);
+    } else {
+      const v = completeOf(next, kind);
+      if (v) out[field] = v;
+    }
+  }
+  return out;
+}
+
+/** Все ссылки анкеты для сохранения и показа: поля + блок ссылок, без повторов */
+const allLinksOf = (f: BusinessInput, links: string[]): SourceLink[] => cleanLinks([f.siteUrl, f.orgUrl, f.dgisUrl ?? "", ...links]);
+
+/** Проскроллить к полю и поставить в него курсор */
+function jumpTo(anchor: string) {
+  const el = document.getElementById(anchor);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  const input = el.querySelector<HTMLElement>("input:not([type=range]):not(:disabled), select:not(:disabled), textarea");
+  setTimeout(() => input?.focus({ preventScroll: true }), 350);
+}
 
 export function BusinessOnboarding({
-  initial, niches, next, saveLabel, nicheLock, editing, draftKey, savedPhotos, photoMax, otherProjects,
+  initial, initialLinks = [], niches, next, saveLabel, nicheLock, editing, draftKey, savedPhotos, photoMax, otherProjects,
 }: {
-  initial: BusinessInput; niches: NicheLite[]; next: string; saveLabel: string; nicheLock: "launched" | "plan" | null; editing: boolean;
+  initial: BusinessInput;
+  /** Сохранённые ссылки на бизнес (source_links + сайт и Яндекс Карты) */
+  initialLinks?: string[]; niches: NicheLite[]; next: string; saveLabel: string; nicheLock: "launched" | "plan" | null; editing: boolean;
   /** Ключ черновика в браузере: пользователь + проект («new» для нового) */
   draftKey: string;
   /** Уже сохранённые фото владельца (id) */
@@ -206,15 +269,23 @@ export function BusinessOnboarding({
   photoMax: number;
   otherProjects: number;
 }) {
-  // Шаги идут строго по порядку: вперёд — только «Дальше», назад — «Назад» или по пройденному шагу.
-  // У сохранённого проекта все шаги уже пройдены — открываем «О бизнесе», остальные доступны.
-  const [step, setStep] = useState(editing ? 1 : 0);
-  const [max, setMax] = useState(editing ? LAST : 0);
+  /** Выбрали «по ссылке» или «вручную» — тогда под ссылками открываются разделы анкеты */
+  const [started, setStarted] = useState(editing);
+  /** Блок ссылок развёрнут (после того как анкета уже открыта) */
+  const [linkOpen, setLinkOpen] = useState(false);
   const [f, setF] = useState<BusinessInput>(initial);
-  const [links, setLinks] = useState<string[]>(() => {
-    const pre = [initial.siteUrl, initial.orgUrl].filter(Boolean);
-    return pre.length ? [...pre] : [""];
-  });
+  const startLinks = () => {
+    const pre = cleanLinks([...initialLinks, initial.siteUrl, initial.orgUrl, initial.dgisUrl ?? ""]).map((l) => l.url);
+    return pre.length ? pre : [""];
+  };
+  const [links, setLinksRaw] = useState<string[]>(startLinks);
+  /** Блок ссылок поменялся — подтягиваем поля «Сайт», «Яндекс Карты», «2ГИС» */
+  const setLinks = (v: string[] | ((l: string[]) => string[])) => {
+    const nextLinks = typeof v === "function" ? v(links) : v;
+    const patch = fieldsFromLinks(f, links, nextLinks);
+    setLinksRaw(nextLinks);
+    if (Object.keys(patch).length) setF((x) => ({ ...x, ...patch }));
+  };
   const [rows, setRows] = useState<Row[]>([]);
   const [running, setRunning] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -222,10 +293,12 @@ export function BusinessOnboarding({
   const [sources, setSources] = useState<Partial<Record<DraftField, string>>>({});
   const [photos, setPhotos] = useState<string[]>([]);
   const [changes, setChanges] = useState<{ list: Change[]; summary: string[] } | null>(null);
-  /** Только что заполнили по ссылке — на шаге «О бизнесе» показываем, что подтянули */
+  /** Только что заполнили по ссылке — показываем, что подтянули */
   const [imported, setImported] = useState<string[] | null>(null);
-  /** Шаги, где уже нажимали «Дальше» с пустыми обязательными полями — там показываем ошибки */
-  const [tried, setTried] = useState<Set<number>>(new Set());
+  /** Обязательные поля, которые уже трогали, — у них показываем ошибку сразу */
+  const [touched, setTouched] = useState<Set<Req>>(new Set());
+  /** Нажимали «Сохранить» — показываем все ошибки */
+  const [tried, setTried] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [restored, setRestored] = useState(false);
@@ -237,23 +310,25 @@ export function BusinessOnboarding({
 
   const photoRoom = Math.max(0, Math.min(PHOTO_PICK, photoMax - savedPhotos.length));
 
-  // Черновик из браузера + ссылки вида /app/start#org, #hours — сразу на нужный шаг
+  // Черновик из браузера + ссылки вида /app/start#org, #hours — сразу к нужному полю
   useEffect(() => {
     const s = readSaved(draftKey);
-    if (s && JSON.stringify(s.f) !== pristine.current) {
-      const st = Math.max(0, Math.min(LAST, s.step ?? 0));
+    if (s && (JSON.stringify(s.f) !== pristine.current || s.draft)) {
       setF(s.f);
-      setLinks(s.links?.length ? s.links : [""]);
-      setStep(st);
-      setMax((m) => Math.max(m, st, Math.min(LAST, s.max ?? 0)));
+      setLinksRaw(s.links?.length ? s.links : [""]);
+      setStarted((v) => v || Boolean(s.started ?? ((s.step ?? 0) > 0 || s.draft)));
       setDraft(s.draft ?? null);
       setPhotos(s.photos ?? []);
       setSources(s.sources ?? {});
       setRestored(true);
     }
-    const h = window.location.hash;
-    if (editing && (h === "#org" || h === "#legal")) setStep(4);
-    else if (editing && h === "#hours") setStep(1);
+    const h = window.location.hash.slice(1);
+    if (editing && ["org", "dgis", "legal", "hours"].includes(h)) setTimeout(() => jumpTo(h), 300);
+    // «Настройки → Ссылки на бизнес → Изменить» — сразу раскрытый блок ссылок
+    if (h === "links") {
+      setLinkOpen(true);
+      setTimeout(() => document.getElementById("link-0")?.focus(), 300);
+    }
     ready.current = true;
   }, [draftKey, editing]);
 
@@ -264,14 +339,14 @@ export function BusinessOnboarding({
       try {
         const dirty = JSON.stringify(f) !== pristine.current || draft;
         if (!dirty) return;
-        const data: Saved = { v: 1, f, links, step, max, draft, photos, sources, at: Date.now() };
+        const data: Saved = { v: 1, f, links, started, draft, photos, sources, at: Date.now() };
         window.localStorage.setItem(storageKey(draftKey), JSON.stringify(data));
       } catch {
         /* приватный режим или переполнение — без черновика */
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [f, links, step, max, draft, photos, sources, draftKey]);
+  }, [f, links, started, draft, photos, sources, draftKey]);
 
   const clearSaved = () => {
     try {
@@ -282,45 +357,38 @@ export function BusinessOnboarding({
   };
 
   const scrollTop = () => requestAnimationFrame(() => top.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
-  /** Перейти на шаг: назад — всегда, вперёд — только на уже пройденный */
-  const go = (s: number, opts?: { unlock?: boolean }) => {
-    const to = Math.max(0, Math.min(LAST, s));
-    if (!opts?.unlock && to > max) return;
-    if (opts?.unlock) setMax((m) => Math.max(m, to));
-    setStep(to);
-    setSaveError(null);
-    scrollTop();
-  };
-  const scrollToError = () =>
-    requestAnimationFrame(() => setTimeout(() => document.querySelector("[data-missing='true']")?.scrollIntoView({ behavior: "smooth", block: "center" }), 60));
 
   const photoCount = savedPhotos.length + photos.length;
   const comp = useMemo(() => completeness(f, photoCount), [f, photoCount]);
   const miss = useMemo(() => missingOf(f), [f]);
-  const stepMissing = [0, 1, 2, 3, 4].map((i) => miss.filter((m) => REQUIRED_STEP[m] === i));
-  const tips = comp.todo.filter((t) => t.step === step && !(stepMissing[step].length && ["название", "сфера", "город", "телефон или мессенджер"].includes(t.label))).map((t) => t.label);
+  const touch = useCallback((k: Req) => setTouched((t) => (t.has(k) ? t : new Set(t).add(k))), []);
+  const val = useMemo(() => ({ miss, shown: (k: Req) => tried || touched.has(k), touch }), [miss, tried, touched, touch]);
 
-  /** «Дальше»: сначала проверяем обязательные поля текущего шага */
-  function next_() {
-    if (stepMissing[step].length) {
-      setTried((t) => new Set(t).add(step));
-      scrollToError();
-      return;
-    }
-    setImported(null);
-    go(step + 1, { unlock: true });
+  /** Перейти к полю из списка «не хватает» — и сразу подсветить, если оно обязательное */
+  const goField = (anchor: string) => {
+    const req = (Object.keys(REQUIRED_ANCHOR) as Req[]).find((k) => REQUIRED_ANCHOR[k] === anchor && miss.includes(k));
+    if (req) touch(req);
+    jumpTo(anchor);
+  };
+
+  function openForm(how: "manual" | "import") {
+    setStarted(true);
+    setLinkOpen(false);
+    setImportError(null);
+    if (how === "manual") requestAnimationFrame(() => setTimeout(() => jumpTo("f-name"), 50));
   }
 
   async function autofill() {
-    const urls = links.map((l) => l.trim()).filter(Boolean);
+    const urls = [...new Set(links.map((l) => l.trim()).filter(Boolean))].slice(0, READ_LINKS);
     if (!urls.length) {
-      setImportError("Вставьте ссылку на сайт или карточку в картах — или пропустите этот шаг и заполните вручную.");
+      setImportError("Вставьте ссылку на сайт или карточку в картах — или нажмите «Заполнить вручную».");
       return;
     }
     setRunning(true);
     setImportError(null);
     setRows([]);
     setChanges(null);
+    setImported(null);
     try {
       const d = await runImport(urls, (e) => {
         if (e.type === "progress" && e.url && e.kind) {
@@ -334,7 +402,7 @@ export function BusinessOnboarding({
       const usable = d.reports.some((r) => r.status === "ok" || r.status === "partial" || r.status === "blocked");
       const anything = d.name || d.address || d.phone || d.services.length || d.orgUrl || d.siteUrl;
       if (!usable || !anything) {
-        setImportError("По этим ссылкам ничего не нашли. Проверьте адрес или нажмите «Пропустить — заполню вручную».");
+        setImportError("По этим ссылкам ничего не нашли. Проверьте адрес или нажмите «Заполнить вручную».");
         setRunning(false);
         return;
       }
@@ -345,13 +413,15 @@ export function BusinessOnboarding({
       setPhotos((cur) => (cur.length ? cur.filter((p) => d.photos.includes(p)) : d.photos.slice(0, photoRoom)));
       setF(m.next);
       setRunning(false);
-      // Первое чтение без расхождений — сразу на шаг 2; повторное — показываем здесь, что изменилось
+      setStarted(true);
+      // Первое чтение без расхождений — сворачиваем ссылки и показываем, что заполнили; повторное — что изменилось
       if (!hadData && !m.changes.some((c) => c.kind === "kept")) {
         setImported([...m.changes.filter((c) => c.kind === "added").map((c) => c.label), ...m.summary]);
-        await new Promise((r) => setTimeout(r, 500));
-        go(1, { unlock: true });
+        setLinkOpen(false);
+        setRows([]);
       } else {
         setChanges({ list: m.changes, summary: m.summary });
+        setLinkOpen(true);
       }
     } catch (e) {
       setImportError((e as Error).message);
@@ -360,18 +430,15 @@ export function BusinessOnboarding({
   }
 
   async function save() {
-    const m = missingOf(f);
-    if (m.length) {
-      const s = REQUIRED_STEP[m[0]];
-      setTried((t) => new Set(t).add(s));
-      go(s, { unlock: true });
-      scrollToError();
+    if (miss.length) {
+      setTried(true);
+      goField(REQUIRED_ANCHOR[miss[0]]);
       return;
     }
     setBusy("Сохраняем…");
     setSaveError(null);
     try {
-      await api("POST", "/api/business", businessPayload(f));
+      await api("POST", "/api/business", businessPayload(f, allLinksOf(f, links).map((l) => l.url)));
       if (draft?.photoToken && photos.length) {
         setBusy(`Сохраняем фото (${photos.length})…`);
         const r = await api<{ saved: number }>("POST", "/api/business/import/photos", { token: draft.photoToken, urls: photos }).catch(() => ({ saved: 0 }));
@@ -387,183 +454,218 @@ export function BusinessOnboarding({
   }
 
   const set = <K extends keyof BusinessInput>(k: K, v: BusinessInput[K]) => {
+    // Сайт, Яндекс Карты и 2ГИС — те же ссылки, что в блоке ссылок: правим их и там
+    if (k === "siteUrl" || k === "orgUrl" || k === "dgisUrl") setLinksRaw((l) => linksWithField(l, String(f[k] ?? ""), String(v ?? "")));
     setF((x) => ({ ...x, [k]: v }));
     setSources((s) => (s[k as DraftField] ? { ...s, [k]: undefined } : s));
     setSaveError(null);
   };
 
-  const showErr = tried.has(step);
-  const errCount = showErr ? stepMissing[step].length : 0;
+  const reset = () => {
+    clearSaved();
+    setF(initial);
+    setLinksRaw(startLinks());
+    setDraft(null);
+    setPhotos([]);
+    setSources({});
+    setChanges(null);
+    setImported(null);
+    setRows([]);
+    setTouched(new Set());
+    setTried(false);
+    setRestored(false);
+    setStarted(editing);
+    setLinkOpen(false);
+    scrollTop();
+  };
+
+  const linkMode = !started ? "intro" : linkOpen || running ? "open" : "collapsed";
+  const secMissing = (keys: Req[]) => miss.filter((m) => keys.includes(m)).map((m) => REQUIRED_TEXT[m]);
 
   return (
     <div ref={top} className="grid grid-cols-[minmax(0,1fr)] gap-4 scroll-mt-6">
-      <ProgressHeader step={step} max={max} go={(s) => go(s)} pct={comp.pct} missing={stepMissing.map((x) => x.length > 0)} locked={running || Boolean(busy)} />
-
       {restored ? (
         <div className="card px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
           <RotateCcw size={15} className="text-muted" />
           <span className="flex-1 min-w-0">Восстановили несохранённый черновик.</span>
-          <button
-            type="button"
-            className="font-semibold underline underline-offset-4"
-            onClick={() => {
-              clearSaved();
-              setF(initial);
-              setDraft(null);
-              setPhotos([]);
-              setSources({});
-              setChanges(null);
-              setImported(null);
-              setTried(new Set());
-              setRestored(false);
-              setMax(editing ? LAST : 0);
-              setStep(editing ? 1 : 0);
-              scrollTop();
-            }}
-          >
-            Начать заново
-          </button>
+          <button type="button" className="font-semibold underline underline-offset-4" onClick={reset}>Начать заново</button>
         </div>
       ) : null}
 
-      {step === 0 ? (
-        <LinkStep links={links} setLinks={(v) => { setLinks(v); setImportError(null); }} rows={rows} running={running} onRun={autofill} revisit={max > 0} changes={changes} otherProjects={otherProjects} editing={editing}
-          error={importError}
-          onReplace={(c) => {
-            setF((x) => ({ ...x, [c.field]: c.value }));
-            setChanges((ch) => (ch ? { ...ch, list: ch.list.map((y) => (y === c ? { ...y, kind: "added" as const } : y)) } : ch));
-          }}
-          onSkip={() => { setChanges(null); go(1, { unlock: true }); }}
-        />
-      ) : (
+      <LinkBlock
+        mode={linkMode}
+        links={links}
+        all={allLinksOf(f, links)}
+        setLinks={(v) => { setLinks(v); setImportError(null); }}
+        rows={rows}
+        running={running}
+        onRun={autofill}
+        draft={draft}
+        changes={changes}
+        otherProjects={otherProjects}
+        editing={editing}
+        error={importError}
+        onReplace={(c) => {
+          setF((x) => ({ ...x, [c.field]: c.value }));
+          setSources((s) => ({ ...s, [c.field]: draft?.sources[c.field as DraftField] }));
+          setChanges((ch) => (ch ? { ...ch, list: ch.list.map((y) => (y === c ? { ...y, kind: "added" as const } : y)) } : ch));
+        }}
+        onManual={() => openForm("manual")}
+        onOpen={() => { setLinkOpen(true); setImported(null); }}
+        onClose={() => { setLinkOpen(false); setChanges(null); setRows([]); setImportError(null); }}
+      />
+
+      {started ? (
         <>
-          {step === 1 && imported ? (
+          {imported ? (
             <div className="card px-4 sm:px-6 py-3.5 flex items-start gap-2.5 text-sm bg-good-soft border-good/30" aria-live="polite">
               <Check size={17} className="text-good mt-0.5 shrink-0" />
               <p className="leading-relaxed">
                 <span className="font-semibold">Заполнили по ссылке{imported.length ? `: ${imported.slice(0, 6).join(", ")}${imported.length > 6 ? " и другое" : ""}` : ""}.</span>{" "}
-                Осталось проверить — шаг за шагом.
+                Проверьте разделы ниже и допишите, чего не хватает.
               </p>
             </div>
           ) : null}
-          {step === 1 ? (
-            <AboutStep f={f} set={set} niches={niches} nicheLock={nicheLock} initialNiche={initial.niche} draft={draft} sources={sources} miss={miss} showErr={showErr} tips={tips} />
-          ) : step === 2 ? (
-            <ServicesStep f={f} set={set} niches={niches} sources={sources} miss={miss} showErr={showErr} tips={tips} />
-          ) : step === 3 ? (
-            <PhotosStep draft={draft} photos={photos} setPhotos={setPhotos} room={photoRoom} saved={savedPhotos} photoMax={photoMax} sources={sources} onLinks={() => go(0)} editing={editing} tips={tips} />
-          ) : (
-            <ContactsStep f={f} set={set} sources={sources} miss={miss} showErr={showErr} tips={tips} />
-          )}
 
-          <div className="grid gap-3">
-            {errCount ? (
-              <p className="flex items-start gap-2 text-sm font-semibold text-bad" role="alert">
-                <CircleAlert size={16} className="mt-0.5 shrink-0" />
-                Чтобы идти дальше, заполните: {stepMissing[step].map((x) => REQUIRED_TEXT[x]).join(", ")}.
-              </p>
-            ) : null}
-            {saveError ? (
-              <p className="flex items-start gap-2 text-sm font-semibold text-bad" role="alert">
-                <CircleAlert size={16} className="mt-0.5 shrink-0" />
-                <span className="[overflow-wrap:anywhere]">Не сохранили. {saveError}</span>
-              </p>
-            ) : null}
-            <div className="flex items-center gap-3">
-              <button type="button" className={`btn btn-ghost h-12 px-4 ${step === LAST ? "max-sm:px-3.5" : ""}`} onClick={() => go(step - 1)} disabled={Boolean(busy)} aria-label="Назад">
-                <ArrowLeft size={18} /> <span className={step === LAST ? "max-sm:hidden" : ""}>Назад</span>
+          <Completeness pct={comp.pct} miss={miss} todo={comp.todo.filter((t) => !t.req && !(t.anchor === "f-services" && miss.includes("services")))} go={goField} />
+
+          <Val.Provider value={val}>
+            <AboutSection f={f} set={set} niches={niches} nicheLock={nicheLock} initialNiche={initial.niche} draft={draft} sources={sources} need={secMissing(["name", "niche", "city"])} />
+            <ServicesSection f={f} set={set} niches={niches} sources={sources} need={secMissing(["services"])} />
+            <PhotosSection draft={draft} photos={photos} setPhotos={setPhotos} room={photoRoom} saved={savedPhotos} photoMax={photoMax} sources={sources} onLinks={() => { setLinkOpen(true); scrollTop(); }} editing={editing} />
+            <ContactsSection f={f} set={set} sources={sources} need={secMissing(["contact"])} />
+          </Val.Provider>
+
+          {/* Одна главная кнопка этапа — прилипает к низу экрана, пока анкета длиннее экрана */}
+          <div className="sticky bottom-[3.375rem] md:bottom-0 z-30 -mx-4 px-4 sm:mx-0 sm:px-0 pt-4 pb-2 md:pb-4 bg-linear-to-t from-paper from-65% to-paper/0">
+            <div className="card shadow-lg px-4 py-3 sm:px-5 grid gap-2.5 sm:flex sm:items-center sm:gap-4">
+              <div className={`min-w-0 flex-1 text-sm leading-snug ${!saveError && !miss.length ? "max-sm:hidden" : ""}`}>
+                {saveError ? (
+                  <p className="flex items-start gap-2 font-semibold text-bad" role="alert">
+                    <CircleAlert size={16} className="mt-0.5 shrink-0" />
+                    <span className="[overflow-wrap:anywhere]">Не сохранили. {saveError}</span>
+                  </p>
+                ) : miss.length ? (
+                  <p className="text-ink-2">
+                    <span className="font-semibold">Чтобы перейти дальше, заполните:</span>{" "}
+                    {miss.map((m, i) => (
+                      <span key={m}>
+                        <a href={`#${REQUIRED_ANCHOR[m]}`} className="underline underline-offset-4 decoration-bad/60 font-semibold text-bad" onClick={(e) => { e.preventDefault(); goField(REQUIRED_ANCHOR[m]); }}>{REQUIRED_TEXT[m]}</a>
+                        {i < miss.length - 1 ? ", " : ""}
+                      </span>
+                    ))}
+                  </p>
+                ) : (
+                  <p className="max-sm:hidden flex items-center gap-2 text-ink-2"><Check size={16} className="text-good shrink-0" /> <span>Всё нужное заполнено{comp.pct < 100 ? ` — анкета на ${comp.pct}%` : ""}.</span></p>
+                )}
+              </div>
+              <button type="button" className="btn btn-primary h-12 px-6 text-base shrink-0" onClick={save} disabled={Boolean(busy) || miss.length > 0} aria-disabled={miss.length > 0}>
+                {busy ? <Loader2 size={18} className="spin shrink-0" /> : <Check size={18} className="shrink-0" />}
+                {busy ?? saveLabel}
               </button>
-              <div className="flex-1" />
-              {step < LAST ? (
-                <button type="button" className="btn btn-primary h-12 px-6 text-base max-sm:flex-1" onClick={next_} disabled={Boolean(busy)}>
-                  Дальше <ArrowRight size={18} />
-                </button>
-              ) : (
-                <button type="button" className="btn btn-primary h-12 px-5 text-base max-sm:flex-1 max-sm:px-3 max-sm:text-[15px]" onClick={save} disabled={Boolean(busy)}>
-                  {busy ? <Loader2 size={18} className="spin shrink-0" /> : <Check size={18} className="shrink-0" />}
-                  {busy ?? saveLabel}
-                </button>
-              )}
             </div>
           </div>
         </>
-      )}
+      ) : null}
     </div>
   );
 }
 
-// ─── Прогресс и шаги ─────────────────────────────────────────────────
+// ─── Полнота анкеты ──────────────────────────────────────────────────
 
-function ProgressHeader({ step, max, go, pct, missing, locked }: {
-  step: number; max: number; go: (s: number) => void; pct: number; missing: boolean[]; locked: boolean;
-}) {
+function Completeness({ pct, miss, todo, go }: { pct: number; miss: Req[]; todo: { label: string; anchor: string }[]; go: (anchor: string) => void }) {
+  const [more, setMore] = useState(false);
+  const extra = todo.slice(0, more ? todo.length : 5);
+  const link = (label: string, anchor: string, bad = false) => (
+    <a key={label} href={`#${anchor}`} onClick={(e) => { e.preventDefault(); go(anchor); }}
+      className={`inline-flex items-center h-7 px-2.5 rounded-full text-[13px] font-semibold border ${bad ? "border-bad/40 bg-bad-soft text-bad" : "border-line bg-white text-ink-2 hover:border-ink"}`}>
+      {bad ? null : <Plus size={13} className="mr-1" />}{label}
+    </a>
+  );
   return (
-    <section className="card p-4 sm:p-5 grid gap-3.5" aria-label="Шаги анкеты">
+    <section className="card p-4 sm:px-6 sm:py-5 grid gap-3" aria-label="Заполненность анкеты">
       <div className="flex items-baseline justify-between gap-3">
-        <p className="font-extrabold text-lg leading-tight">
-          <span className="text-muted font-semibold text-base">Шаг {step + 1} из {STEPS.length}</span>
-          <span className="max-sm:block sm:before:content-['·'] sm:before:mx-2 sm:before:text-faint">{STEPS[step].title}</span>
-        </p>
-        <p className="text-sm text-muted whitespace-nowrap">Заполнено на <span className="font-semibold text-ink">{pct}%</span></p>
+        <p className="font-bold">Заполнено на {pct}%</p>
+        {miss.length ? <p className="text-sm text-bad font-semibold whitespace-nowrap">обязательно: {miss.length}</p> : <p className="text-sm text-good font-semibold inline-flex items-center gap-1"><Check size={15} /> обязательное есть</p>}
       </div>
       <div className="h-1.5 rounded-full bg-line overflow-hidden" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Заполненность анкеты">
         <div className="h-full rounded-full bg-mark transition-[width] duration-500" style={{ width: `${Math.max(2, pct)}%` }} />
       </div>
-      <ol className="grid grid-cols-5 gap-1">
-        {STEPS.map((s, i) => {
-          const cur = i === step;
-          const reached = i <= max;
-          const ok = reached && !cur && !missing[i] && i !== max;
-          const warn = reached && !cur && missing[i] && i < max;
-          return (
-            <li key={s.title} className="min-w-0">
-              <button
-                type="button"
-                onClick={() => go(i)}
-                disabled={!reached || cur || locked}
-                aria-current={cur ? "step" : undefined}
-                title={reached ? s.title : "Сначала заполните предыдущие шаги"}
-                className={`w-full grid justify-items-center gap-1.5 rounded-lg px-1 py-1.5 transition-colors ${reached && !cur ? "hover:bg-paper cursor-pointer" : "cursor-default"} disabled:opacity-100`}
-              >
-                <span className="relative w-full grid place-items-center">
-                  {i > 0 ? <span className={`absolute left-[calc(-50%+1.1rem)] right-[calc(50%+1.1rem)] top-1/2 h-0.5 -translate-y-1/2 rounded ${i <= max ? "bg-ink/70" : "bg-line"}`} aria-hidden /> : null}
-                  <span className={`relative grid place-items-center size-7 rounded-full text-sm font-bold ${cur ? "bg-ink text-white ring-4 ring-ink/10" : ok ? "bg-good text-white" : warn ? "bg-mark text-ink" : reached ? "bg-white text-ink border-2 border-ink/70" : "bg-paper text-faint border border-line"}`}>
-                    {ok ? <Check size={15} strokeWidth={3} /> : i + 1}
-                  </span>
-                </span>
-                <span className={`text-[11px] sm:text-sm font-semibold leading-tight text-center truncate max-w-full ${cur ? "text-ink" : reached ? "text-ink-2" : "text-faint"}`}>
-                  <span className="lg:hidden">{s.short}</span>
-                  <span className="max-lg:hidden">{s.title}</span>
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ol>
+      {miss.length ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-sm text-muted mr-1">Не хватает:</span>
+          {miss.map((m) => link(REQUIRED_TEXT[m], REQUIRED_ANCHOR[m], true))}
+        </div>
+      ) : null}
+      {todo.length ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-sm text-muted mr-1">Для сильных объявлений:</span>
+          {extra.map((t) => link(t.label, t.anchor))}
+          {todo.length > 5 && !more ? <button type="button" className="text-sm font-semibold text-muted underline underline-offset-4" onClick={() => setMore(true)}>ещё {todo.length - 5}</button> : null}
+        </div>
+      ) : null}
     </section>
   );
 }
 
-// ─── Шаг 1: ссылки ───────────────────────────────────────────────────
+// ─── Ссылки ──────────────────────────────────────────────────────────
 
-function LinkStep({ links, setLinks, rows, running, onRun, revisit, editing, changes, onReplace, onSkip, otherProjects, error }: {
-  links: string[]; setLinks: React.Dispatch<React.SetStateAction<string[]>>; rows: Row[]; running: boolean; onRun: () => void; revisit: boolean; editing: boolean;
-  changes: { list: Change[]; summary: string[] } | null; onReplace: (c: Change) => void; onSkip: () => void; otherProjects: number; error: string | null;
+function LinkBlock({ mode, links, all, setLinks, rows, running, onRun, draft, editing, changes, onReplace, onManual, onOpen, onClose, otherProjects, error }: {
+  mode: "intro" | "open" | "collapsed";
+  links: string[]; all: SourceLink[]; setLinks: (v: string[] | ((l: string[]) => string[])) => void; rows: Row[]; running: boolean; onRun: () => void; draft: Draft | null; editing: boolean;
+  changes: { list: Change[]; summary: string[] } | null; onReplace: (c: Change) => void; onManual: () => void; onOpen: () => void; onClose: () => void; otherProjects: number; error: string | null;
 }) {
   const setAt = (i: number, v: string) => setLinks((l) => l.map((x, j) => (j === i ? v : x)));
   const done = rows.filter((r) => r.state !== "loading").length;
   const added = changes?.list.filter((c) => c.kind === "added") ?? [];
   const kept = changes?.list.filter((c) => c.kind === "kept") ?? [];
+  const intro = mode === "intro";
+
+  if (mode === "collapsed") {
+    const found = [...new Set((draft?.reports ?? []).filter((r) => r.status === "ok" || r.status === "partial").map((r) => (r.kind === "site" ? hostOf(r.url) : KIND_LABEL[r.kind])))];
+    return (
+      <section className="card px-4 sm:px-6 py-3 flex flex-wrap items-center gap-x-3 gap-y-1.5" aria-label="Ссылки на бизнес">
+        <span className="grid place-items-center size-8 rounded-full bg-paper shrink-0">{found.length || all.length ? <Link2 size={16} /> : <PenLine size={16} />}</span>
+        <div className="min-w-0 flex-1 text-[15px] leading-snug">
+          {all.length ? (
+            <>
+              <span className="text-muted mr-1.5">Ссылки:</span>
+              <span className="inline-flex flex-wrap gap-1.5 align-middle">
+                {all.map((l) => (
+                  <a key={l.url} href={l.url} target="_blank" rel="noreferrer" title={l.url}
+                    className="inline-flex items-center gap-1 max-w-full rounded-full border border-line bg-white px-2.5 h-7 text-[13px] hover:border-ink">
+                    <span className="font-semibold whitespace-nowrap">{LINK_LABEL[l.kind]}</span>
+                    {l.kind === "site" || l.kind === "other" ? <span className="text-muted truncate">{shortLink(l.url, 28)}</span> : null}
+                  </a>
+                ))}
+              </span>
+              {found.length ? <span className="block text-sm text-muted mt-1">Данные прочитали из: {found.join(", ")}</span> : null}
+            </>
+          ) : found.length ? <><span className="text-muted">Данные из:</span> <span className="font-semibold [overflow-wrap:anywhere]">{found.join(", ")}</span></>
+            : <span className="text-muted">Заполняете вручную. Есть сайт или карточка на картах — подставим данные сами.</span>}
+        </div>
+        <button type="button" className="text-sm font-semibold underline underline-offset-4 whitespace-nowrap hover:text-ink text-ink-2" onClick={onOpen}>
+          {found.length || all.length ? "Изменить ссылки" : "Заполнить по ссылке"}
+        </button>
+      </section>
+    );
+  }
+
   return (
-    <section className="card overflow-hidden">
-      <div className="p-5 sm:p-8 grid grid-cols-[minmax(0,1fr)] gap-5">
-        <div className="grid gap-1.5">
-          <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight">{revisit ? "Ссылки на ваш бизнес" : "Есть сайт или карточка на картах?"}</h2>
-          <p className="text-muted leading-relaxed max-w-xl">
-            {revisit
-              ? "Добавьте или поменяйте ссылку и прочитайте ещё раз. То, что вы уже заполнили, не затрём — только допишем пустое и покажем, что отличается."
-              : "Вставьте ссылку — сами заполним адрес, часы, телефон, услуги с ценами и фото, вам останется проверить. Нет ссылки — пропустите шаг и заполните вручную."}
-          </p>
+    <section className="card overflow-hidden" aria-label="Ссылки на бизнес">
+      <div className={`grid grid-cols-[minmax(0,1fr)] gap-5 ${intro ? "p-5 sm:p-8" : "p-5 sm:p-6"}`}>
+        <div className="flex items-start gap-3">
+          <div className="grid gap-1.5 flex-1 min-w-0">
+            <h2 className={`${intro ? "text-xl sm:text-2xl" : "text-lg sm:text-xl"} font-extrabold tracking-tight`}>{intro ? "Есть сайт или карточка на картах?" : "Ссылки на ваш бизнес"}</h2>
+            <p className="text-muted leading-relaxed max-w-xl">
+              {intro
+                ? "Вставьте ссылку — сами заполним адрес, часы, телефон, услуги с ценами и фото, вам останется проверить. Нет ссылки — заполните вручную."
+                : "Добавьте или поменяйте ссылку и прочитайте ещё раз. То, что вы уже заполнили, не затрём — только допишем пустое и покажем, что отличается."}
+            </p>
+          </div>
+          {!intro && !running ? (
+            <button type="button" className="p-2 -m-1 rounded-md text-muted hover:text-ink hover:bg-paper" aria-label="Свернуть" onClick={onClose}><ChevronDown size={20} className="rotate-180" /></button>
+          ) : null}
         </div>
 
         <form
@@ -573,7 +675,7 @@ function LinkStep({ links, setLinks, rows, running, onRun, revisit, editing, cha
             if (!running) onRun();
           }}
         >
-          <label htmlFor="link-0" className="label mb-0">Сайт, Яндекс Карты, 2ГИС, Taplink, VK или YCLIENTS</label>
+          <label htmlFor="link-0" className="label mb-0">Сайт, Яндекс Карты, 2ГИС, DIKIDI, Taplink, VK или YCLIENTS — все ссылки сохраним в настройках</label>
           {links.map((v, i) => {
             const kind = guessKind(v);
             return (
@@ -581,7 +683,7 @@ function LinkStep({ links, setLinks, rows, running, onRun, revisit, editing, cha
                 <Link2 size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-faint pointer-events-none" aria-hidden />
                 <input
                   id={`link-${i}`}
-                  className={`field h-14 text-base sm:text-lg pl-11 pr-28 ${error && i === 0 && !v.trim() ? "border-bad" : ""}`}
+                  className={`field ${intro ? "h-14 text-base sm:text-lg" : "h-12"} pl-11 pr-28 ${error && i === 0 && !v.trim() ? "border-bad" : ""}`}
                   value={v}
                   onChange={(e) => setAt(i, e.target.value)}
                   onPaste={(e) => {
@@ -589,7 +691,7 @@ function LinkStep({ links, setLinks, rows, running, onRun, revisit, editing, cha
                     const parts = text.split(/[\s,;]+/).filter((p) => /\.[a-zа-я]{2,}/i.test(p));
                     if (parts.length > 1) {
                       e.preventDefault();
-                      setLinks((l) => [...l.slice(0, i), ...parts, ...l.slice(i + 1)].filter((x, j, a) => x || j === a.length - 1).slice(0, MAX_LINKS));
+                      setLinks([...links.slice(0, i), ...parts, ...links.slice(i + 1)].filter((x, j, a) => x || j === a.length - 1).slice(0, MAX_LINKS));
                     }
                   }}
                   placeholder={i === 0 ? "lak-studio.ru или yandex.ru/maps/org/…" : "Ещё одна ссылка"}
@@ -601,12 +703,12 @@ function LinkStep({ links, setLinks, rows, running, onRun, revisit, editing, cha
                   maxLength={500}
                   aria-invalid={error && i === 0 ? true : undefined}
                   aria-describedby={error && i === 0 ? "link-error" : undefined}
-                  autoFocus={i === 0 && !revisit && !v}
+                  autoFocus={i === 0 && intro && !v}
                 />
                 <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
                   {kind ? <span className="pill bg-info-soft text-ink-2 max-w-[6.5rem] truncate">{KIND_LABEL[kind]}</span> : null}
                   {links.length > 1 && !running ? (
-                    <button type="button" aria-label="Убрать ссылку" onClick={() => setLinks((l) => l.filter((_, j) => j !== i))} className="p-1.5 rounded-md text-muted hover:text-ink hover:bg-paper">
+                    <button type="button" aria-label="Убрать ссылку" onClick={() => setLinks(links.filter((_, j) => j !== i))} className="p-1.5 rounded-md text-muted hover:text-ink hover:bg-paper">
                       <X size={16} />
                     </button>
                   ) : null}
@@ -616,19 +718,23 @@ function LinkStep({ links, setLinks, rows, running, onRun, revisit, editing, cha
           })}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
             {links.length < MAX_LINKS && !running ? (
-              <button type="button" className="inline-flex items-center gap-1.5 text-sm font-semibold hover:underline underline-offset-4" onClick={() => setLinks((l) => [...l, ""])}>
+              <button type="button" className="inline-flex items-center gap-1.5 text-sm font-semibold hover:underline underline-offset-4" onClick={() => setLinks([...links, ""])}>
                 <Plus size={16} /> ещё ссылка
               </button>
             ) : null}
-            <p className="text-sm text-faint [overflow-wrap:anywhere]">
-              Например: {EXAMPLES.slice(0, 3).map((x, i) => (
-                <span key={x}>
-                  <code className="font-sans text-muted">{x}</code>
-                  {i < 2 ? ", " : ""}
-                </span>
-              ))}
-            </p>
+            {intro ? (
+              <p className="text-sm text-faint [overflow-wrap:anywhere]">
+                Например: {EXAMPLES.slice(0, 3).map((x, i) => (
+                  <span key={x}>
+                    <code className="font-sans text-muted">{x}</code>
+                    {i < 2 ? ", " : ""}
+                  </span>
+                ))}
+              </p>
+            ) : null}
           </div>
+
+          {links.filter((l) => l.trim()).length > READ_LINKS ? <p className="hint">Прочитаем первые {READ_LINKS} ссылок, сохраним все.</p> : null}
 
           {error ? (
             <p id="link-error" className="flex items-start gap-2 text-sm font-semibold text-bad" role="alert">
@@ -663,35 +769,38 @@ function LinkStep({ links, setLinks, rows, running, onRun, revisit, editing, cha
             </div>
           ) : null}
 
-          {/* Одно главное действие: прочитать ссылку. Пропуск — второстепенная ссылка-кнопка */}
-          <div className="grid sm:flex sm:items-center gap-3 sm:gap-5 pt-1">
-            {changes ? (
-              <>
-                <button type="button" className="btn btn-primary h-12 px-6 text-base" onClick={onSkip}>
-                  Дальше <ArrowRight size={18} />
+          {intro ? (
+            // Два равноправных пути: по ссылке (главный) или вручную
+            <div className="grid sm:flex sm:items-center gap-3 pt-1">
+              <button className="btn btn-primary h-12 px-6 text-base" disabled={running}>
+                {running ? <Loader2 size={18} className="spin" /> : <Link2 size={18} />}
+                {running ? "Читаем…" : "Заполнить по ссылке"}
+              </button>
+              <button type="button" className="btn btn-ghost h-12 px-5 text-base" onClick={onManual} disabled={running}>
+                <PenLine size={17} /> Заполнить вручную
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              <button className="btn btn-ghost h-11 px-5" disabled={running}>
+                {running ? <Loader2 size={16} className="spin" /> : <RotateCcw size={16} />}
+                {running ? "Читаем…" : changes ? "Прочитать ещё раз" : "Прочитать ссылки"}
+              </button>
+              {!running ? (
+                <button type="button" className="h-11 px-2 text-[15px] font-semibold text-muted hover:text-ink underline underline-offset-4" onClick={onClose}>
+                  {changes ? "Готово" : "Отмена"}
                 </button>
-                <button className="btn btn-ghost h-12 px-5" disabled={running}>
-                  <RotateCcw size={16} /> Прочитать ещё раз
-                </button>
-              </>
-            ) : (
-              <>
-                <button className="btn btn-primary h-12 px-6 text-base" disabled={running}>
-                  {running ? <Loader2 size={18} className="spin" /> : null}
-                  {running ? "Читаем…" : revisit ? "Прочитать ещё раз" : "Заполнить по ссылке"}
-                </button>
-                <button type="button" className="h-11 text-[15px] font-semibold text-muted hover:text-ink underline underline-offset-4 disabled:opacity-50" onClick={onSkip} disabled={running}>
-                  {revisit ? "Дальше без повторного чтения" : "Пропустить — заполню вручную"}
-                </button>
-              </>
-            )}
-          </div>
+              ) : null}
+            </div>
+          )}
         </form>
       </div>
-      <div className="border-t border-line bg-paper/60 px-5 sm:px-8 py-3.5 text-sm text-muted leading-relaxed">
-        Берём только то, что опубликовано на ваших страницах, — ничего не придумываем.
-        {editing || otherProjects ? " Это другой бизнес? Заведите его отдельно: «Новый проект» в переключателе проектов." : ""}
-      </div>
+      {intro ? (
+        <div className="border-t border-line bg-paper/60 px-5 sm:px-8 py-3.5 text-sm text-muted leading-relaxed">
+          Берём только то, что опубликовано на ваших страницах, — ничего не придумываем.
+          {editing || otherProjects ? " Это другой бизнес? Заведите его отдельно: «Новый проект» в переключателе проектов." : ""}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -731,15 +840,20 @@ function SourceChip({ label }: { label?: string }) {
   return <span className={`pill ${warn ? "bg-warn-soft text-warn" : "bg-good-soft text-good"} font-medium`}>{label}</span>;
 }
 
-/** Показывать ли ошибки обязательных полей: только после попытки нажать «Дальше» на этом шаге */
-const ShowErr = createContext(false);
+/** Проверка обязательных полей: чего не хватает и где уже пора показывать ошибку */
+const Val = createContext<{ miss: Req[]; shown: (k: Req) => boolean; touch: (k: Req) => void }>({ miss: [], shown: () => false, touch: () => {} });
 
-/** Строка карточки: подпись + чип источника слева, значение справа (на телефоне — друг под другом) */
-function Field({ label, htmlFor, chip, missing, missingText, hint, id, children }: { label: string; htmlFor?: string; chip?: string; missing?: boolean; missingText?: string; hint?: string; id?: string; children: React.ReactNode }) {
-  const showErr = useContext(ShowErr);
-  const error = missing && showErr;
+/**
+ * Строка раздела: подпись + чип источника слева, значение справа (на телефоне — друг под другом).
+ * req — обязательное поле: ошибка у поля появляется, когда из него ушли пустым или нажали «Сохранить».
+ */
+function Field({ label, htmlFor, chip, req, missingText, hint, id, children }: { label: string; htmlFor?: string; chip?: string; req?: Req; missingText?: string; hint?: string; id?: string; children: React.ReactNode }) {
+  const v = useContext(Val);
+  const missing = req ? v.miss.includes(req) : false;
+  const error = missing && req ? v.shown(req) : false;
   return (
-    <div id={id} data-missing={error ? "true" : undefined} className={`grid gap-1.5 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4 py-3.5 px-4 sm:px-6 scroll-mt-24 ${error ? "bg-bad-soft/60" : ""}`}>
+    <div id={id} data-missing={error ? "true" : undefined} onBlurCapture={req ? () => v.touch(req) : undefined}
+      className={`grid gap-1.5 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4 py-3.5 px-4 sm:px-6 scroll-mt-28 transition-colors ${error ? "bg-bad-soft/60" : ""}`}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 sm:block sm:pt-2.5">
         <label htmlFor={htmlFor} className="text-sm font-semibold">{label}</label>
         {missing && !error ? (
@@ -761,34 +875,41 @@ function Field({ label, htmlFor, chip, missing, missingText, hint, id, children 
   );
 }
 
-function StepCard({ title, text, tips, showErr = false, children }: { title: string; text?: string; tips?: string[]; showErr?: boolean; children: React.ReactNode }) {
+/** Раздел анкеты. need — чего не хватает из обязательного (null — раздел необязательный) */
+function SectionCard({ id, title, text, need, children }: { id: string; title: string; text?: string; need: string[] | null; children: React.ReactNode }) {
   return (
-    <section className="card overflow-hidden">
+    <section id={id} className="card overflow-hidden scroll-mt-6" aria-labelledby={`${id}-h`}>
       <header className="p-5 sm:px-6 sm:pt-6 sm:pb-5 border-b border-line">
-        <h2 className="text-xl font-extrabold tracking-tight">{title}</h2>
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <h2 id={`${id}-h`} className="text-xl font-extrabold tracking-tight">{title}</h2>
+          {need === null ? (
+            <span className="text-sm text-muted">Необязательно</span>
+          ) : need.length ? (
+            <span className="text-sm font-semibold text-bad">Нужно: {need.join(", ")}</span>
+          ) : (
+            <span className="text-sm font-semibold text-good inline-flex items-center gap-1"><Check size={15} /> Готово</span>
+          )}
+        </div>
         {text ? <p className="text-muted mt-1 leading-relaxed">{text}</p> : null}
-        {tips?.length ? <p className="text-sm text-ink-2 mt-2 leading-snug"><span className="font-semibold">Для сильных объявлений добавьте:</span> {tips.join(", ")} — необязательно.</p> : null}
       </header>
-      <ShowErr.Provider value={showErr}>
-        <div className="divide-y divide-line">{children}</div>
-      </ShowErr.Provider>
+      <div className="divide-y divide-line">{children}</div>
     </section>
   );
 }
 
 type SetF = <K extends keyof BusinessInput>(k: K, v: BusinessInput[K]) => void;
 
-// ─── Шаг 2: о бизнесе ────────────────────────────────────────────────
+// ─── Основное ────────────────────────────────────────────────────────
 
-function AboutStep({ f, set, niches, nicheLock, initialNiche, draft, sources, miss, showErr, tips }: {
-  f: BusinessInput; set: SetF; niches: NicheLite[]; nicheLock: "launched" | "plan" | null; initialNiche: string; draft: Draft | null; sources: Partial<Record<DraftField, string>>; miss: Draft["missing"]; showErr: boolean; tips: string[];
+function AboutSection({ f, set, niches, nicheLock, initialNiche, draft, sources, need }: {
+  f: BusinessInput; set: SetF; niches: NicheLite[]; nicheLock: "launched" | "plan" | null; initialNiche: string; draft: Draft | null; sources: Partial<Record<DraftField, string>>; need: string[];
 }) {
   const found = draft?.advantagesFound ?? [];
   const advList = f.advantages.filter((a) => a.trim());
   const notes = draft?.reports.filter((r) => r.status !== "ok" && r.message) ?? [];
   const addresses = draft?.addresses ?? [];
   return (
-    <StepCard title="О бизнесе" showErr={showErr} tips={tips} text={draft ? "Проверьте, что нашли, и поправьте, если что-то не так. Зелёная метка — откуда взяли." : "Главное о вас — из этого робот пишет объявления. Обязательны название, сфера и город."}>
+    <SectionCard id="sec-about" title="Основное" need={need} text={draft ? "Проверьте, что нашли, и поправьте, если что-то не так. Зелёная метка — откуда взяли." : "Главное о вас — из этого робот пишет объявления. Обязательны название, сфера и город."}>
       {notes.length ? (
         <ul className="grid gap-1.5 px-4 sm:px-6 py-3">
           {notes.map((n) => (
@@ -799,11 +920,11 @@ function AboutStep({ f, set, niches, nicheLock, initialNiche, draft, sources, mi
           ))}
         </ul>
       ) : null}
-      <Field label="Название" htmlFor="r-name" chip={sources.name} missing={miss.includes("name")} missingText="Укажите название">
+      <Field label="Название" htmlFor="r-name" chip={sources.name} req="name" id="f-name" missingText="Укажите название">
         <input id="r-name" className="field" value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="Студия «Лак»" maxLength={80} />
       </Field>
 
-      <Field label="Чем занимаетесь" htmlFor="r-niche" chip={sources.niche} missing={miss.includes("niche")} missingText="Выберите сферу">
+      <Field label="Чем занимаетесь" htmlFor="r-niche" chip={sources.niche} req="niche" id="f-niche" missingText="Выберите сферу">
         <select id="r-niche" className="field pr-8" value={f.niche} onChange={(e) => set("niche", e.target.value)} disabled={nicheLock === "launched"}>
           <option value="" disabled>Выберите…</option>
           {niches.map((n) => <option key={n.id} value={n.id}>{n.label}</option>)}
@@ -811,7 +932,7 @@ function AboutStep({ f, set, niches, nicheLock, initialNiche, draft, sources, mi
         {nicheLock === "launched" ? <p className="hint mt-1.5">Сферу нельзя сменить, пока реклама запущена.</p> : nicheLock === "plan" && f.niche !== initialNiche ? <p className="mt-1.5 text-sm text-warn">План объявлений подготовим заново под новую сферу.</p> : null}
       </Field>
 
-      <Field label="Город и адрес" htmlFor="r-city" chip={sources.address ?? sources.city} missing={miss.includes("city")} missingText="Укажите город">
+      <Field label="Город и адрес" htmlFor="r-city" chip={sources.address ?? sources.city} req="city" id="f-city" missingText="Укажите город">
         <div className="grid gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
           <input id="r-city" className="field" value={f.city} onChange={(e) => set("city", e.target.value)} placeholder="Город" maxLength={60} aria-label="Город" />
           <input className="field" value={f.address} onChange={(e) => set("address", e.target.value)} placeholder="Улица, дом" maxLength={200} aria-label="Адрес" />
@@ -837,7 +958,7 @@ function AboutStep({ f, set, niches, nicheLock, initialNiche, draft, sources, mi
         <input id="r-hours" className="field" value={f.hours} onChange={(e) => set("hours", e.target.value)} placeholder="Ежедневно 10:00–21:00" maxLength={80} />
       </Field>
 
-      <Field label="Почему выбирают вас" htmlFor="r-adv" chip={sources.advantages} hint="Каждое с новой строки, до 8. Только правда — объявления строятся на этих фактах.">
+      <Field label="Почему выбирают вас" htmlFor="r-adv" chip={sources.advantages} id="f-adv" hint="Каждое с новой строки, до 8. Только правда — объявления строятся на этих фактах.">
         {found.length ? (
           <div className="mb-2.5 grid gap-1.5">
             <p className="text-sm text-muted">Нашли {found.length} {plural(found.length, "факт", "факта", "фактов")} — отметьте, что взять:</p>
@@ -875,16 +996,16 @@ function AboutStep({ f, set, niches, nicheLock, initialNiche, draft, sources, mi
         </Field>
       ) : null}
 
-      <Field label="Отзыв клиента" htmlFor="r-review" chip={sources.review} hint="Настоящий отзыв — сделаем из него рекламную картинку.">
+      <Field label="Отзыв клиента" htmlFor="r-review" chip={sources.review} id="f-review" hint="Настоящий отзыв — сделаем из него рекламную картинку.">
         <textarea id="r-review" className="field" rows={2} value={f.review} onChange={(e) => set("review", e.target.value)} maxLength={300} placeholder="Хожу к Алине второй год — маникюр ни разу не скололся раньше чем через три недели." />
       </Field>
-    </StepCard>
+    </SectionCard>
   );
 }
 
-// ─── Шаг 3: услуги и цены по разделам ────────────────────────────────
+// ─── Услуги и цены по разделам прайса ────────────────────────────────
 
-function ServicesStep({ f, set, niches, sources, miss, showErr, tips }: { f: BusinessInput; set: SetF; niches: NicheLite[]; sources: Partial<Record<DraftField, string>>; miss: Draft["missing"]; showErr: boolean; tips: string[] }) {
+function ServicesSection({ f, set, niches, sources, need }: { f: BusinessInput; set: SetF; niches: NicheLite[]; sources: Partial<Record<DraftField, string>>; need: string[] }) {
   const niche = niches.find((n) => n.id === f.niche);
   const services = f.services.length ? f.services : [{ name: "", price: "" }];
   const groups = groupServices(services);
@@ -904,8 +1025,8 @@ function ServicesStep({ f, set, niches, sources, miss, showErr, tips }: { f: Bus
   const priced = services.filter((s) => s.name.trim() && s.price?.trim()).length;
 
   return (
-    <StepCard title="Услуги и цены" showErr={showErr} tips={tips} text={`${services.filter((s) => s.name.trim()).length} из ${MAX_SERVICES} услуг, ${priced} с ценами. Разделы прайса — как на вашем сайте: по ним робот сделает отдельные группы объявлений.`}>
-      <Field label="Прайс" chip={sources.services} missing={miss.includes("services")} missingText="Добавьте хотя бы одну услугу">
+    <SectionCard id="sec-services" title="Услуги и цены" need={need} text={`${services.filter((s) => s.name.trim()).length} из ${MAX_SERVICES} услуг, ${priced} с ценами. Разделы прайса — как на вашем сайте: по ним робот сделает отдельные группы объявлений.`}>
+      <Field label="Прайс" chip={sources.services} req="services" id="f-services" missingText="Добавьте хотя бы одну услугу">
         <div className="grid gap-4">
           {groups.map((g, gi) => {
             const showAll = open.has(g.category) || g.items.length <= SHOW_SERVICES + 2;
@@ -957,23 +1078,23 @@ function ServicesStep({ f, set, niches, sources, miss, showErr, tips }: { f: Bus
           ) : null}
         </div>
       </Field>
-      <Field label="Предложение для новых клиентов" htmlFor="r-offer" chip={sources.offer} hint="Необязательно, но такие объявления кликают чаще.">
+      <Field label="Предложение для новых клиентов" htmlFor="r-offer" chip={sources.offer} id="f-offer" hint="Необязательно, но такие объявления кликают чаще.">
         <input id="r-offer" className="field" value={f.offer} onChange={(e) => set("offer", e.target.value)} placeholder="−20% на первый визит" maxLength={80} />
       </Field>
-    </StepCard>
+    </SectionCard>
   );
 }
 
-// ─── Шаг 4: фото ─────────────────────────────────────────────────────
+// ─── Фото ────────────────────────────────────────────────────────────
 
-function PhotosStep({ draft, photos, setPhotos, room, saved, photoMax, sources, onLinks, editing, tips }: {
+function PhotosSection({ draft, photos, setPhotos, room, saved, photoMax, sources, onLinks, editing }: {
   draft: Draft | null; photos: string[]; setPhotos: React.Dispatch<React.SetStateAction<string[]>>; room: number; saved: string[]; photoMax: number;
-  sources: Partial<Record<DraftField, string>>; onLinks: () => void; editing: boolean; tips: string[];
+  sources: Partial<Record<DraftField, string>>; onLinks: () => void; editing: boolean;
 }) {
   const [broken, setBroken] = useState<Set<string>>(new Set());
   const found = (draft?.photos ?? []).filter((p) => !broken.has(p));
   return (
-    <StepCard title="Фото" tips={tips} text="Настоящие фото салона и работ — для объявлений с картинками. Шаг необязательный: фото можно добавить и позже.">
+    <SectionCard id="sec-photos" title="Фото" need={null} text="Настоящие фото салона и работ — для объявлений с картинками. Можно добавить и позже.">
       {saved.length ? (
         <Field label="Уже загружены">
           <div className="grid grid-cols-5 sm:grid-cols-8 gap-1.5">
@@ -985,7 +1106,7 @@ function PhotosStep({ draft, photos, setPhotos, room, saved, photoMax, sources, 
           <p className="hint mt-1.5">{saved.length} из {photoMax}. Загрузить свои или удалить — в разделе «Реклама».</p>
         </Field>
       ) : null}
-      <Field label={draft ? `Нашли ${draft.photos.length} фото` : "С сайта"} chip={sources.photos}>
+      <Field label={draft ? `Нашли ${draft.photos.length} фото` : "С сайта"} chip={sources.photos} id="f-photos">
         {found.length ? (
           <div className="grid gap-2.5">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm">
@@ -1024,16 +1145,16 @@ function PhotosStep({ draft, photos, setPhotos, room, saved, photoMax, sources, 
           </div>
         )}
       </Field>
-    </StepCard>
+    </SectionCard>
   );
 }
 
-// ─── Шаг 5: контакты и юр. данные ────────────────────────────────────
+// ─── Контакты и юр. данные ───────────────────────────────────────────
 
-function ContactsStep({ f, set, sources, miss, showErr, tips }: { f: BusinessInput; set: SetF; sources: Partial<Record<DraftField, string>>; miss: Draft["missing"]; showErr: boolean; tips: string[] }) {
+function ContactsSection({ f, set, sources, need }: { f: BusinessInput; set: SetF; sources: Partial<Record<DraftField, string>>; need: string[] }) {
   return (
-    <StepCard title="Контакты и юр. данные" showErr={showErr} tips={tips} text="Куда писать и звонить клиентам, и данные для маркировки рекламы. Обязателен телефон или мессенджер.">
-      <Field label="Телефон и мессенджеры" htmlFor="r-phone" chip={sources.phone ?? sources.whatsapp ?? sources.telegram} missing={miss.includes("contact")} missingText="Укажите телефон, WhatsApp или Telegram">
+    <SectionCard id="sec-contacts" title="Контакты и юр. данные" need={need} text="Куда писать и звонить клиентам, и данные для маркировки рекламы. Обязателен телефон или мессенджер.">
+      <Field label="Телефон и мессенджеры" htmlFor="r-phone" chip={sources.phone ?? sources.whatsapp ?? sources.telegram} req="contact" id="f-contact" missingText="Укажите телефон, WhatsApp или Telegram">
         <div className="grid gap-2 sm:grid-cols-3">
           <label className="grid gap-1">
             <span className="text-xs text-muted">Телефон</span>
@@ -1055,6 +1176,10 @@ function ContactsStep({ f, set, sources, miss, showErr, tips }: { f: BusinessInp
       <Field label="Яндекс Карты" htmlFor="r-org" chip={sources.orgUrl} id="org" hint="Карточка → «Поделиться» → «Скопировать ссылку». С ней реклама показывается на Картах, а звонки из объявлений считаются.">
         <input id="r-org" className="field" value={f.orgUrl} onChange={(e) => set("orgUrl", e.target.value)} placeholder="yandex.ru/maps/org/lak/1234567890" maxLength={500} inputMode="url" />
       </Field>
+      <Field label="2ГИС" htmlFor="r-dgis" id="dgis" hint="Карточка в 2ГИС → «Поделиться» → «Скопировать ссылку». Покажем её в настройках; реклама в Директе всё равно привязывается к Яндекс Картам.">
+        <input id="r-dgis" className="field" value={f.dgisUrl ?? ""} onChange={(e) => set("dgisUrl", e.target.value)} placeholder="2gis.ru/kazan/firm/70000001234567890" maxLength={500} inputMode="url" />
+        {f.dgisUrl?.trim() && normalizeLink(f.dgisUrl) && linkKind(normalizeLink(f.dgisUrl)!) !== "dgis" ? <p className="mt-1.5 text-sm text-warn">Это не похоже на ссылку 2ГИС — проверьте адрес.</p> : null}
+      </Field>
       <Field label="Юр. данные" htmlFor="r-legal" chip={sources.legalInfo} id="legal" hint="ИП или ООО, ФИО или название и ИНН — для маркировки рекламы (ЕРИР). VK без них не пропускает объявления.">
         <input id="r-legal" className="field" value={f.legalInfo} onChange={(e) => set("legalInfo", e.target.value)} placeholder="ИП Иванова А. С., ИНН 165012345678" maxLength={200} />
         {/^ИП,\s*ИНН/.test(f.legalInfo.trim()) ? <p className="mt-1.5 text-sm text-warn">Допишите ФИО после «ИП» — так, как в выписке.</p> : null}
@@ -1068,7 +1193,7 @@ function ContactsStep({ f, set, sources, miss, showErr, tips }: { f: BusinessInp
           <span className="w-28 text-right font-semibold">{Math.round(f.leadToClientRate * 10)} из 10</span>
         </div>
       </Field>
-    </StepCard>
+    </SectionCard>
   );
 }
 

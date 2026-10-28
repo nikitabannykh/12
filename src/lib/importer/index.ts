@@ -13,10 +13,11 @@ import type { Draft, Found, ImportEvent, ImportService, SourceKind } from "./typ
 import { SOURCE_NAME } from "./types";
 import { fetchPage, FetchError } from "./fetch";
 import { parseSite } from "./sources/site";
-import { isYandexMaps, readYandex } from "./sources/yandex";
-import { isDgis, readDgis } from "./sources/dgis";
-import { isDikidi, readDikidi } from "./sources/dikidi";
-import { isTaplink, isVk, isYclients, readTaplink, readVk, readYclients } from "./sources/social";
+import { readYandex } from "./sources/yandex";
+import { readDgis } from "./sources/dgis";
+import { readDikidi } from "./sources/dikidi";
+import { readTaplink, readVk, readYclients } from "./sources/social";
+import { hostKind } from "./hosts";
 import { mergeFound, missingOf, report, summarize } from "./merge";
 import { addressKey, categoryFromName, dedupeAdvantages, finalizeCategories, cleanAdvantage, cleanDescription, cleanServiceName, normalizePrice, uniq } from "./normalize";
 import { photoKey } from "./html";
@@ -43,18 +44,7 @@ export function normalizeInput(raw: string): string | null {
 }
 
 export function kindOf(url: string): SourceKind {
-  try {
-    const u = new URL(url);
-    if (isYandexMaps(u)) return "yandex";
-    if (isDgis(u)) return "dgis";
-    if (isDikidi(u)) return "dikidi";
-    if (isYclients(u)) return "yclients";
-    if (isTaplink(u)) return "taplink";
-    if (isVk(u)) return "vk";
-  } catch {
-    /* сайт */
-  }
-  return "site";
+  return hostKind(url);
 }
 
 const siteError = (url: string, e: unknown): Found => {

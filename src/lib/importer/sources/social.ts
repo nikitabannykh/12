@@ -13,9 +13,7 @@ import { fetchPage } from "../fetch";
 
 type O = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-export const isTaplink = (u: URL) => /(^|\.)taplink\.(cc|ru|at|me|ws)$/i.test(u.hostname);
-export const isVk = (u: URL) => /(^|\.)(vk\.com|vk\.ru|vkontakte\.ru)$/i.test(u.hostname);
-export const isYclients = (u: URL) => /(^|\.)yclients\.(com|ru)$/i.test(u.hostname);
+export { isTaplink, isVk, isYclients } from "../hosts";
 
 /** window.data Taplink → строки текста и ссылки */
 function taplinkBlocks(data: unknown): { lines: string[]; hrefs: string[] } {

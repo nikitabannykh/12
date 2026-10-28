@@ -16,7 +16,7 @@ import { fetchJson, fetchPage, FetchError } from "../fetch";
 
 type O = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-export const isYandexMaps = (u: URL) => /(^|\.)(yandex\.(ru|com|kz|by|uz|com\.tr|com\.am|az|fr)|ya\.ru)$/i.test(u.hostname) && /^\/(web-)?maps\b/.test(u.pathname);
+export { isYandexMaps } from "../hosts";
 
 /** Что видно из самой ссылки: id организации, «слаг» названия, город */
 export function yandexFromUrl(url: string): { orgId: string | null; slug: string; city: string } {

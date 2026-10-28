@@ -13,7 +13,7 @@ import { fetchJson, fetchPage } from "../fetch";
 
 type O = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-export const isDgis = (u: URL) => /(^|\.)2gis\.(ru|kz|kg|uz|com|ae|cy|az|am|ge)$/i.test(u.hostname);
+export { isDgis } from "../hosts";
 
 export function dgisFromUrl(url: string): { firmId: string | null; city: string } {
   try {

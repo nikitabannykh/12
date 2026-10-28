@@ -17,6 +17,7 @@ import { MAX_MONTHLY, MIN_WEEKLY, allocate } from "@/lib/engine/budget";
 import { ANGLES } from "@/lib/niches";
 import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
 import { adExtras, responsiveAssets, withPlanCallouts } from "@/lib/engine/extras";
+import { displayKeyword } from "@/lib/engine/semantics";
 import { placeName, scoreGroup, liftBy, addS, zeroS, ctrOf, VERDICT, type S, type AdScore } from "@/lib/engine/insights";
 import Link from "next/link";
 import { addDays, hostOf, isoDay, num, pl, plural, rub } from "@/lib/util";
@@ -526,7 +527,25 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                         <div className="text-sm text-muted">
                           {g.audience ? `${g.audience} · ` : ""}{rub(gs.cost)}, {pl(gs.conversions, "обращение", "обращения", "обращений")}{gs.conversions ? ` по ${rub(gs.cost / gs.conversions)}` : ""}
                         </div>
-                        {g.keywords?.length && ch === "search" ? <div className="text-sm text-faint mt-1 line-clamp-2 sm:line-clamp-1 break-words">Запросы: {g.keywords.join(", ")}</div> : null}
+                        {g.keywords?.length && ch === "search" ? (() => {
+                          const kws = [...new Set(g.keywords.map(displayKeyword))];
+                          const neg = ((g.targeting ?? {}) as { negatives?: string[] }).negatives ?? [];
+                          return (
+                            <details className="mt-1.5 text-sm group/kw">
+                              <summary className="cursor-pointer list-none inline-flex items-start gap-1.5 text-ink-2 font-medium">
+                                <span>{pl(kws.length, "запрос", "запроса", "запросов")}</span>
+                                <span className="text-faint font-normal truncate max-w-[16rem] sm:max-w-md">{kws.slice(0, 3).join(", ")}{kws.length > 3 ? "…" : ""}</span>
+                                <ChevronDown size={14} className="shrink-0 mt-0.5 transition group-open/kw:rotate-180" />
+                              </summary>
+                              <p className="mt-1.5 text-muted leading-relaxed break-words">{kws.join(", ")}</p>
+                              {neg.length ? (
+                                <p className="mt-1.5 text-faint leading-relaxed break-words">
+                                  <span className="text-ink-2">Не показываем по словам</span> (их ищут в соседних группах): {neg.join(", ")}
+                                </p>
+                              ) : null}
+                            </details>
+                          );
+                        })() : null}
                         {ch === "search" && gTv !== null ? (
                           <div className="mt-1.5 flex flex-wrap gap-1.5">
                             <span className="pill bg-mark-soft text-ink">≈ {placeName(gTv)}</span>
@@ -546,7 +565,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                         <summary className="cursor-pointer list-none text-sm font-semibold text-ink-2 inline-flex items-start gap-1.5"><Eye size={15} className="shrink-0 mt-0.5" /> <span>Как это выглядит в выдаче и сколько стоит каждое место</span> <ChevronDown size={14} className="shrink-0 mt-0.5 transition group-open/serp:rotate-180" /></summary>
                         <div className="mt-3 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_20rem] gap-4 items-start">
                           <SerpScheme
-                            query={g.keywords?.[0] ?? g.name.toLowerCase()}
+                            query={g.keywords?.[0] ? displayKeyword(g.keywords[0]) : g.name.toLowerCase()}
                             tv={gTv}
                             tiers={groupTiers(camp, g.id)}
                             yourCpc={gs.clicks ? gs.cost / gs.clicks : null}
@@ -616,7 +635,8 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                                   )}
                                 </div>
                                 {combinatorial ? (() => {
-                                  const ra = responsiveAssets(b, ad, { service: ch === "search" ? g.name : null });
+                                  const gt = (g.targeting ?? {}) as { service?: string; services?: string[] };
+                                  const ra = responsiveAssets(b, ad, { service: ch === "search" ? gt.service ?? g.name : null, services: ch === "search" ? gt.services : null });
                                   return <ResponsiveAssets titles={ra.titles} texts={ra.texts} className={ch === "search" ? "max-w-xl" : "max-w-sm"} />;
                                 })() : null}
                                 <div className="text-xs text-muted">{pl(s.impressions, "показ", "показа", "показов")} · потрачено {rub(s.cost)}{s.conversions ? ` · обращение по ${rub(s.cost / s.conversions)}` : ""}</div>

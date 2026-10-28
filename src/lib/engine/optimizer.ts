@@ -11,6 +11,7 @@ import { availableLayouts, LAYOUT_NAME, type Layout } from "../creative/render";
 import { act, ceilingOf, logChange } from "./ops";
 import { probBetter, pct, times } from "./stats";
 import { rewriteAd, pickNegativeWords, type LIMITS } from "../ai/copy";
+import { conflicts } from "./semantics";
 import { ANGLES, nicheById } from "../niches";
 import { MIN_WEEKLY, weeklyFromMonthly } from "./budget";
 import { firstDays, learningLeft as learningLeftFor, LEARN_LOOKBACK_DAYS } from "./budget-learning";
@@ -221,7 +222,7 @@ async function adSpecFor(cx: Ctx, camp: Campaign, group: AdGroup, platform: stri
   const img = a.imageId ? await getImage(a.imageId) : null;
   const direct = isDirectChannel(camp.channel) && platform !== "vk";
   const svc0 = cx.b.services?.[0];
-  const service = camp.channel === "search" ? cx.b.services?.find((x) => x.name === group.name) ?? svc0 : svc0;
+  const service = camp.channel === "search" ? cx.b.services?.find((x) => x.name === ((group.targeting ?? {}) as { service?: string }).service || x.name === group.name) ?? svc0 : svc0;
   const set = img && direct ? await imageSet(cx.b, img.id, { headline: camp.channel === "search" ? service?.name ?? group.name : svc0?.name, price: service?.price }).catch(() => []) : [];
   // Фото владельца — в набор картинок комбинаторного объявления (чистое фото 1:1, без надписей).
   // Берём фото, которого ещё нет в этой группе, — так в группе со временем окажутся все фото владельца.
@@ -233,7 +234,8 @@ async function adSpecFor(cx: Ctx, camp: Campaign, group: AdGroup, platform: stri
     const x = pick ? await ownerPhotoCreative(cx.b, pick, { width: 1080, height: 1080 }).catch(() => null) : null;
     if (x) own = [x];
   }
-  const assets = direct ? responsiveAssets(cx.b, a, { service: camp.channel === "search" ? group.name : null }) : null;
+  const gt = (group.targeting ?? {}) as { service?: string; services?: string[] };
+  const assets = direct ? responsiveAssets(cx.b, a, { service: camp.channel === "search" ? gt.service ?? group.name : null, services: camp.channel === "search" ? gt.services : null }) : null;
   const toInput = (x: NonNullable<typeof img>) => ({ imageId: x.id, data: x.data, mime: x.mime, width: x.width, height: x.height, cachedRef: x.platformRefs?.[platform] });
   return {
     localId,
@@ -345,11 +347,11 @@ async function rolloverGroup(cx: Ctx, client: PlatformClient, camp: Campaign, gr
   }
   const db = await getDb();
   const { acc } = await clientOf(camp);
-  const t = (group.targeting ?? {}) as { regionIds?: number[]; ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; autotargeting?: boolean; retargetingId?: string };
+  const t = (group.targeting ?? {}) as { regionIds?: number[]; ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; autotargeting?: boolean; retargetingId?: string; negatives?: string[] };
   const regionIds = t.regionIds ?? ((camp.meta as { regionIds?: number[] })?.regionIds ?? []);
   // Ретаргетинг: новая группа — с тем же условием ретаргетинга, без фраз и автотаргетинга
   const rt = t.retargetingId ?? null;
-  const { groupExt, warnings } = await client.addGroup(camp.externalId, { name: group.name, keywords: rt ? [] : group.keywords ?? [], autotargeting: rt ? false : t.autotargeting ?? true, regionIds, ageFrom: t.ageFrom, ageTo: t.ageTo, sex: t.sex, retargetingId: rt }, { channel: camp.channel as Channel });
+  const { groupExt, warnings } = await client.addGroup(camp.externalId, { name: group.name, keywords: rt ? [] : group.keywords ?? [], negatives: rt ? [] : t.negatives ?? [], autotargeting: rt ? false : t.autotargeting ?? true, regionIds, ageFrom: t.ageFrom, ageTo: t.ageTo, sex: t.sex, retargetingId: rt }, { channel: camp.channel as Channel });
   const fresh: AdGroup = { ...group, id: uid("g_"), externalId: groupExt, status: "active", createdAt: new Date() };
   await db.insert(schema.adGroups).values(fresh);
   cx.groups.push(fresh);
@@ -1066,7 +1068,10 @@ async function addNegatives(cx: Ctx) {
       const wasteful = rows.filter((r) => r.clicks > 0).sort((a, b) => b.cost - a.cost);
       const found = await pickNegativeWords(cx.b, wasteful.map((r) => r.query), camp.negativeKeywords ?? []);
       if (!found.length) continue;
-      const words = found.map((f) => f.word).slice(0, 25);
+      // Минус-слово, которое заблокировало бы нашу же ключевую фразу, не добавляем
+      const own = cx.groups.filter((g) => g.campaignId === camp.id).flatMap((g) => g.keywords ?? []);
+      const words = found.map((f) => f.word).filter((w) => !own.some((k) => conflicts(w, k))).slice(0, 25);
+      if (!words.length) continue;
       const waste = wasteful.filter((r) => words.some((w) => r.query.toLowerCase().includes(w))).reduce((s, r) => s + r.cost, 0);
       await act(
         { businessId: cx.b.id, actor: "robot", kind: "negatives", title: `Убрали показы по ${pl(words.length, "нецелевому запросу", "нецелевым запросам", "нецелевым запросам")}`, reason: `Посмотрели, что люди искали перед кликом. Часть запросов — не про ваших клиентов: например, «${found[0].example}»${found[1] ? `, «${found[1].example}»` : ""}. ${waste > 0 ? `За 2 недели на такие клики ушло ${rub(waste)}. ` : ""}Добавили минус-слова: ${words.join(", ")}.`, details: { words, examples: found.slice(0, 10) } },

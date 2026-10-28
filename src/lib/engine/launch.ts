@@ -3,7 +3,9 @@ import { and, asc, eq, inArray, notInArray } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { AdAccount, Business, Campaign, UndoOp } from "../db/schema";
 import { allocate, MAX_MONTHLY } from "./budget";
-import { generateCopyPlan, type CopyPlan } from "../ai/copy";
+import { expandSemantics, generateCopyPlan, type CopyPlan } from "../ai/copy";
+import { buildSemanticCore, refineWithDirect, type SemanticChecks, type SemanticCore } from "./semantics";
+import { aiConfigured } from "../ai/yandex";
 import { generatePhotos, listPhotos, makeCreative, getImage, ensureLogo, imageSet } from "./images";
 import { adExtras, responsiveAssets, timeTargeting, withPlanCallouts } from "./extras";
 import { availableLayouts, type Layout } from "../creative/render";
@@ -22,7 +24,13 @@ import { VK_LEAD_GOAL } from "../platforms/vk-formats";
 import { businessNow } from "./budget-guard";
 
 export type PlanAd = { id: string; angle: string; title: string; title2?: string | null; text: string; imageId?: string | null; layout?: Layout | null; enabled: boolean };
-export type PlanGroup = { id: string; name: string; audience: string; keywords: string[]; autotargeting: boolean; ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; ads: PlanAd[] };
+export type PlanGroup = {
+  id: string; name: string; audience: string; keywords: string[]; autotargeting: boolean; ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; ads: PlanAd[];
+  /** Поиск: основная услуга группы и все услуги прайса, которые она покрывает (семантическое ядро) */
+  service?: string; services?: string[];
+  /** Минус-слова группы (кросс-минусовка), уходят в AdGroup.NegativeKeywords */
+  negatives?: string[];
+};
 export type PlanChannel = { channel: Channel; accountId: string; platform: string; weekly: number; enabled: boolean; groups: PlanGroup[] };
 export type LaunchPlan = {
   createdAt: string;
@@ -34,6 +42,8 @@ export type LaunchPlan = {
   photoIds: string[];
   dropped: Channel[];
   warnings: string[];
+  /** Семантическое ядро: проверки (частотность и дубли в Директе, расширение моделью) и гео из адреса. Сами фразы — в группах поиска */
+  semantics?: { checks: SemanticChecks; geo: SemanticCore["geo"]; total: number };
   /** Ход запуска: запуск идёт по одному каналу за запрос и возобновляется после обрыва */
   launch?: LaunchProgress;
 };
@@ -211,6 +221,9 @@ function channelFromCopy(b: Business, copy: CopyPlan, channel: Channel, acc: AdA
     name: g.name,
     audience: g.audience,
     keywords: g.keywords,
+    ...(g.service ? { service: g.service } : {}),
+    ...(g.services?.length ? { services: g.services } : {}),
+    ...(g.negatives?.length && channel === "search" ? { negatives: g.negatives } : {}),
     autotargeting: fmt !== "vk" && !isRetarget(channel),
     ageFrom: g.ageFrom ?? n.audience.ageFrom,
     ageTo: g.ageTo ?? n.audience.ageTo,
@@ -221,12 +234,46 @@ function channelFromCopy(b: Business, copy: CopyPlan, channel: Channel, acc: AdA
   return { channel, accountId: acc.id, platform: acc.platform, weekly, enabled: true, groups };
 }
 
+/** Не дольше: шаг подготовки текстов ограничен по времени запроса */
+const SEMANTICS_BUDGET_MS = 20_000;
+
+const withTimeout = <T,>(p: Promise<T>, ms: number, fallback: T) => Promise.race([p, new Promise<T>((r) => setTimeout(() => r(fallback), ms))]);
+
+/**
+ * Семантическое ядро для запуска: из анкеты (engine/semantics), затем — если подключены — расширение моделью
+ * (только проверенные синонимы) и проверка Директом: фразы без показов в регионе и дубли убираем.
+ * Демо-кабинет и ошибки API — ядро как есть.
+ */
+export async function semanticCoreFor(b: Business, accounts: AdAccount[]): Promise<SemanticCore> {
+  let core = buildSemanticCore(b);
+  const started = Date.now();
+  if (aiConfigured()) core = await withTimeout(expandSemantics(b, core), 12_000, core);
+  const ya = accounts.find((a) => a.platform === "yandex" && a.status === "ok");
+  if (ya && core.groups.length) {
+    try {
+      const client = (await clientFor(ya)) as YandexDirect;
+      const regionIds = await regionIdsFor(b, "yandex", client).catch(() => [0]);
+      const left = Math.max(3_000, SEMANTICS_BUDGET_MS - (Date.now() - started));
+      core = await withTimeout(
+        refineWithDirect(core, { hasSearchVolume: (k, r) => client.hasSearchVolume(k, r), deduplicate: (items) => client.deduplicateKeywords(items) }, regionIds, b.niche),
+        left,
+        core,
+      );
+    } catch {
+      /* без проверки Директом */
+    }
+  }
+  return core;
+}
+
 /** Шаг 1: тексты, семантика, аудитории */
 export async function prepareCopy(b: Business, accounts: AdAccount[]): Promise<LaunchPlan> {
   const available = channelsFor(accounts);
   if (!available.length) throw new Error("Подключите хотя бы один рекламный кабинет");
   const { allocation, dropped } = allocate(b.monthlyBudget, available.map((a) => a.channel));
-  const copy: CopyPlan = await generateCopyPlan(b, copyWants(allocation.map((a) => a.channel)));
+  const want = copyWants(allocation.map((a) => a.channel));
+  const core = want.search || want.network ? await semanticCoreFor(b, accounts) : buildSemanticCore(b);
+  const copy: CopyPlan = await generateCopyPlan(b, want, core);
 
   const channels: PlanChannel[] = allocation.map((a) => channelFromCopy(b, copy, a.channel, available.find((x) => x.channel === a.channel)!.account, a.weekly));
 
@@ -243,6 +290,7 @@ export async function prepareCopy(b: Business, accounts: AdAccount[]): Promise<L
     photoIds: [],
     dropped,
     warnings,
+    semantics: { checks: core.checks, geo: core.geo, total: core.total },
   };
 }
 
@@ -467,13 +515,13 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
         imageCache.set(ad.imageId, img);
         if (img) image = toInput(img);
         if (img && direct) {
-          const service = ch.channel === "search" ? b.services?.find((x) => x.name === g.name) ?? svc0 : svc0;
+          const service = ch.channel === "search" ? b.services?.find((x) => x.name === (g.service ?? g.name)) ?? svc0 : svc0;
           const set = await imageSet(b, img.id, { headline: ch.channel === "search" ? service?.name ?? g.name : svc0?.name, price: service?.price }).catch(() => []);
           for (const x of set) imageCache.set(x.id, x);
           images = set.map(toInput);
         }
       }
-      const assets = direct ? responsiveAssets(b, ad, { service: ch.channel === "search" ? g.name : null }) : null;
+      const assets = direct ? responsiveAssets(b, ad, { service: ch.channel === "search" ? g.service ?? g.name : null, services: ch.channel === "search" ? g.services : null }) : null;
       ads.push({
         localId: ad.id,
         title: ad.title.trim(),
@@ -484,13 +532,13 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
         images,
         href: withUtm(href, account.platform),
         image,
-        extras: withPlanCallouts(adExtras(b, { channel: formatOf(ch.channel), href, service: ch.channel === "search" ? g.name : null, text: ad.text }), plan.callouts),
+        extras: withPlanCallouts(adExtras(b, { channel: formatOf(ch.channel), href, service: ch.channel === "search" ? g.service ?? g.name : null, text: ad.text }), plan.callouts),
         logo: vkFormat && logo ? { imageId: logo.id, data: logo.data, mime: logo.mime, width: logo.width, height: logo.height, cachedRef: logo.platformRefs?.[account.platform] } : null,
         marking: `${n.label}: ${b.name}`,
       });
     }
     if (!ads.length && !build.groups[g.id]) continue;
-    spec.groups.push({ localId: g.id, name: g.name, keywords: vkFormat || audienceId ? [] : g.keywords, autotargeting: audienceId ? false : g.autotargeting, regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, retargetingId: audienceId, ads });
+    spec.groups.push({ localId: g.id, name: g.name, keywords: vkFormat || audienceId ? [] : g.keywords, negatives: vkFormat || audienceId ? [] : g.negatives ?? [], autotargeting: audienceId ? false : g.autotargeting, regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, retargetingId: audienceId, ads });
   }
   if (!spec.groups.length) {
     warnings.push(`${CHANNEL_NAME[ch.channel]}: нет ни одного объявления с заголовком и текстом — канал пропущен`);
@@ -539,7 +587,12 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
       name: g.name,
       audience: g.audience,
       keywords: g.keywords,
-      targeting: { regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, autotargeting: audienceId ? false : g.autotargeting, ...(audienceId ? { retargetingId: audienceId } : {}) },
+      targeting: {
+        regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, autotargeting: audienceId ? false : g.autotargeting, ...(audienceId ? { retargetingId: audienceId } : {}),
+        ...(g.negatives?.length && !audienceId ? { negatives: g.negatives } : {}),
+        ...(g.service ? { service: g.service } : {}),
+        ...(g.services?.length ? { services: g.services } : {}),
+      },
     });
     build.groups[localId] = { groupExt, dbId, ads: {} };
     return build.groups[localId];
@@ -931,7 +984,9 @@ export async function addChannelStep(b: Business, accounts: AdAccount[], channel
       const min = minMonthlyWith(liveChannels, channel);
       throw Object.assign(new Error(`На канал «${CHANNEL_NAME[channel]}» не хватает бюджета${min ? `: нужно от ${rub(min)} в месяц` : ""}. Увеличьте бюджет и попробуйте снова.`), { status: 409 });
     }
-    const copy = await generateCopyPlan(b, copyWants([channel]));
+    const want = copyWants([channel]);
+    const core = want.search || want.network ? await semanticCoreFor(b, accounts) : buildSemanticCore(b);
+    const copy = await generateCopyPlan(b, want, core);
     const weekly = allocation.find((a) => a.channel === channel)!.weekly;
     const plan: LaunchPlan = {
       createdAt: new Date().toISOString(),
@@ -943,6 +998,7 @@ export async function addChannelStep(b: Business, accounts: AdAccount[], channel
       photoIds: [],
       dropped: [],
       warnings: [],
+      semantics: { checks: core.checks, geo: core.geo, total: core.total },
     };
     st = { channel, plan, launchId: uid("l_"), startedAt: new Date().toISOString() };
     await writeAddState(b.id, st);

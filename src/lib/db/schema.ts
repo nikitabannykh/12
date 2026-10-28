@@ -1,6 +1,9 @@
 import {
   pgTable, text, integer, bigint, timestamp, jsonb, real, date, uniqueIndex, index, customType,
 } from "drizzle-orm/pg-core";
+import type { SourceLink } from "../links";
+
+export type { SourceLink } from "../links";
 
 const bytea = customType<{ data: Buffer; driverData: Buffer | Uint8Array }>({
   dataType: () => "bytea",
@@ -45,6 +48,8 @@ export const businesses = pgTable("businesses", {
   legalInfo: text("legal_info"), // «ИП Иванова А. А., ИНН …» — для блока «о компании» в VK и маркировки
   geo: jsonb("geo").$type<{ lat: number; lng: number; source?: string } | null>(), // координаты адреса для показов в радиусе
   siteUrl: text("site_url"), // если пусто — объявления ведут на нашу страницу записи
+  // Все ссылки владельца из анкеты: сайт, Яндекс Карты, 2ГИС, DIKIDI, YCLIENTS, Taplink, VK… (siteUrl и orgUrl — их «главные» копии)
+  sourceLinks: jsonb("source_links").$type<SourceLink[]>().notNull().default([]),
   description: text("description").notNull().default(""),
   services: jsonb("services").$type<Service[]>().notNull().default([]),
   advantages: jsonb("advantages").$type<string[]>().notNull().default([]),
