@@ -116,7 +116,7 @@ export default async function Dashboard() {
           <Link href="/app/settings#budget" className="btn btn-primary btn-sm">Поднять бюджет</Link>
         </StopBanner>
       ) : null}
-      {ownerStopped.length && b.status !== "paused" ? (
+      {ownerStopped.length > 0 && b.status !== "paused" ? (
         <StopBanner
           tone={allStopped ? "warn" : "info"}
           title={allStopped ? "Реклама на паузе — объявления никто не видит" : `На паузе: ${names(ownerStopped)}`}
