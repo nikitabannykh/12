@@ -173,6 +173,20 @@ export class VkAds implements PlatformClient {
     return [...active].sort((a, b) => score(a) - score(b)).map((p) => Number(p.id)).filter(Boolean).slice(0, 8);
   }
 
+  /** Диагностика: кандидаты пакетов и сырые форматы баннеров (для разбора ошибок модерации форматов) */
+  async diagnostics(ids: number[] = []) {
+    const list = await this.packages();
+    const cands = await this.trafficPackageCandidates();
+    const want = ids.length ? ids : cands.slice(0, 3);
+    const formats: Record<string, unknown> = {};
+    for (const id of want) {
+      const pkg = list.find((p) => Number(p.id) === id);
+      const fid = Number(pkg?.banner_format_id);
+      formats[id] = { pkg, format: fid ? await this.req("GET", `v2/banner_formats/${fid}.json`).catch((e) => String(e)) : null };
+    }
+    return { candidates: cands, packages: list.map((p) => ({ id: p.id, name: p.name, status: p.status, objective: p.objective, banner_format_id: p.banner_format_id })), formats };
+  }
+
   /** Пакет (формат размещения) под цель «трафик на сайт». Можно переопределить через VK_ADS_PACKAGE_ID. */
   async trafficPackageId(): Promise<number> {
     if (process.env.VK_ADS_PACKAGE_ID) return Number(process.env.VK_ADS_PACKAGE_ID);
