@@ -3,6 +3,7 @@ import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { act } from "@/lib/engine/ops";
 import { validateAdText } from "@/lib/ai/copy";
+import { isMedical } from "@/lib/niches";
 import { formatOf } from "@/lib/channels";
 
 const clean = (s: unknown) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim() : "");
@@ -29,7 +30,7 @@ export const PATCH = route<{ id: string }>(async ({ business, params, req }) => 
     const title = clean(body.title), text = clean(body.text);
     // Второй заголовок есть у Поиска и РСЯ, у VK — нет
     const title2 = channel !== "vk" ? clean(body.title2) || null : ad.title2;
-    const problems = validateAdText(channel, { title, title2, text });
+    const problems = validateAdText(channel, { title, title2, text }, { medical: isMedical(business) });
     if (problems.length) return fail(problems.join(" "), 422);
     if (title === ad.title && title2 === ad.title2 && text === ad.text) return json({ ok: true, unchanged: true });
     await act(

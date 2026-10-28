@@ -11,8 +11,9 @@ import { availableLayouts, LAYOUT_NAME, type Layout } from "../creative/render";
 import { act, ceilingOf, logChange } from "./ops";
 import { probBetter, pct, times } from "./stats";
 import { rewriteAd, pickNegativeWords, type LIMITS } from "../ai/copy";
-import { conflicts } from "./semantics";
-import { ANGLES, nicheById } from "../niches";
+import { conflicts, displayKeyword } from "./semantics";
+import { ANGLES, nicheById, type Layer } from "../niches";
+import { decideLayers, LAYER_RULE, type LayerRow } from "./layers";
 import { MIN_WEEKLY, weeklyFromMonthly } from "./budget";
 import { firstDays, learningLeft as learningLeftFor, LEARN_LOOKBACK_DAYS } from "./budget-learning";
 import { CATCH_UP, CATCH_UP_GAP, cutMeta, daysLeftInMonth, monthDays, monthKey, monthWeekly, planLimits, reserveFor, restoreTarget, spendableWeekly, type BudgetMeta, type Plan, type PlanItem } from "./budget-plan";
@@ -1054,6 +1055,42 @@ async function optimizeAudiences(cx: Ctx) {
   }
 }
 
+// ─── 4б. Поиск: слои семантики (проблемы, смежные запросы, аудитории) против услуг ─────────
+// Правило и тексты — engine/layers.ts (decideLayers). Здесь — данные, обучение кампании и защита решений владельца.
+
+async function evaluateLayers(cx: Ctx) {
+  if (!(await jobDue(cx, "layers", 24 * 3.5))) return;
+  const since = isoDay(addDays(cx.now, -LAYER_RULE.days));
+  const layerOf = (g: AdGroup) => (((g.targeting ?? {}) as { layer?: Layer }).layer ?? "service") as Layer;
+  let did = false;
+  const list = cx.campaigns.filter((c) => c.status === "active" && c.channel === "search" && !cx.protected.has(c.id) && cx.groups.some((g) => g.campaignId === c.id && layerOf(g) !== "service"));
+  for (const camp of skipLearning(cx, list, "слои запросов")) {
+    const groups = cx.groups.filter((g) => g.campaignId === camp.id && g.status === "active");
+    const rows: LayerRow[] = groups.map((g) => {
+      const s = cx.ads.filter((a) => a.adGroupId === g.id).reduce((acc, a) => add(acc, sumAd(cx, a.id, since)), zero());
+      // Владелец недавно менял группу или её объявление — не спорим с ним
+      const prot = cx.protected.has(g.id) || cx.ads.some((a) => a.adGroupId === g.id && cx.protected.has(a.id));
+      return { id: g.id, layer: layerOf(g), cost: s.cost, clicks: s.clicks, conversions: s.conversions, protected: prot, keyword: displayKeyword(g.keywords?.[0] ?? g.name) };
+    });
+    const verdicts = decideLayers(rows);
+    if (!verdicts) {
+      const conv = rows.filter((r) => r.layer === "service").reduce((n, r) => n + r.conversions, 0);
+      cx.log.push(`Слои поиска: у групп услуг ${pl(conv, "обращение", "обращения", "обращений")} — ждём ${LAYER_RULE.baseConversions}, чтобы сравнивать`);
+      continue;
+    }
+    for (const v of verdicts) {
+      await act(
+        { businessId: cx.b.id, actor: "robot", kind: "pause", title: v.title, reason: `${v.reason} ${LEARNED_NOTE}`, details: { layer: v.layer, groupIds: v.off, cost: v.cost, conversions: v.conversions, cpl: v.cpl, baseCpl: v.baseCpl } },
+        v.off.map((id) => ({ op: "groupStatus" as const, groupId: id, status: "paused" as const, adIds: cx.ads.filter((a) => a.adGroupId === id && a.status === "active").map((a) => a.id) })),
+      );
+      for (const g of groups) if (v.off.includes(g.id)) g.status = "paused";
+      cx.log.push(`Слой ${v.layer} отключён: ${v.off.length} групп`);
+      did = true;
+    }
+  }
+  await markJob(cx, "layers", did ? "отключено" : "без изменений");
+}
+
 // ─── 5. Минус-слова из поисковых запросов ──────────────────────────────
 
 async function addNegatives(cx: Ctx) {
@@ -1245,6 +1282,7 @@ export async function optimizeBusiness(b: Business) {
     ["объявления", optimizeAds],
     ["картинки", creativeTests],
     ["аудитории", optimizeAudiences],
+    ["слои поиска", evaluateLayers],
     ["минус-слова", addNegatives],
     ["стратегия", switchStrategy],
     ["бюджет каналов", rebalance],

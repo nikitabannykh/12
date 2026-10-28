@@ -17,6 +17,7 @@ import type { LaunchPlan, PlanAd, PublishStep } from "@/lib/engine/launch";
 import type { Channel } from "@/lib/platforms/types";
 import { CHANNEL_INFO, formatOf, isRetarget, RETARGET_MIN_AUDIENCE, TYPE_INFO, type AdFormat } from "@/lib/channels";
 import { TypeBadge } from "./CampaignNav";
+import { LAYER_ITEM } from "@/lib/niches";
 
 const CH: Record<Channel, { name: string; hint: string }> = {
   search: { name: "Поиск Яндекса", hint: "Тем, кто прямо сейчас ищет услугу" },
@@ -77,8 +78,9 @@ function Section({ id, title, done, active, note, children, aside }: { id: strin
   );
 }
 
-/** Семантика поиска от движка (GET /api/launch/semantics) — если эндпоинта нет, блок просто не показываем */
-type Semantics = { name: string; keywords: string[] }[];
+/** Семантика поиска от движка (GET /api/launch/semantics) — если эндпоинта нет, блок просто не показываем.
+ *  layer — подпись слоя: «Услуги», «Проблемы клиентов», «Смежные запросы», «Аудитории» */
+type Semantics = { name: string; keywords: string[]; layer?: string }[];
 function parseSemantics(data: unknown): Semantics | null {
   const raw = (data && typeof data === "object" && "groups" in data ? (data as { groups: unknown }).groups : data) as unknown;
   if (!Array.isArray(raw)) return null;
@@ -88,7 +90,8 @@ function parseSemantics(data: unknown): Semantics | null {
     const o = g as Record<string, unknown>;
     const name = String(o.name ?? o.title ?? o.group ?? "").trim();
     const kw = (Array.isArray(o.keywords) ? o.keywords : Array.isArray(o.phrases) ? o.phrases : []).map((k) => (typeof k === "string" ? k : String((k as { phrase?: string; text?: string })?.phrase ?? (k as { text?: string })?.text ?? ""))).filter(Boolean);
-    if (name || kw.length) out.push({ name: name || "Без названия", keywords: kw });
+    const layer = typeof o.layerLabel === "string" ? o.layerLabel : undefined;
+    if (name || kw.length) out.push({ name: name || "Без названия", keywords: kw, ...(layer ? { layer } : {}) });
   }
   return out.length ? out : null;
 }
@@ -387,6 +390,11 @@ export function LaunchWizard(p: Props) {
                 <ul className="mt-3 grid gap-2.5">
                   {semantics.map((g, gi) => (
                     <li key={gi}>
+                      {g.layer && (gi === 0 || semantics[gi - 1].layer !== g.layer) ? (
+                        <div className={`text-xs uppercase tracking-wide text-faint font-semibold ${gi ? "mt-2" : ""}`}>
+                          {g.layer} · {semantics.filter((x) => x.layer === g.layer).length} {plural(semantics.filter((x) => x.layer === g.layer).length, "группа", "группы", "групп")}, {semantics.filter((x) => x.layer === g.layer).reduce((n, x) => n + x.keywords.length, 0)} {plural(semantics.filter((x) => x.layer === g.layer).reduce((n, x) => n + x.keywords.length, 0), "запрос", "запроса", "запросов")}
+                        </div>
+                      ) : null}
                       <div className="font-semibold">{g.name} <span className="font-normal text-muted">· {g.keywords.length}</span></div>
                       <div className="text-muted leading-relaxed [overflow-wrap:anywhere]">{g.keywords.join(", ")}</div>
                     </li>
@@ -412,7 +420,7 @@ export function LaunchWizard(p: Props) {
                 </div>
                 {ch.enabled ? ch.groups.map((g) => (
                   <div key={g.id} className="mt-4">
-                    <div className="font-semibold">{g.name}</div>
+                    <div className="font-semibold">{ch.channel === "search" && g.layer && g.layer !== "service" ? `${LAYER_ITEM[g.layer]}: ` : ""}{g.name}</div>
                     <div className="text-sm text-muted">{g.audience}</div>
                     {formatOf(ch.channel) !== "vk" && g.ads.filter((a) => a.enabled).length > 3 ? (
                       <div className="text-sm text-warn mt-1">В группе Директа может работать не больше 3 объявлений — оставьте включёнными три, остальные не отправим.</div>
@@ -427,12 +435,12 @@ export function LaunchWizard(p: Props) {
                       {g.ads.map((ad) => (
                         <div key={ad.id} className={`relative min-w-0 ${ad.enabled ? "" : "opacity-45"}`}>
                           {ch.channel === "search" ? (
-                            <SearchAdPreview title={ad.title} title2={ad.title2} text={ad.text} host={p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={withPlanCallouts(adExtras(p.biz, { channel: "search", href: p.href, service: g.name, text: ad.text }), plan?.callouts ?? p.callouts)} />
+                            <SearchAdPreview title={ad.title} title2={ad.title2} text={ad.text} host={p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={withPlanCallouts(adExtras(p.biz, { channel: "search", href: p.href, service: g.service ?? g.name, text: ad.text }), plan?.callouts ?? p.callouts)} />
                           ) : (
                             <ImageAdPreview channel={formatOf(ch.channel) === "vk" ? "vk" : "network"} title={ad.title} text={ad.text} host={formatOf(ch.channel) === "vk" ? p.business.name : p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={adExtras(p.biz, { channel: formatOf(ch.channel), href: p.href, text: ad.text })} logo={p.logo} />
                           )}
                           {formatOf(ch.channel) !== "vk" && ch.platform !== "vk" ? (() => {
-                            const ra = responsiveAssets(p.biz, ad, { service: ch.channel === "search" ? g.name : null });
+                            const ra = responsiveAssets(p.biz, ad, { service: ch.channel === "search" ? g.service ?? g.name : null, services: ch.channel === "search" ? g.services : null });
                             return <ResponsiveAssets titles={ra.titles} texts={ra.texts} className="mt-1.5" />;
                           })() : null}
                           <div className="mt-1.5 flex items-center justify-between gap-2 text-xs">

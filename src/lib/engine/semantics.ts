@@ -16,6 +16,10 @@
  *     «японский маникюр» уходил в свою группу с ценой японского маникюра, а группы не конкурировали.
  *  6. Минус-слова кампании — из словаря ниши, без тех, что пересекаются с нашими же фразами
  *     (иначе Директ заблокирует свою же фразу: «школа» у школы танцев).
+ *  7. Слои (layer): кроме групп услуг — «Проблемы клиентов» («болит шея», «ломкие ногти»), «Смежные запросы»
+ *     («мануальный терапевт» у остеопата) и «Аудитории» («остеопат для беременных», «маникюр на свадьбу»). Словари —
+ *     niches.ts (layersFor); группа слоя создаётся, только если у владельца есть услуга, к которой ведёт запрос.
+ *     Автотаргетинг у них выключен, а робот сравнивает цену обращения слоя с услугами (engine/layers.ts).
  *
  * Операторы Директа: однословная фраза — в кавычках ("маникюр" — только запросы из одного слова: широкие хвосты
  * покрывают уточнённые фразы и автотаргетинг), «+без» — стоп-слово, меняющее смысл. Остальное — широкое
@@ -25,7 +29,9 @@
  * Проверка частотности и дублей через API Директа — refineWithDirect (вызывает сервер, если подключён Директ).
  */
 import type { Business, Service } from "../db/schema";
-import { CITY_ALIASES, COMMERCIAL, nicheById, semanticsFor, sharedMods, type Concept } from "../niches";
+import { CITY_ALIASES, COMMERCIAL, isMedical, KIDS_RE, LAYER_JUNK, LAYER_LABEL, LAYERS, layersFor, NO_KIDS_NEG, nicheById, semanticsFor, sharedMods, type Concept, type Layer, type LayerEntry } from "../niches";
+
+export type { Layer } from "../niches";
 
 export const SEM = {
   maxGroups: 15,
@@ -55,7 +61,12 @@ export type SemanticGroup = {
   negatives: string[];
   /** Ядро без коммерческих и гео-хвостов: для интересов в РСЯ и подсказок */
   core: string[];
+  /** Слой: услуга, проблема клиента, смежный запрос, аудитория (см. niches.ts → Layer) */
+  layer: Layer;
+  /** Слои проблем, смежных и аудиторий: из чего строим объявление «проблема → решение» */
+  hook?: LayerHook;
 };
+export type LayerHook = { entry: string; ask: string; when?: string; noun: string };
 export type SemanticChecks = {
   volume?: { checked: number; dropped: number; examples: string[] } | null;
   dedup?: { merged: number } | null;
@@ -68,9 +79,11 @@ export type SemanticCore = {
   geo: { city: string[]; local: string[] };
   total: number;
   checks: SemanticChecks;
+  /** Медицинские услуги (остеопатия, косметология…): лицензия, предупреждение, осторожные тексты */
+  medical?: boolean;
 };
 
-type B = Pick<Business, "niche" | "city" | "address" | "services" | "name">;
+type B = Pick<Business, "niche" | "city" | "address" | "services" | "name"> & Partial<Pick<Business, "description" | "hours">>;
 
 // ─── Слова ────────────────────────────────────────────────────────────
 
@@ -82,7 +95,7 @@ const GENERIC = new Set([
   "услуга", "услуги", "процедура", "процедуры", "сеанс", "сеансы", "прием", "консультация", "комплекс", "программа", "сделать", "мастер",
   "салон", "студия", "кабинет", "центр", "занятие", "занятия", "тренировка", "тренировки", "запись", "цена", "стоимость", "врач",
 ]);
-const ENDINGS = ["иями", "ями", "ами", "ого", "его", "ому", "ему", "ыми", "ими", "ией", "ием", "иям", "иях", "ьям", "ьях", "ая", "яя", "ое", "ее", "ые", "ие", "ый", "ий", "ой", "ую", "юю", "ом", "ем", "ам", "ям", "ах", "ях", "ов", "ев", "ей", "ия", "ию", "ии", "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й"];
+const ENDINGS = ["иями", "ями", "ами", "ого", "его", "ому", "ему", "ыми", "ими", "ией", "ием", "иям", "иях", "ьям", "ьях", "ых", "их", "ым", "им", "ая", "яя", "ое", "ее", "ые", "ие", "ый", "ий", "ой", "ую", "юю", "ом", "ем", "ам", "ям", "ах", "ях", "ов", "ев", "ей", "ия", "ию", "ии", "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й"];
 
 /** Грубая основа слова: «маникюра» → «маникюр», «стрижку» → «стрижк». Для сравнения словоформ, не для текста */
 export function stem(w: string) {
@@ -112,7 +125,8 @@ export function conflicts(negative: string, keyword: string) {
 export function toDirect(phrase: string): string | null {
   const ws = lower(phrase).replace(/[^\p{L}\p{N}\s-]/gu, " ").split(/\s+/).map((w) => w.replace(/^-+|-+$/g, "")).filter(Boolean);
   const sig = ws.filter((w) => !STOP.has(w) || MEANINGFUL_STOP.has(w));
-  if (!sig.length || sig.length > SEM.words || ws.length > SEM.words + 2) return null;
+  // Директ: не больше 7 слов во фразе — считаем все слова, включая предлоги (так надёжнее при любом подсчёте)
+  if (!sig.length || ws.length > SEM.words) return null;
   if (ws.some((w) => w.length > SEM.wordLen)) return null;
   if (sig.every((w) => /^\d+$/.test(w))) return null;
   if (ws.length === 1) return `"${ws[0]}"`;
@@ -125,7 +139,7 @@ type Adj = { stem: string; soft: boolean; oy: boolean };
 const ADJ_END = /(ый|ий|ой|ая|яя|ое|ее|ые|ие)$/;
 const NOUN_LIKE = /(ние|тие|чие|рий|лий|ций|зий|сий|ье|ия)$/;
 /** Прилагательные, которые не уточняют услугу для поиска */
-const ADJ_SKIP = ["разов", "пробн", "перв", "втор", "нов", "люб", "обычн", "стандартн", "ежедневн", "ногтев", "дополнительн", "легк", "прост"].map(stem);
+const ADJ_SKIP = ["разов", "пробн", "перв", "втор", "вторичн", "повторн", "нов", "люб", "обычн", "стандартн", "ежедневн", "ногтев", "дополнительн", "легк", "прост"].map(stem);
 
 function asAdj(w: string): Adj | null {
   const x = lower(w);
@@ -401,7 +415,7 @@ const sigCount = (p: string) => keyWords(p).length;
 /**
  * Семантическое ядро для поиска по анкете. Без услуг — одна группа по общему названию ниши.
  */
-export function buildSemanticCore(b: B, opts: { maxGroups?: number; perGroup?: number } = {}): SemanticCore {
+export function buildSemanticCore(b: B, opts: { maxGroups?: number; perGroup?: number; layers?: boolean } = {}): SemanticCore {
   const niche = nicheById(b.niche);
   const sem = semanticsFor(niche.id);
   const maxGroups = opts.maxGroups ?? SEM.maxGroups;
@@ -409,7 +423,8 @@ export function buildSemanticCore(b: B, opts: { maxGroups?: number; perGroup?: n
   const services: Service[] = (b.services ?? []).filter((s) => s?.name?.trim());
   const list: Service[] = services.length ? services : [{ name: niche.id === "other" ? b.name : niche.generic }];
   const parsed = list.map((s) => parseService(s, niche.id)).filter((p) => p.base || p.mains.length);
-  if (!parsed.length) return { groups: [], negatives: [], geo: geoTerms(b), total: 0, checks: {} };
+  const medical = isMedical(b);
+  if (!parsed.length) return { groups: [], negatives: [], geo: geoTerms(b), total: 0, checks: {}, medical };
   const units = clusterUnits(parsed, maxGroups);
   const geo = geoTerms(b);
 
@@ -558,12 +573,178 @@ export function buildSemanticCore(b: B, opts: { maxGroups?: number; perGroup?: n
       keywords: d.kws,
       negatives,
       core: d.core.slice(0, 30),
+      layer: "service" as const,
     };
   });
 
+  // Слои: проблемы клиентов, смежные запросы, аудитории — только для услуг, которые есть у владельца
+  if (services.length && opts.layers !== false) groups.push(...layerGroups(b, niche.id, services, geo, groups));
+
   const all = groups.flatMap((g) => g.keywords);
   const negatives = uniq(niche.negatives.map((n) => n.trim()).filter(Boolean)).filter((n) => !all.some((k) => conflicts(n, k)));
-  return { groups, negatives, geo, total: all.length, checks: {} };
+  return { groups, negatives, geo, total: all.length, checks: {}, medical };
+}
+
+// ─── Слои: проблемы, смежные запросы, аудитории ────────────────────────────
+
+export const LAYER_SEM = {
+  /** Сколько групп слоя: больше — бюджет размазывается, и робот долго не может сравнить слои */
+  cap: { problem: 5, adjacent: 3, audience: 4 } as Record<Exclude<Layer, "service">, number>,
+  perGroup: 60,
+  minGroup: 5,
+} as const;
+
+/** Хвосты и общие слова: не отличают группу от соседней — их не минусуем у других групп */
+const TAIL = new Set(["лечение", "лечения", "кому", "куда", "обратиться", "делать", "что", "цена", "стоимость", "запись", "рядом", "отзывы", "недорого", "хороший", "как", "после", "для", "очень", "сильно", "частые", "новый", "между", "одну", "сторону", "быстро", "тела", "тело", "взрослых", "взрослого", "салоне", "занятия"]);
+/** Повторный или пакетный приём — не основная услуга для группы слоя */
+const SECONDARY = /повтор|вторичн|абонемент|сертификат|пакет|курс\s|^курс|комплекс/;
+const svcText = (s: Service) => lower(`${s.name ?? ""} ${s.category ?? ""}`);
+/** Похожие словоформы, которые наш грубый стеммер не свёл («взрослых» и «взрослый»): Директ их сведёт — считаем конфликтом */
+const skeleton = (w: string) => w.slice(0, 5).replace(/[аеёиоуыэюяьъй]/g, "");
+const near = (a: string, b: string) => {
+  if (Math.min(a.length, b.length) <= 4) return a.length >= 3 && b.length >= 3 && a.slice(0, 2) === b.slice(0, 2) && Math.abs(a.length - b.length) <= 1;
+  // «взрослых» и «взрослый», «ноготь» и «ногти» (беглая гласная)
+  return a.slice(0, 4) === b.slice(0, 4) || (skeleton(a).length >= 3 && skeleton(a) === skeleton(b));
+};
+const blocks = (w: string, kws: string[]) => kws.some((k) => conflicts(w, k) || (!w.includes(" ") && sigWords(k).some((x) => near(lower(w), x))));
+
+/** «Остеопат в выходные», «маникюр вечером»: только если это правда по часам работы */
+function timeEntries(b: B, noun: string): LayerEntry[] {
+  const h = lower(b.hours);
+  if (!h || !noun) return [];
+  const phrases: string[] = [];
+  const daily = /ежедневн|без выходных|круглосуточ/.test(h);
+  const sat = daily || /(?<!\p{L})(сб|суб\p{L}*)(?!\p{L})/u.test(h);
+  const sun = daily || /(?<!\p{L})(вс|воскр\p{L}*)(?!\p{L})/u.test(h);
+  if (sat && sun) phrases.push(`${noun} в выходные`);
+  if (sat) phrases.push(`${noun} в субботу`);
+  if (sun) phrases.push(`${noun} в воскресенье`);
+  const closes = [...h.matchAll(/[-–—]\s*(\d{1,2})[:.]\d{2}/g)].map((m) => Number(m[1]));
+  const late = closes.length ? Math.max(...closes) : 0;
+  if (late >= 20) phrases.push(`${noun} вечером`, ...(late >= 21 ? [`${noun} поздно вечером`] : []));
+  if (!phrases.length) return [];
+  return [{ id: "time", layer: "audience", label: "Удобное время", to: /./, noun, ask: cap(phrases[0]), phrases }];
+}
+
+/**
+ * Группы слоёв из словаря ниши. Каждая запись словаря → группа, если у владельца есть услуга, к которой она ведёт
+ * (детские проблемы — только к детской услуге). Фразы × специалист × город × хвосты «к кому обратиться», «цена»;
+ * без повторов с уже собранными группами услуг; фразы, которые задели бы минус-слова кампании, не берём.
+ * Минус-слова группы: мусор слоя (упражнения, таблетки, форум…) + отличительные слова соседних групп слоя.
+ * Группам услуг добавляем отличительные слова слоёв — чтобы «остеопат при головной боли цена» уходил в группу
+ * проблемы с подходящим объявлением, а «остеопат цена» оставался в группе услуги.
+ */
+function layerGroups(b: B, nicheId: string, services: Service[], geo: SemanticCore["geo"], serviceGroups: SemanticGroup[]): SemanticGroup[] {
+  const niche = nicheById(nicheId);
+  const all = services.map(svcText).join(" \n ");
+  const hasKids = services.some((s) => KIDS_RE.test(svcText(s)));
+  const seen = new Set(serviceGroups.flatMap((g) => g.keywords).map(phraseKey));
+  const campaignNeg = niche.negatives;
+  const geoStems = new Set([...geo.city, ...geo.local].flatMap(sigWords).map(stem));
+  const mainNoun = (() => {
+    const p = parseService(services.find((s) => !SECONDARY.test(svcText(s)) && !KIDS_RE.test(svcText(s))) ?? services[0], nicheId);
+    const c = p.mains[0];
+    return c ? lower(c.noun ?? c.heads[0]) : sigWords(p.base).length <= 2 ? p.base : "";
+  })();
+  const entries = [...layersFor(nicheId), ...timeEntries(b, /остеопат/.test(all) ? "остеопат" : mainNoun)];
+  const count: Record<string, number> = { problem: 0, adjacent: 0, audience: 0 };
+  type Draft = SemanticGroup & { sig: Map<string, string> };
+  const drafts: Draft[] = [];
+
+  for (const e of entries) {
+    if (count[e.layer] >= LAYER_SEM.cap[e.layer]) continue;
+    if (e.unless?.test(all)) continue;
+    let cands = services.filter((s) => e.to.test(svcText(s)));
+    cands = e.kids ? cands.filter((s) => KIDS_RE.test(svcText(s))) : cands.filter((s) => !KIDS_RE.test(svcText(s)));
+    if (!cands.length) continue;
+    const primary = cands.filter((s) => !SECONDARY.test(svcText(s)));
+    const pool = primary.length ? primary : cands;
+    const target = (e.prefer && pool.find((s) => e.prefer!.test(svcText(s)))) || pool[0];
+    const phrases = uniq(e.phrases.filter((p) => typeof p === "string" || p[1].test(all)).map((p) => lower(typeof p === "string" ? p : p[0])));
+    if (!phrases.length) continue;
+    const parsed = parseService(target, nicheId);
+    const c = parsed.mains[0];
+    const noun = lower(e.noun ?? (c ? c.noun ?? c.heads[0] : sigWords(parsed.base).slice(0, 2).join(" ")));
+    const specialist = !!e.noun || (c?.kind ?? semanticsFor(nicheId).kind) === "visit";
+    const nounStems = new Set(sigWords(noun).map(stem));
+    const hasNoun = (p: string) => sigWords(p).some((w) => nounStems.has(stem(w)));
+    const city = geo.city;
+    const tiers: string[][] = [phrases];
+    if (e.layer === "problem") {
+      tiers.push((e.at ?? []).slice(0, 2).map((a) => `${noun} при ${a}`));
+      const short = sigWords(noun).length <= 2;
+      tiers.push(phrases.filter((p) => short && !hasNoun(p) && sigWords(p).length <= 4).slice(0, 8).map((p) => `${p} ${noun}`));
+      tiers.push(phrases.slice(0, 8).flatMap((p) => city.slice(0, 1).map((ct) => `${p} ${ct}`)));
+      tiers.push(phrases.slice(0, 6).flatMap((p) => [`${p} к кому обратиться`, `${p} куда обратиться`]));
+      if (e.info) tiers.push(phrases.slice(0, 3).map((p) => `${p} что делать`));
+      tiers.push((e.at ?? []).slice(0, 2).flatMap((a) => [...city.slice(0, 1).map((ct) => `${noun} при ${a} ${ct}`), `${noun} при ${a} цена`, `${noun} при ${a} запись`]));
+      tiers.push(phrases.filter((p) => short && !hasNoun(p) && sigWords(p).length <= 3).slice(0, 4).flatMap((p) => city.slice(0, 1).map((ct) => `${p} ${noun} ${ct}`)));
+      tiers.push(phrases.slice(0, 4).flatMap((p) => city.slice(1, 2).map((ct) => `${p} ${ct}`)));
+    } else {
+      tiers.push(phrases.flatMap((p) => city.slice(0, 1).map((ct) => `${p} ${ct}`)));
+      tiers.push(phrases.slice(0, 6).flatMap((p) => ["цена", "запись", "рядом", "отзывы"].map((m) => `${p} ${m}`)));
+      if (e.layer === "adjacent" && specialist) tiers.push(phrases.filter((p) => !hasNoun(p) && sigWords(p).length <= 2).slice(0, 4).map((p) => `${p} или ${noun}`));
+      tiers.push(phrases.slice(0, 4).flatMap((p) => city.slice(1, 2).map((ct) => `${p} ${ct}`)));
+      tiers.push(phrases.slice(0, 3).flatMap((p) => city.slice(0, 1).flatMap((ct) => ["цена", "запись"].map((m) => `${p} ${ct} ${m}`))));
+    }
+    const junk = uniq([...LAYER_JUNK, ...(e.neg ?? []), ...(hasKids ? [] : NO_KIDS_NEG)]);
+    const kws: string[] = [];
+    const local = new Set<string>();
+    tiers.forEach((t, ti) => {
+      for (const raw of t) {
+        if (kws.length >= LAYER_SEM.perGroup) break;
+        if ((ti > 0 && sigCount(raw) > 6) || plainWords(raw).length > SEM.words) continue;
+        const d = toDirect(raw);
+        if (!d) continue;
+        const k = phraseKey(raw);
+        if (!k || local.has(k) || seen.has(k)) continue;
+        // Фраза, которую заблокировали бы минус-слова кампании или мусор слоя, — не берём (минус-слова важнее)
+        if (campaignNeg.some((n) => conflicts(n, raw)) || junk.some((n) => conflicts(n, raw) && !phrases.some((p) => conflicts(n, p)))) continue;
+        local.add(k);
+        kws.push(d);
+      }
+    });
+    if (kws.length < LAYER_SEM.minGroup) continue;
+    for (const k of kws) seen.add(phraseKey(k));
+    // Отличительные слова группы — минус-слова для соседей
+    const sig = new Map<string, string>();
+    for (const p of phrases) for (const w of sigWords(p)) {
+      const st = stem(w);
+      if (w.length < 4 || TAIL.has(w) || GENERIC.has(w) || nounStems.has(st) || geoStems.has(st) || /\d/.test(w)) continue;
+      if (!sig.has(st)) sig.set(st, w);
+    }
+    drafts.push({
+      name: e.label,
+      service: target.name,
+      services: [target.name],
+      category: (target.category ?? "").trim(),
+      concepts: c ? [c.id] : [],
+      keywords: kws,
+      negatives: junk.filter((n) => !blocks(n, kws)),
+      core: phrases.slice(0, 30),
+      layer: e.layer,
+      hook: { entry: e.id, ask: e.ask, ...(e.when ? { when: e.when } : {}), noun },
+      sig,
+    });
+    count[e.layer]++;
+  }
+
+  // Кросс-минусовка: соседние группы слоёв друг другу, группам услуг — слова всех слоёв
+  const capNeg = (list: string[]) => {
+    let out = uniq(list);
+    while (out.join(" ").length > SEM.groupNegChars) out = out.slice(0, -1);
+    return out;
+  };
+  for (const d of drafts) {
+    const extra = drafts.filter((x) => x !== d).flatMap((x) => [...x.sig.values()]).filter((w) => !blocks(w, d.keywords) && !d.sig.has(stem(w)));
+    d.negatives = capNeg([...d.negatives, ...extra]);
+  }
+  const layerWords = uniq(drafts.flatMap((x) => [...x.sig.values()]));
+  for (const g of serviceGroups) {
+    const own = new Set(g.keywords.flatMap(sigWords).map(stem));
+    g.negatives = capNeg([...g.negatives, ...layerWords.filter((w) => !own.has(stem(w)) && !blocks(w, g.keywords))]);
+  }
+  return drafts.map(({ sig: _s, ...g }) => g);
 }
 
 const conflictsAny = (forbidden: Map<string, string>, keyword: string) => sigWords(keyword).some((w) => forbidden.has(stem(w)));
@@ -689,7 +870,9 @@ export async function refineWithDirect(core: SemanticCore, api: DirectResearch, 
 /** Интересы для РСЯ: тематические фразы по разделам/понятиям (без операторов и гео) */
 export function networkInterests(core: SemanticCore, max = 3): { name: string; service: string; keywords: string[] }[] {
   const byKey = new Map<string, { name: string; service: string; keywords: string[] }>();
-  for (const g of core.groups) {
+  // Только услуги: тёплые запросы о проблемах и аудитории (беременность, болезни) — деликатные темы, интересы по ним в РСЯ
+  // Яндекс не разрешает, а показы «похожим» по симптомам — это персональный таргетинг по здоровью
+  for (const g of core.groups.filter((x) => (x.layer ?? "service") === "service")) {
     const key = g.category || g.concepts[0] || g.name;
     const cur = byKey.get(key) ?? { name: g.category || g.name, service: g.service, keywords: [] };
     cur.keywords.push(...g.core.map(displayKeyword));
@@ -700,22 +883,30 @@ export function networkInterests(core: SemanticCore, max = 3): { name: string; s
 
 export type SemanticsView = {
   total: number;
-  groups: { id?: string; name: string; services: string[]; count: number; sample: string[]; keywords: string[]; negatives: string[] }[];
+  groups: { id?: string; name: string; services: string[]; count: number; sample: string[]; keywords: string[]; negatives: string[]; layer: Layer; layerLabel: string }[];
+  /** Итоги по слоям: группы и запросы */
+  layers: { id: Layer; label: string; groups: number; count: number }[];
   negatives: string[];
   geo: { city: string[]; local: string[] };
   checks: SemanticChecks;
+  medical?: boolean;
 };
 
 /** То, что показываем владельцу: фразы без операторов, примеры, минус-слова */
 export function semanticsView(core: {
-  groups: { id?: string; name: string; service?: string; services?: string[]; keywords: string[]; negatives?: string[] }[];
+  groups: { id?: string; name: string; service?: string; services?: string[]; keywords: string[]; negatives?: string[]; layer?: Layer }[];
   negatives: string[];
   geo: SemanticCore["geo"];
   checks: SemanticChecks;
+  medical?: boolean;
 }): SemanticsView {
   const groups = core.groups.map((g) => {
     const keywords = uniq(g.keywords.map(displayKeyword));
-    return { id: g.id, name: g.name, services: g.services ?? (g.service ? [g.service] : [g.name]), count: keywords.length, sample: keywords.slice(0, 12), keywords, negatives: g.negatives ?? [] };
+    const layer = g.layer ?? "service";
+    return { id: g.id, name: g.name, services: g.services ?? (g.service ? [g.service] : [g.name]), count: keywords.length, sample: keywords.slice(0, 12), keywords, negatives: g.negatives ?? [], layer, layerLabel: LAYER_LABEL[layer] };
   });
-  return { total: groups.reduce((s, g) => s + g.count, 0), groups, negatives: core.negatives, geo: core.geo, checks: core.checks };
+  // Порядок: услуги, проблемы, смежные, аудитории
+  groups.sort((a, b) => LAYERS.indexOf(a.layer) - LAYERS.indexOf(b.layer));
+  const layers = LAYERS.map((id) => ({ id, label: LAYER_LABEL[id], groups: groups.filter((g) => g.layer === id).length, count: groups.filter((g) => g.layer === id).reduce((s, g) => s + g.count, 0) })).filter((x) => x.groups);
+  return { total: groups.reduce((s, g) => s + g.count, 0), groups, layers, negatives: core.negatives, geo: core.geo, checks: core.checks, ...(core.medical ? { medical: true } : {}) };
 }

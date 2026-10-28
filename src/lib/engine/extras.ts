@@ -5,7 +5,7 @@
  * Собирается из анкеты бизнеса — одинаково для запуска, робота и предпросмотра (модуль работает и в браузере).
  */
 import type { Business } from "../db/schema";
-import { nicheById } from "../niches";
+import { isMedical, nicheById } from "../niches";
 
 export type ExtrasBiz = Pick<Business, "name" | "niche" | "city" | "address" | "phone" | "whatsapp" | "telegram" | "hours" | "services" | "advantages" | "offer" | "review" | "description"> & {
   /** ID организации в Яндекс Бизнесе (permalink): адрес, телефон, часы и рейтинг Директ берёт из профиля */
@@ -68,6 +68,34 @@ const clean = (s: string) => cleanText(s);
 export const SUPERLATIVE = /(?<![\p{L}\p{N}])(лучш[а-яё]*|№\s?1|номер\s+один|сам(ый|ая|ое|ые|ого|ой|ую|ых|ым)|первый\s+в\s+городе)(?![\p{L}\p{N}])/iu;
 export const hasSuperlative = (s: string | null | undefined) => SUPERLATIVE.test(s ?? "");
 
+// ─── Медицинские утверждения ───────────────────────────────────────────
+// Закон «О рекламе», ст. 24 (ч. 1 п. 2–5, 8; ч. 3 распространяет их на медуслуги) и правила модерации Директа:
+// нельзя обещать излечение, гарантировать результат и безопасность, приводить благодарности пациентов
+// и предполагать болезнь у читателя («Болит шея?»). Обещание вылечить — нельзя ни в какой нише.
+
+const CURE = /(?<![\p{L}])(вылеч\p{L}*|излеч\p{L}*|исцел\p{L}*|избав\p{L}*\s+навсегда|навсегда\s+избав\p{L}*|раз\s+и\s+навсегда)/iu;
+const MED_CLAIMS: [RegExp, string][] = [
+  [/(?<![\p{L}])гарант\p{L}*/iu, "гарантия результата"],
+  [/(?<![\p{L}])(безопасн\p{L}*|безвредн\p{L}*|безболезненн\p{L}*|без\s+(побочн|последств|противопоказ)\p{L}*)/iu, "обещание безопасности"],
+  [/100\s?%|(?<![\p{L}])эффективн\p{L}*/iu, "обещание эффективности"],
+  [/(?<![\p{L}])(благодар\p{L}*|отзыв\p{L}*|спасибо)/iu, "отзыв или благодарность пациента"],
+  [/(у\s+вас|вас\s+беспоко\p{L}*|мучает|мучают|страдаете|болит|болят|ноет|беспокоит)[^.!?]*\?/iu, "предположение, что у читателя болезнь"],
+];
+
+/**
+ * Что в тексте нельзя рекламе (пустой массив — всё хорошо). medical — медицинские услуги (niches.isMedical):
+ * для них дополнительно гарантии, безопасность, отзывы пациентов и вопросы «Болит…?».
+ */
+export function claimProblems(s: string | null | undefined, medical: boolean): string[] {
+  const t = s ?? "";
+  const out: string[] = [];
+  const m = t.match(CURE);
+  if (m) out.push(`обещание вылечить («${m[0]}»)`);
+  if (medical) for (const [re, what] of MED_CLAIMS) if (re.test(t)) out.push(what);
+  return out;
+}
+export const hasClaims = (s: string | null | undefined, medical: boolean) => claimProblems(s, medical).length > 0;
+
 /** Факт владельца без превосходных степеней: предложения с «лучший/самый» выкидываем целиком, а не калечим */
 export function withoutSuperlatives(s: string | null | undefined): string {
   return clean(s ?? "")
@@ -100,10 +128,10 @@ export function parsePrice(s?: string | null): PriceExt | null {
  * Ничего не придумываем: «Без очереди», «Удобно добраться», «Стерильные инструменты» — только если это написал владелец.
  * Короткие факты не длиннее 25 символов: длинные преимущества сокращаем по смыслу, а не обрезаем на полуслове.
  */
-export function factCallouts(b: Pick<ExtrasBiz, "advantages" | "offer" | "whatsapp" | "telegram">) {
+export function factCallouts(b: Pick<ExtrasBiz, "advantages" | "offer" | "whatsapp" | "telegram">, medical = false) {
   const out: string[] = [];
   const add = (s?: string | null) => {
-    if (!s) return;
+    if (!s || hasClaims(s, medical)) return;
     const t = clean(s).replace(/[.!]$/, "");
     if (t && t.length <= 25 && !out.some((x) => x.toLowerCase() === t.toLowerCase())) out.push(t);
   };
@@ -188,8 +216,10 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
   const hours = parseHours(b.hours);
   const hasPrices = services.some((s) => s.price);
   const named = services.filter((s) => clean(s.name));
-  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter(Boolean);
-  const review = withoutSuperlatives(b.review);
+  // Медуслуги: без отзывов пациентов и обещаний (закон «О рекламе», ст. 24)
+  const medical = isMedical(b);
+  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter((x) => x && !hasClaims(x, medical));
+  const review = medical ? "" : withoutSuperlatives(b.review);
   // Только ссылки, за которыми есть содержимое: без цен нет «Цен», без адреса — «Как добраться»
   const cand: (Sitelink | null)[] = [
     hasPrices
@@ -253,7 +283,7 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
   const about = cut(`${clean(b.name)} — ${n.label.toLowerCase()} в городе ${b.city}${b.address ? `, ${b.address}` : ""}.`, 115);
 
   return {
-    callouts: factCallouts(b),
+    callouts: factCallouts(b, medical),
     sitelinks,
     displayPath: displayPath || null,
     price: o.channel === "vk" ? null : priceLabel,
@@ -459,8 +489,9 @@ export function responsiveAssets(b: ExtrasBiz, ad: { title: string; title2?: str
   const name = clean(b.name);
   const street = b.address ? clean(b.address.split(/[,—–]/)[0]) : null;
   const where = street ? `${b.city}, ${street}` : b.city;
-  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter(Boolean);
-  const offer = b.offer ? withoutSuperlatives(b.offer) : null;
+  const medical = isMedical(b);
+  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter((x) => x && !hasClaims(x, medical));
+  const offer = b.offer && !hasClaims(b.offer, medical) ? withoutSuperlatives(b.offer) : null;
   const hours = clean(b.hours ?? "") || null;
   // Со строчной — только обычные слова: название бизнеса и аббревиатуры оставляем как у владельца
   const low = (s: string) => (/^\p{Lu}{2}/u.test(s) || s.startsWith(name) || (name && s.toLowerCase().startsWith(name.toLowerCase())) ? s : s.charAt(0).toLowerCase() + s.slice(1));
@@ -473,7 +504,7 @@ export function responsiveAssets(b: ExtrasBiz, ad: { title: string; title2?: str
     for (const c0 of cands) {
       if (!c0) continue;
       const c = clean(c0).replace(/\s+([.,!?;:])/g, "$1");
-      if (!c || c.length > max || !okWords(c, word) || hasSuperlative(c) || badChars(c).length) continue;
+      if (!c || c.length > max || !okWords(c, word) || hasSuperlative(c) || badChars(c).length || hasClaims(c, medical)) continue;
       const k = norm(c);
       if (!k || seen.has(k)) continue;
       // Текст, который почти целиком повторяет уже взятый, Яндексу ничего не добавляет

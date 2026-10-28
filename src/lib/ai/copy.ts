@@ -1,10 +1,10 @@
 import "server-only";
 import type { Business, Service } from "../db/schema";
 import { groupServices, hasCategories } from "../services";
-import { ANGLES, nicheById } from "../niches";
-import { badChars, cleanText, factCallouts, hasSuperlative, SUPERLATIVE as SUPERLATIVE_ONE, withoutSuperlatives } from "../engine/extras";
+import { ANGLES, isMedical, LAYER_LABEL, nicheById, type Layer } from "../niches";
+import { badChars, claimProblems, cleanText, factCallouts, hasClaims, hasSuperlative, SUPERLATIVE as SUPERLATIVE_ONE, withoutSuperlatives } from "../engine/extras";
 import { plural } from "../util";
-import { addPhrases, buildSemanticCore, displayKeyword, finalizeCore, networkInterests, conflicts, type SemanticCore } from "../engine/semantics";
+import { addPhrases, buildSemanticCore, displayKeyword, finalizeCore, networkInterests, conflicts, type SemanticCore, type SemanticGroup } from "../engine/semantics";
 import { aiConfigured, gptJson } from "./yandex";
 
 /**
@@ -35,6 +35,8 @@ export type GroupDraft = {
   service?: string; services?: string[];
   /** Минус-слова группы (кросс-минусовка между группами поиска) */
   negatives?: string[];
+  /** Слой семантики: услуга, проблема клиента, смежный запрос, аудитория */
+  layer?: Layer;
 };
 export type CopyPlan = {
   search: GroupDraft[];
@@ -103,7 +105,7 @@ export const tidyText = (s: string | null | undefined) => (s ?? "").replace(/\s+
  * Проверка текста, который владелец правит руками. Ничего не обрезаем и не вырезаем молча —
  * возвращаем понятные ошибки по-русски (пустой массив — всё хорошо). Сравнивать с tidyText(...).
  */
-export function validateAdText(channel: keyof typeof LIMITS | string, ad: { title?: string | null; title2?: string | null; text?: string | null }): string[] {
+export function validateAdText(channel: keyof typeof LIMITS | string, ad: { title?: string | null; title2?: string | null; text?: string | null }, opts: { medical?: boolean } = {}): string[] {
   const ch = (channel in LIMITS ? channel : "search") as keyof typeof LIMITS;
   const L = LIMITS[ch];
   const errors: string[] = [];
@@ -130,6 +132,8 @@ export function validateAdText(channel: keyof typeof LIMITS | string, ad: { titl
     const caps = v.match(CAPS_WORD);
     if (caps) errors.push(`${label}: «${caps[0]}» написано заглавными — модерация отклонит. Напишите обычными буквами.`);
     if (/([!?])\1/.test(v)) errors.push(`${label}: несколько «!» или «?» подряд модерация не пропустит.`);
+    const claims = claimProblems(v, Boolean(opts.medical));
+    if (claims.length) errors.push(`${label}: ${claims.join(", ")} — ${opts.medical ? "в рекламе медицинских услуг это запрещает закон «О рекламе» (ст. 24), модерация отклонит" : "модерация отклонит"}.${opts.medical && claims.some((c) => c.startsWith("предположение")) ? " Пишите о специалисте, а не о болезни читателя: «Остеопат при боли в шее»." : ""}`);
   }
   return errors;
 }
@@ -207,13 +211,16 @@ export function supportedBy(sentence: string, facts: string) {
   return CLAIMS.every((re) => !re.test(sentence) || re.test(facts));
 }
 
-/** Оставляем только подтверждённые предложения. Заголовок либо подтверждён целиком, либо объявление отбрасываем. */
-function factCheckAd(a: AdDraft, facts: string): AdDraft | null {
-  if (!supportedBy(a.title, facts)) return null;
-  const title2 = a.title2 && supportedBy(a.title2, facts) ? a.title2 : null;
+/**
+ * Оставляем только подтверждённые предложения. Заголовок либо подтверждён целиком, либо объявление отбрасываем.
+ * medical: ещё и без обещаний, отзывов пациентов и «Болит…?» (extras.claimProblems); обещание вылечить — нигде.
+ */
+function factCheckAd(a: AdDraft, facts: string, medical = false): AdDraft | null {
+  if (!supportedBy(a.title, facts) || hasClaims(a.title, medical)) return null;
+  const title2 = a.title2 && supportedBy(a.title2, facts) && !hasClaims(a.title2, medical) ? a.title2 : null;
   const text = a.text
     .split(/(?<=[.!?])\s+/)
-    .filter((x) => supportedBy(x, facts))
+    .filter((x) => supportedBy(x, facts) && !hasClaims(x, medical))
     .join(" ")
     .trim();
   if (text.length < 25) return null;
@@ -259,6 +266,13 @@ const SYSTEM = `Ты — сильный директолог и копирайт
 - Каждое объявление проверяет свою гипотезу (угол подачи): price, offer, proof, convenience, result, emotion.
 Ответ — строго JSON без пояснений.`;
 
+/** Медицинские услуги: закон «О рекламе», ст. 24, и правила Директа */
+const MEDICAL_RULES = `Это медицинские услуги. Дополнительно:
+- Не обещай излечение, результат и безопасность: никаких «вылечим», «избавим навсегда», «гарантия», «без боли», «эффективно».
+- Не предполагай болезнь у читателя: нельзя «Болит шея?», «Мучает спина?». Можно: «Остеопат при боли в шее».
+- Без отзывов и благодарностей пациентов.
+- Предупреждение о противопоказаниях Директ добавит сам — в текст его не пиши.`;
+
 /** Сколько групп отдаём модели: остальным — шаблонные объявления (ответ модели ограничен по длине) */
 const AI_GROUPS = 8;
 
@@ -267,9 +281,12 @@ export async function generateCopyPlan(b: Business, channels: { search: boolean;
   const fallback = templatePlan(b, core);
   if (!aiConfigured()) return fallback;
 
-  const list = (gs: GroupDraft[]) => gs.slice(0, AI_GROUPS).map((g, i) => `${i + 1}. ${g.name}${g.service && g.service !== g.name ? ` (услуга: ${g.service})` : ""}${g.services && g.services.length > 1 ? `; ещё: ${g.services.filter((x) => x !== g.service).slice(0, 4).join(", ")}` : ""}`).join("\n");
+  const medical = isMedical(b);
+  // Модели — только группы услуг: объявления групп проблем, смежных и аудиторий строим по шаблону «проблема → решение»
+  // (проверенные формулировки, без обещаний), иначе модель пишет про услугу без связи с запросом
+  const list = (gs: GroupDraft[]) => gs.filter((g) => (g.layer ?? "service") === "service").slice(0, AI_GROUPS).map((g, i) => `${i + 1}. ${g.name}${g.service && g.service !== g.name ? ` (услуга: ${g.service})` : ""}${g.services && g.services.length > 1 ? `; ещё: ${g.services.filter((x) => x !== g.service).slice(0, 4).join(", ")}` : ""}`).join("\n");
   const user = `${bizBrief(b)}
-
+${medical ? `\n${MEDICAL_RULES}\n` : ""}
 Группы поиска (семантика уже собрана, нужны только объявления):
 ${list(fallback.search)}
 Группы РСЯ:
@@ -299,11 +316,12 @@ ${list(fallback.network)}
     // Объявления модели — в группы семантики по номеру; выдуманный факт — шаблонное объявление того же места
     const fill = (items: Raw["search"], ch: keyof typeof LIMITS, fb: GroupDraft[]): GroupDraft[] =>
       fb.map((g, gi) => {
+        if ((g.layer ?? "service") !== "service") return g;
         const got = (items ?? []).find((x, xi) => (x?.group ?? xi + 1) === gi + 1);
         if (!got?.ads?.length) return g;
         const ads = got.ads.slice(0, 3).map((a, i) => {
           const nz = normalizeAd(a, ch);
-          const checked = nz.title && nz.text ? factCheckAd(nz, facts) : null;
+          const checked = nz.title && nz.text ? factCheckAd(nz, facts, medical) : null;
           return checked ?? g.ads[i % Math.max(1, g.ads.length)] ?? null;
         });
         const merged = uniqueAds(ads.filter((a): a is AdDraft => !!a && !!a.title && !!a.text));
@@ -317,7 +335,7 @@ ${list(fallback.network)}
         const fb = fallback.vk;
         const ads = g.ads.slice(0, 4).map((a, i) => {
           const nz = normalizeAd(a, "vk");
-          const checked = nz.title && nz.text ? factCheckAd(nz, facts) : null;
+          const checked = nz.title && nz.text ? factCheckAd(nz, facts, medical) : null;
           return checked ?? fb[gi % Math.max(1, fb.length)]?.ads[i % 3] ?? null;
         });
         return { ...g, name: fit(g.name, 60), audience: fit(g.audience || "", 120), keywords: [], ads: uniqueAds(ads.filter((a): a is AdDraft => !!a && !!a.title && !!a.text)) };
@@ -331,7 +349,7 @@ ${list(fallback.network)}
       network: channels.network ? fill(raw.network, "network", fallback.network) : [],
       vk: channels.vk ? (vk.length ? vk : fallback.vk) : [],
       negatives: [...new Set([...fallback.negatives, ...aiNeg])].filter(Boolean).slice(0, 150),
-      callouts: [...new Map([...(raw.callouts ?? []).map((c) => cleanText(c)).filter((c) => c && c.length <= 25 && supportedBy(c, facts)), ...fallback.callouts].map((c) => [c.toLowerCase(), c])).values()].slice(0, 6),
+      callouts: [...new Map([...(raw.callouts ?? []).map((c) => cleanText(c)).filter((c) => c && c.length <= 25 && supportedBy(c, facts) && !hasClaims(c, medical)), ...fallback.callouts].map((c) => [c.toLowerCase(), c])).values()].slice(0, 6),
       imageIdeas: (raw.imageIdeas?.length ? raw.imageIdeas : fallback.imageIdeas).slice(0, 3),
     };
   } catch {
@@ -345,7 +363,8 @@ ${list(fallback.network)}
  */
 export async function expandSemantics(b: Business, core: SemanticCore): Promise<SemanticCore> {
   if (!aiConfigured() || !core.groups.length) return core;
-  const groups = core.groups.slice(0, 12);
+  // Только группы услуг (они идут первыми — номера совпадают с core.groups): слои собраны по проверенным словарям
+  const groups = core.groups.filter((g) => (g.layer ?? "service") === "service").slice(0, 12);
   try {
     const r = await gptJson<{ groups: { group: number; phrases: string[] }[] }>(
       "Ты — директолог. Подбираешь поисковые запросы для Яндекс Директа. Только запросы людей, которые хотят получить именно эту услугу. Ответ — строго JSON.",
@@ -383,7 +402,7 @@ export async function rewriteAd(
       const r = await gptJson<AdDraft & { hypothesis: string }>(
         SYSTEM,
         `${bizBrief(b)}
-
+${isMedical(b) ? `\n${MEDICAL_RULES}\n` : ""}
 Текущее объявление (${ANGLES[p.base.angle]?.name ?? p.base.angle}):
 Заголовок: ${p.base.title}
 ${p.base.title2 ? `Заголовок 2: ${p.base.title2}\n` : ""}Текст: ${p.base.text}
@@ -396,7 +415,7 @@ ${p.winner ? `Лучшее объявление в группе сейчас: «
         { temperature: 0.7, maxTokens: 800 },
       );
       const n = normalizeAd({ ...r, angle }, p.channel);
-      const ad = n.title && n.text ? factCheckAd(n, ownerFacts(b)) : null;
+      const ad = n.title && n.text ? factCheckAd(n, ownerFacts(b), isMedical(b)) : null;
       if (ad) return { ...ad, hypothesis: cleanHypothesis(fit(r.hypothesis, 220)) || hypothesisFor(angle) };
     } catch {
       /* ниже — шаблон */
@@ -541,12 +560,14 @@ function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string,
   const street = b.address ? cleanText(b.address.split(/[,—–]/)[0]) : null;
   const where = street ? `${b.city}, ${street}` : b.city;
   const name = cleanText(b.name);
-  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter(Boolean);
-  const offer = b.offer ? withoutSuperlatives(b.offer.replace(/\s*(на|за)\s+первый\s+визит\s*$/i, "")) : null;
+  // Медуслуги: без отзывов пациентов и обещаний (закон «О рекламе», ст. 24)
+  const medical = isMedical(b);
+  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter((x) => x && !hasClaims(x, medical));
+  const offer = b.offer && !hasClaims(b.offer, medical) ? withoutSuperlatives(b.offer.replace(/\s*(на|за)\s+первый\s+визит\s*$/i, "")) : null;
   const firstVisit = b.offer && /первый\s+визит/i.test(b.offer);
   // Отзыв укорачиваем так, чтобы в тексте осталось место для адреса или призыва
   const rmax = Math.max(30, L.text - 38);
-  const rv = withoutSuperlatives(b.review) || null;
+  const rv = medical ? null : withoutSuperlatives(b.review) || null;
   const review = rv ? (rv.length > rmax ? rv.slice(0, rmax).replace(/\s+\S*$/, "").replace(/[,—–-]$/, "").trim() + "..." : rv) : null;
 
   const brand = `${name} — ${b.city}`;
@@ -559,7 +580,7 @@ function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string,
   const sentences = (c: (string | null | undefined | false)[], max: number) => joinSentences(c.map((x) => (twice(x) ? null : x)), max);
   const hours = cleanText(b.hours) || null;
   const cta = "Запишитесь онлайн за минуту!";
-  const fullOffer = b.offer ? cap(withoutSuperlatives(b.offer)) || null : null;
+  const fullOffer = offer && b.offer ? cap(withoutSuperlatives(b.offer)) || null : null;
   const offerFull = offer ? (firstVisit ? `${offer} на первый визит` : offer) : null;
 
   const price_: AdDraft = {
@@ -606,7 +627,8 @@ function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string,
     title2: pick([street ? `${name}, ${street}` : null, brand, name], L.title2),
     text: sentences(["Время только для себя", `${cap(svc)} — ${name}, ${where}`, adv[0], fullOffer, cta, "Запись онлайн"], L.text),
   };
-  const sets = [[price_, offer_, proof_], [convenience_, emotion_, price_]];
+  // Медуслуги: «Время для себя» не про приём специалиста — вместо него удобство
+  const sets = [[price_, offer_, proof_], [convenience_, medical ? offer_ : emotion_, price_]];
   return uniqueAds(sets[set % 2].map((a) => normalizeAd(a, ch)));
 }
 
@@ -625,6 +647,77 @@ function threeAds(b: Business, ch: keyof typeof LIMITS, service?: string, price?
   return out;
 }
 
+/**
+ * Объявления групп проблем, смежных запросов и аудиторий: «проблема → решение». Заголовок отвечает на запрос
+ * («Ломкие ногти? Маникюр без покрытия», «Ищете мануального терапевта? Взрослый прием остеопата»), в тексте — услуга,
+ * цена из прайса, адрес и запись. Медуслуги — без вопроса о болезни читателя: «Остеопат при боли в шее — Екатеринбург».
+ * Никаких обещаний результата: только факты анкеты.
+ */
+export function layerAds(b: Business, g: Pick<SemanticGroup, "layer" | "hook" | "service" | "name">, set = 0): AdDraft[] {
+  const L = LIMITS.search;
+  const hook = g.hook;
+  if (!hook) return threeAds(b, "search", g.service, b.services?.find((s) => s.name === g.service)?.price, set);
+  const medical = isMedical(b);
+  const owned = b.services?.find((s) => s.name === g.service);
+  const svc = cleanText(g.service) || mainService(b);
+  const p = priceText(cleanText(owned?.price)) || null;
+  const name = cleanText(b.name);
+  const street = b.address ? cleanText(b.address.split(/[,—–]/)[0]) : null;
+  const where = street ? `${b.city}, ${street}` : b.city;
+  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter((x) => x && !hasClaims(x, medical));
+  const hours = cleanText(b.hours) || null;
+  const Noun = cap(cleanText(hook.noun));
+  const ask = cleanText(hook.ask);
+  const sl = low(svc, name);
+  const when = hook.when ? cleanText(hook.when) : null;
+  // Медуслуги: специалист и показание, а не вопрос о болезни читателя (закон «О рекламе», ст. 24, ч. 1 п. 5)
+  const medProblem = medical && g.layer === "problem";
+  const lead: (string | null)[] =
+    medProblem ? (when ? [`${Noun} ${when} — ${b.city}`, `${Noun} ${when}`, `${cap(when)}: ${sl}`] : [`${Noun} — ${b.city}`, `${svc} — ${b.city}`])
+    : g.layer === "audience" ? [`${ask} — ${b.city}`, ask]
+    : [`${ask}? ${svc}`, `${ask}? ${Noun} — ${b.city}`, `${ask}? ${Noun}`];
+  const priced: (string | null)[] =
+    medProblem ? [p && when && `${Noun} ${when}: ${p}`, p && `${svc} — ${p}`]
+    : g.layer === "audience" ? [p && `${ask} — ${p}`, p && `${ask}: ${sl} — ${p}`, p && `${svc} — ${p}`]
+    : [p && `${ask}? ${Noun} — ${p}`, p && `${ask}? ${svc} — ${p}`, p && `${svc} — ${p}, ${b.city}`];
+  const near: (string | null)[] =
+    medProblem ? [street && when && `${Noun} ${when} — ${street}`, street && `${Noun} — ${b.city}, ${street}`]
+    : g.layer === "audience" ? [street && `${ask} — ${street}`, street && `${ask} — ${b.city}, ${street}`]
+    : [street && `${ask}? ${Noun} — ${street}`, street && `${Noun} — ${b.city}, ${street}`];
+  const used = new Set<string>();
+  const safe = (list: (string | null | false | undefined)[]) => list.filter((x): x is string => !!x && !hasClaims(x, medical));
+  const cta = "Запишитесь онлайн за минуту!";
+  const svcLine = `${svc}${p ? ` — ${p}` : ""}`;
+  const ads: AdDraft[] = [
+    {
+      angle: "result",
+      title: pickTitle(safe([...lead, `${svc} — ${b.city}`, svc]), L.title, used),
+      title2: pickTitle(safe([adv[0], p && `Цена — ${p}`, `${name} — ${b.city}`, "Онлайн-запись"]), L.title2),
+      text: joinSentences(safe([svcLine, adv[0], `${name}, ${where}`, cta, "Запись онлайн"]), L.text),
+    },
+    {
+      angle: "price",
+      title: pickTitle(safe([...priced, ...lead, `${svc} — ${b.city}`, svc]), L.title, used),
+      title2: pickTitle(safe([adv[1] ?? adv[0], `${name} — ${b.city}`, name, "Онлайн-запись"]), L.title2),
+      text: joinSentences(safe([svcLine, adv[1] ?? adv[0], `${name}, ${where}`, cta, "Запись онлайн"]), L.text),
+    },
+    {
+      angle: "convenience",
+      title: pickTitle(safe([...near, ...lead, `${svc} — ${name}, ${b.city}`, svc]), L.title, used),
+      title2: pickTitle(safe([hours, street, "Онлайн-запись"]), L.title2),
+      text: joinSentences(safe([`${name}: ${where}`, hours, svcLine, "Выберите удобное время онлайн"]), L.text),
+    },
+  ];
+  return uniqueAds(ads.map((a) => normalizeAd(a, "search")).filter((a) => a.title && a.text && !hasClaims(`${a.title} ${a.title2 ?? ""} ${a.text}`, medical)));
+}
+
+const LAYER_AUDIENCE: Record<Layer, (g: SemanticGroup) => string> = {
+  service: (g) => `Ищут «${g.name.toLowerCase()}» в Яндексе`,
+  problem: (g) => `${LAYER_LABEL.problem}: ищут «${(g.core[0] ?? g.name).toLowerCase()}» и похожее, ещё не выбрали услугу`,
+  adjacent: (g) => `${LAYER_LABEL.adjacent}: ищут «${(g.core[0] ?? g.name).toLowerCase()}» — показываем вашу услугу`,
+  audience: (g) => `${LAYER_LABEL.audience}: ${g.name.toLowerCase()}`,
+};
+
 export function templatePlan(b: Business, core: SemanticCore = buildSemanticCore(b)): CopyPlan {
   const n = nicheById(b.niche);
   const priceOf = (name?: string) => b.services?.find((s) => s.name === name)?.price;
@@ -632,15 +725,25 @@ export function templatePlan(b: Business, core: SemanticCore = buildSemanticCore
   const seeds = n.searchSeeds.map((k) => cleanKeyword(k.replace("{city}", city)));
   // Поиск: группа на услугу (или раздел) из семантического ядра; у каждой — 3 объявления с разными подходами.
   // Наборы подходов чередуем между группами: так гипотезы проверяются шире
-  let search: GroupDraft[] = core.groups.map((g, i) => ({
-    name: g.name,
-    service: g.service,
-    services: g.services,
-    audience: `Ищут «${low(cleanText(g.name), b.name)}» в Яндексе — ${core.groups.length > 1 ? plural(g.keywords.length, `${g.keywords.length} запрос`, `${g.keywords.length} запроса`, `${g.keywords.length} запросов`) : "все запросы услуги"}`,
-    keywords: g.keywords,
-    negatives: g.negatives,
-    ads: threeAds(b, "search", g.service, priceOf(g.service), i % 2),
-  }));
+  const many = (g: SemanticGroup) => plural(g.keywords.length, `${g.keywords.length} запрос`, `${g.keywords.length} запроса`, `${g.keywords.length} запросов`);
+  let search: GroupDraft[] = core.groups.map((g, i) => {
+    const layer = g.layer ?? "service";
+    return {
+      name: g.name,
+      service: g.service,
+      services: g.services,
+      layer,
+      audience:
+        layer === "service"
+          ? `Ищут «${low(cleanText(g.name), b.name)}» в Яндексе — ${core.groups.length > 1 ? many(g) : "все запросы услуги"}`
+          : `${LAYER_AUDIENCE[layer](g)} — ${many(g)}`,
+      keywords: g.keywords,
+      negatives: g.negatives,
+      // Тёплые запросы — только по фразам: автотаргетинг расширил бы их до совсем случайных («болит спина у собаки»)
+      ...(layer === "service" ? {} : { autotargeting: false }),
+      ads: layer === "service" ? threeAds(b, "search", g.service, priceOf(g.service), i % 2) : layerAds(b, g, i % 2),
+    };
+  });
   if (!search.length) {
     const base = keywordBase(mainService(b)) || cleanKeyword(genericService(b));
     search = [{ name: mainService(b), audience: `Ищут «${low(mainService(b), b.name)}» в Яндексе`, keywords: [...new Set([base, `${base} ${city}`, `${base} рядом`, `${base} цена`, ...seeds])], ads: templateAds(b, "search") }];
@@ -663,7 +766,7 @@ export function templatePlan(b: Business, core: SemanticCore = buildSemanticCore
     network,
     vk,
     negatives: core.groups.length ? core.negatives : n.negatives,
-    callouts: factCallouts(b).slice(0, 6),
+    callouts: factCallouts(b, isMedical(b)).slice(0, 6),
     imageIdeas: n.visuals,
   };
 }

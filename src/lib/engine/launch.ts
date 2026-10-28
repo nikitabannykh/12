@@ -17,7 +17,8 @@ import { ensureCounter, ensureGoals, ensureVisitGoal } from "../platforms/metric
 import { decrypt } from "../crypto";
 import { regionIdsFor, vkPixelCounterId } from "./regions";
 import { act, logChange } from "./ops";
-import { nicheById } from "../niches";
+import { isMedical, nicheById, type Layer } from "../niches";
+export { MEDICAL_LICENSE_URL } from "../niches";
 import { appUrl, errorText, isoDay, pl, rub, uid } from "../util";
 import { baseOf, formatOf, isRetarget, RETARGET_MIN_AUDIENCE, RETARGET_WINDOW_DAYS, retargetOf, waitingAudience, type AudienceMeta } from "../channels";
 import { VK_LEAD_GOAL } from "../platforms/vk-formats";
@@ -30,6 +31,8 @@ export type PlanGroup = {
   service?: string; services?: string[];
   /** Минус-слова группы (кросс-минусовка), уходят в AdGroup.NegativeKeywords */
   negatives?: string[];
+  /** Поиск: слой семантики — услуга, проблема клиента, смежный запрос, аудитория (робот сравнивает слои по цене обращения) */
+  layer?: Layer;
 };
 export type PlanChannel = { channel: Channel; accountId: string; platform: string; weekly: number; enabled: boolean; groups: PlanGroup[] };
 export type LaunchPlan = {
@@ -43,7 +46,7 @@ export type LaunchPlan = {
   dropped: Channel[];
   warnings: string[];
   /** Семантическое ядро: проверки (частотность и дубли в Директе, расширение моделью) и гео из адреса. Сами фразы — в группах поиска */
-  semantics?: { checks: SemanticChecks; geo: SemanticCore["geo"]; total: number };
+  semantics?: { checks: SemanticChecks; geo: SemanticCore["geo"]; total: number; medical?: boolean };
   /** Ход запуска: запуск идёт по одному каналу за запрос и возобновляется после обрыва */
   launch?: LaunchProgress;
 };
@@ -224,7 +227,8 @@ function channelFromCopy(b: Business, copy: CopyPlan, channel: Channel, acc: AdA
     ...(g.service ? { service: g.service } : {}),
     ...(g.services?.length ? { services: g.services } : {}),
     ...(g.negatives?.length && channel === "search" ? { negatives: g.negatives } : {}),
-    autotargeting: fmt !== "vk" && !isRetarget(channel),
+    ...(g.layer && channel === "search" ? { layer: g.layer } : {}),
+    autotargeting: fmt !== "vk" && !isRetarget(channel) && g.autotargeting !== false,
     ageFrom: g.ageFrom ?? n.audience.ageFrom,
     ageTo: g.ageTo ?? n.audience.ageTo,
     sex: n.audience.sex,
@@ -279,6 +283,7 @@ export async function prepareCopy(b: Business, accounts: AdAccount[]): Promise<L
 
   const warnings: string[] = [];
   for (const d of dropped) warnings.push(`На канал «${CHANNEL_NAME[d]}» не хватает бюджета — начнём без него. Увеличьте бюджет, чтобы добавить.`);
+  if (isMedical(b)) warnings.push(MEDICAL_NOTE);
 
   return {
     createdAt: new Date().toISOString(),
@@ -290,9 +295,18 @@ export async function prepareCopy(b: Business, accounts: AdAccount[]): Promise<L
     photoIds: [],
     dropped,
     warnings,
-    semantics: { checks: core.checks, geo: core.geo, total: core.total },
+    semantics: { checks: core.checks, geo: core.geo, total: core.total, ...(core.medical ? { medical: true } : {}) },
   };
 }
+
+/**
+ * Медицинские услуги (остеопатия, мануальная терапия, лечебный массаж, косметология): Директ показывает рекламу только
+ * после проверки лицензии — https://yandex.ru/support/direct/ru/moderation/categories/medicine-medical-activity.
+ * Предупреждение «Есть противопоказания. Посоветуйтесь с врачом» к текстовым объявлениям Директ добавляет сам;
+ * на картинки (РСЯ, VK) его ставим мы — creative/render (не меньше 5% площади, закон «О рекламе», ст. 24 ч. 7).
+ */
+export const MEDICAL_NOTE =
+  "Медицинские услуги: загрузите копию лицензии (со всеми приложениями, с адресом приёма) в кабинете Директа — без неё объявления не пройдут модерацию. Предупреждение «Есть противопоказания. Посоветуйтесь с врачом» Директ добавит к тексту сам, на картинки мы его уже поставили. Для VK Рекламы лицензия тоже нужна.";
 
 /** Шаг 2: фото и рекламные картинки */
 export async function prepareImages(b: Business, plan: LaunchPlan): Promise<LaunchPlan> {
@@ -317,7 +331,7 @@ export async function prepareImages(b: Business, plan: LaunchPlan): Promise<Laun
       // Поиск в ЕПК тоже показывает картинку рядом с текстом — делаем одну на услугу (16:9)
       const groups: PlanGroup[] = [];
       for (const g of ch.groups) {
-        const service = b.services?.find((x) => x.name === g.name) ?? svc;
+        const service = b.services?.find((x) => x.name === (g.service ?? g.name)) ?? svc;
         let imageId: string | null = null;
         try {
           const layout: Layout = photoIds.length ? "tag" : layouts.includes("tag") ? "tag" : layouts[0] ?? "tag";
@@ -360,7 +374,7 @@ export async function prepareImages(b: Business, plan: LaunchPlan): Promise<Laun
   for (const ch of channels.filter((c) => isDirectChannel(c.channel) && c.platform !== "vk")) {
     const done = new Set<string>();
     for (const g of ch.groups) {
-      const service = ch.channel === "search" ? b.services?.find((x) => x.name === g.name) ?? svc : svc;
+      const service = ch.channel === "search" ? b.services?.find((x) => x.name === (g.service ?? g.name)) ?? svc : svc;
       for (const ad of g.ads) {
         if (!ad.imageId || done.has(ad.imageId)) continue;
         done.add(ad.imageId);
@@ -592,6 +606,7 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
         ...(g.negatives?.length && !audienceId ? { negatives: g.negatives } : {}),
         ...(g.service ? { service: g.service } : {}),
         ...(g.services?.length ? { services: g.services } : {}),
+        ...(g.layer ? { layer: g.layer } : {}),
       },
     });
     build.groups[localId] = { groupExt, dbId, ads: {} };
@@ -997,8 +1012,8 @@ export async function addChannelStep(b: Business, accounts: AdAccount[], channel
       imageIdeas: copy.imageIdeas,
       photoIds: [],
       dropped: [],
-      warnings: [],
-      semantics: { checks: core.checks, geo: core.geo, total: core.total },
+      warnings: isMedical(b) ? [MEDICAL_NOTE] : [],
+      semantics: { checks: core.checks, geo: core.geo, total: core.total, ...(core.medical ? { medical: true } : {}) },
     };
     st = { channel, plan, launchId: uid("l_"), startedAt: new Date().toISOString() };
     await writeAddState(b.id, st);

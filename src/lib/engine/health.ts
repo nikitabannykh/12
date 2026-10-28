@@ -8,6 +8,7 @@ import { getBalances, LOW_DAYS, TOPUP_URL, balanceText, type Balance } from "./b
 import { reportNow } from "./report";
 import type { Channel } from "../platforms/types";
 import { addDays, isoDay, pl } from "../util";
+import { isMedical, MEDICAL_LICENSE_URL } from "../niches";
 
 /**
  * «Здоровье рекламы»: чек-лист того, что мешает рекламе работать, с весами и ссылкой «исправить».
@@ -183,6 +184,28 @@ export async function healthCheck(b: Business): Promise<Health> {
     fix: { href: "/app/start#hours", label: "Указать" },
     weight: 5,
   });
+
+  // 10. Медицинские услуги: лицензия в кабинете Директа. Проверить загрузку через API нельзя — считаем выполненным,
+  // когда модерация пропустила хотя бы одно объявление Директа и ни одно не отклонено из-за документов
+  if (isMedical(b) && usesDirect) {
+    const directIds = new Set(camps.filter((c) => c.platform === "yandex" || c.platform === "demo").map((c) => c.id));
+    const dAds = directIds.size
+      ? (await db.select({ campaignId: schema.ads.campaignId, status: schema.ads.status, note: schema.ads.statusNote }).from(schema.ads).where(eq(schema.ads.businessId, b.id))).filter((a) => directIds.has(a.campaignId))
+      : [];
+    const docsRejected = dAds.some((a) => a.status === "rejected" && /лиценз|документ/i.test(a.note ?? ""));
+    const passed = dAds.some((a) => a.status === "active" || a.status === "paused");
+    items.push({
+      key: "license",
+      ok: passed && !docsRejected,
+      title: "Лицензия на медицинскую деятельность в Директе",
+      todo: "Загрузите лицензию в кабинете Директа",
+      hint: docsRejected
+        ? "Директ отклонил объявления: нужна копия лицензии на медицинскую деятельность со всеми приложениями и адресом приёма. Загрузите её — объявления проверят заново."
+        : "Остеопатия, лечебный массаж и косметология — медицинские услуги: Директ показывает их только после проверки лицензии (копия со всеми приложениями, юрлицо как на сайте). Предупреждение о противопоказаниях Директ добавит к тексту сам, на картинки мы его уже поставили.",
+      fix: { href: MEDICAL_LICENSE_URL, label: "Как загрузить", external: true },
+      weight: 15,
+    });
+  }
 
   // 9. Свои фото
   items.push({

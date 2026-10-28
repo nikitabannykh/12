@@ -14,12 +14,13 @@ import { SerpScheme, AuctionTable } from "@/components/Serp";
 import { ceilingOf } from "@/lib/engine/ops";
 import { CHANNEL_HINT, CHANNEL_NAME, PLATFORM_NAME } from "@/lib/platforms";
 import { MAX_MONTHLY, MIN_WEEKLY, allocate } from "@/lib/engine/budget";
-import { ANGLES } from "@/lib/niches";
+import { ANGLES, LAYERS, LAYER_ITEM, LAYER_LABEL, type Layer } from "@/lib/niches";
 import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
 import { adExtras, responsiveAssets, withPlanCallouts } from "@/lib/engine/extras";
 import { displayKeyword } from "@/lib/engine/semantics";
 import { placeName, scoreGroup, liftBy, addS, zeroS, ctrOf, VERDICT, type S, type AdScore } from "@/lib/engine/insights";
 import Link from "next/link";
+import { Fragment } from "react";
 import { addDays, hostOf, isoDay, num, pl, plural, rub } from "@/lib/util";
 import type { Channel } from "@/lib/platforms/types";
 import { CHANNELS, CHANNEL_INFO, TYPE_INFO, FAMILY_NAME, adsHref, cabinetUrl, familyOf, formatOf, isRetarget, typeOf, type CampaignType, type Family } from "@/lib/channels";
@@ -436,6 +437,13 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
         const plannedWeekly = planned?.allocation.find((x) => x.channel === ch)?.weekly ?? camp.weeklyBudget;
         const plannedShort = Boolean(planned?.dropped.includes(ch));
         const groupStats = cg.map((g) => ({ g, s: ads.filter((a) => a.adGroupId === g.id).reduce((acc, a) => addS(acc, st(a.id)), zeroS()) }));
+        // Поиск: группы по слоям семантики — услуги, проблемы клиентов, смежные запросы, аудитории
+        const layerOf = (g: (typeof cg)[number]) => (ch === "search" ? (((g.targeting ?? {}) as { layer?: Layer }).layer ?? "service") : "service") as Layer;
+        const layered = ch === "search" && new Set(cg.map(layerOf)).size > 1;
+        const layerSum = (l: Layer) => {
+          const gs = cg.filter((g) => layerOf(g) === l);
+          return { groups: gs.length, keywords: gs.reduce((n, g) => n + new Set((g.keywords ?? []).map(displayKeyword)).size, 0), on: gs.filter((g) => g.status === "active").length };
+        };
         return (
           <section key={camp.id} id={`c-${camp.id}`} className="card overflow-hidden scroll-mt-28">
             <div className="p-5 sm:p-7 border-b border-line">
@@ -512,18 +520,28 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
             </div>
 
             {groupStats
-              .sort((x, y) => (y.g.status === "active" ? 1 : 0) - (x.g.status === "active" ? 1 : 0) || y.s.conversions - x.s.conversions || ctrOf(y.s) - ctrOf(x.s))
-              .map(({ g, s: gs }) => {
+              .sort((x, y) => LAYERS.indexOf(layerOf(x.g)) - LAYERS.indexOf(layerOf(y.g)) || (y.g.status === "active" ? 1 : 0) - (x.g.status === "active" ? 1 : 0) || y.s.conversions - x.s.conversions || ctrOf(y.s) - ctrOf(x.s))
+              .map(({ g, s: gs }, gi, arr) => {
+                const layer = layerOf(g);
+                const head = layered && (gi === 0 || layerOf(arr[gi - 1].g) !== layer) ? layerSum(layer) : null;
+                const item = ch === "search" ? LAYER_ITEM[layer] : "Аудитория";
                 const gAds = visible
                   .filter((a) => a.adGroupId === g.id)
                   .sort((x, y) => rankKey(scores.get(x.id)) - rankKey(scores.get(y.id)));
                 const hidden = ads.filter((a) => a.adGroupId === g.id && (a.status === "archived" || a.status === "error")).length;
                 const gTv = ch === "search" ? tvOf(ads.filter((a) => a.adGroupId === g.id).map((a) => a.id)) : null;
                 return (
-                  <div key={g.id} className={`p-5 sm:p-7 border-b border-line last:border-b-0 ${g.status !== "active" ? "bg-paper/60" : ""}`}>
+                  <Fragment key={g.id}>
+                  {head ? (
+                    <div className="px-5 sm:px-7 py-2.5 bg-paper border-b border-line flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                      <div className="font-semibold">{LAYER_LABEL[layer]}</div>
+                      <div className="text-sm text-muted">{pl(head.groups, "группа", "группы", "групп")} · {pl(head.keywords, "запрос", "запроса", "запросов")}{head.on < head.groups ? ` · включено ${head.on}` : ""}</div>
+                    </div>
+                  ) : null}
+                  <div className={`p-5 sm:p-7 border-b border-line last:border-b-0 ${g.status !== "active" ? "bg-paper/60" : ""}`}>
                     <div className={`grid items-start gap-3 ${cg.length > 1 ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-1"}`}>
                       <div className="min-w-0">
-                        <div className="font-bold break-words">{ch === "search" ? "Услуга" : "Аудитория"}: {g.name}</div>
+                        <div className="font-bold break-words">{item}: {g.name}</div>
                         <div className="text-sm text-muted">
                           {g.audience ? `${g.audience} · ` : ""}{rub(gs.cost)}, {pl(gs.conversions, "обращение", "обращения", "обращений")}{gs.conversions ? ` по ${rub(gs.cost / gs.conversions)}` : ""}
                         </div>
@@ -555,7 +573,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                       </div>
                       {cg.length > 1 ? (
                         <label className="flex items-center gap-2 text-sm font-semibold justify-self-end">
-                          <LiveToggle url={`/api/groups/${g.id}`} on={g.status === "active"} label={`${ch === "search" ? "Услуга" : "Аудитория"} ${g.name}`} />
+                          <LiveToggle url={`/api/groups/${g.id}`} on={g.status === "active"} label={`${item} ${g.name}`} />
                         </label>
                       ) : null}
                     </div>
@@ -649,6 +667,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                     </ol>
                     {hidden ? <p className="hint mt-3">Ещё {pl(hidden, "объявление", "объявления", "объявлений")} — {hidden === 1 ? "заменено более удачным вариантом или не принято" : "заменены более удачными вариантами или не приняты"} площадкой. Подробности — в «Истории».</p> : null}
                   </div>
+                  </Fragment>
                 );
               })}
           </section>

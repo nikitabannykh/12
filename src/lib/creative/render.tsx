@@ -3,7 +3,7 @@ import { ImageResponse } from "next/og";
 import { readFile } from "fs/promises";
 import path from "path";
 import type { Business } from "../db/schema";
-import { nicheById } from "../niches";
+import { isMedical, nicheById } from "../niches";
 import { Illustration } from "./illustrations";
 import { withoutSuperlatives } from "../engine/extras";
 
@@ -42,7 +42,7 @@ export type RenderInput = {
   layout: Layout;
   width: number;
   height: number;
-  business: Pick<Business, "name" | "niche" | "services" | "offer" | "review" | "address" | "city">;
+  business: Pick<Business, "name" | "niche" | "services" | "offer" | "review" | "address" | "city"> & Partial<Pick<Business, "description">>;
   photo?: { data: Buffer; mime: string } | null;
   headline?: string;
   price?: string;
@@ -52,10 +52,16 @@ export type RenderInput = {
 
 const dataUri = (p: { data: Buffer; mime: string }) => `data:${p.mime};base64,${p.data.toString("base64")}`;
 
+/** Предупреждение для рекламы медуслуг (закон «О рекламе», ст. 24 ч. 7; Директ требует его на картинках и баннерах) */
+export const MEDICAL_WARNING = "Есть противопоказания. Посоветуйтесь с врачом";
+
 export async function renderCreative(inp: RenderInput): Promise<Buffer> {
   const n = nicheById(inp.business.niche);
   const { bg, ink, accent } = n.palette;
-  const W = inp.width, H = inp.height;
+  // Медуслуги: полоса с предупреждением внизу на всю ширину — 6,5% площади (нужно не меньше 5%), не сверху:
+  // верх баннера закрывают значки площадки, и Директ такое отклоняет
+  const strip = isMedical(inp.business) ? Math.ceil(inp.height * 0.065) : 0;
+  const W = inp.width, H = inp.height - strip;
   const wide = W / H > 1.3;
   const u = W / 1080;
   const photo = inp.photo ? dataUri(inp.photo) : null;
@@ -227,17 +233,27 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
     }
   }
 
-  const res = new ImageResponse(el, { width: W, height: H, fonts: await fonts() });
+  if (strip) {
+    const fs = Math.floor(Math.min(strip * 0.5, (W * 0.92) / (MEDICAL_WARNING.length * 0.56)));
+    el = (
+      <div style={{ width: W, height: H + strip, display: "flex", flexDirection: "column" }}>
+        {el}
+        <div style={{ width: W, height: strip, display: "flex", alignItems: "center", justifyContent: "center", background: "#FFFFFF", color: "#1A1A1A", fontFamily: "Onest", fontWeight: 700, fontSize: fs }}>{MEDICAL_WARNING}</div>
+      </div>
+    );
+  }
+  const res = new ImageResponse(el, { width: W, height: H + strip, fonts: await fonts() });
   return Buffer.from(await res.arrayBuffer());
 }
 
 /** Какие макеты имеют смысл для этого бизнеса */
-export function availableLayouts(b: Pick<Business, "services" | "offer" | "review">, hasPhotos = true): Layout[] {
+export function availableLayouts(b: Pick<Business, "services" | "offer" | "review"> & Partial<Pick<Business, "niche" | "name" | "description">>, hasPhotos = true): Layout[] {
   void hasPhotos; // без фото «photo» и «tag» рисуются с тематической иллюстрацией
   const out: Layout[] = ["photo", "tag"];
   if ((b.services ?? []).filter((s) => s.price).length >= 2) out.push("pricelist");
   if (b.offer || !hasPhotos) out.push("offer");
-  if (b.review && b.review.length > 20) out.push("review");
+  // Медуслуги: отзывы и благодарности пациентов в рекламе запрещены (закон «О рекламе», ст. 24)
+  if (b.review && b.review.length > 20 && !(b.niche && isMedical({ ...b, niche: b.niche }))) out.push("review");
   return out;
 }
 
