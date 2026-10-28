@@ -834,9 +834,18 @@ export class VkAds implements PlatformClient {
       const ids = campaignExts.slice(i, i + VK_PAGE);
       const j = await this.req("GET", "v2/ad_plans.json", { query: { _id__in: ids.join(","), fields: "id,status,delivery,issues", limit: VK_PAGE } }).catch(() => null);
       for (const p of (j?.items ?? []) as any[]) {
-        const issues: any[] = Array.isArray(p.issues) ? p.issues : [];
+        let issues: any[] = Array.isArray(p.issues) ? p.issues : [];
+        // У плана причина обычно общая («нет показывающихся групп») — настоящая (деньги, модерация) у его групп
+        if (p.status === "active" && p.delivery && p.delivery !== "delivering") {
+          const g = await this.req("GET", "v2/ad_groups.json", { query: { _ad_plan_id: p.id, fields: "id,delivery,issues", limit: VK_PAGE } }).catch(() => null);
+          for (const x of (g?.items ?? []) as any[]) if (Array.isArray(x.issues)) issues = issues.concat(x.issues);
+          const bal = await this.req("GET", "v2/user.json").catch(() => null);
+          const money = Number(bal?.account?.balance ?? bal?.balance ?? NaN);
+          if (Number.isFinite(money) && money <= 0) issues.push({ code: "NO_MONEY", message: "balance is zero" });
+        }
         const codes = issues.map((x) => String(x?.code ?? x ?? "")).join(" ");
-        const raw = issues.map((x) => String(x?.message ?? "")).filter(Boolean).join("; ");
+        const rawEn = issues.map((x) => String(x?.message ?? "")).filter(Boolean).join("; ");
+        const raw = rawEn ? `VK сейчас не показывает кампанию (ответ VK: ${rawEn})` : "";
         const delivering = p.delivery ? p.delivery === "delivering" : !issues.length;
         if (p.status !== "active" || delivering) { out[String(p.id)] = { ok: true }; continue; }
         const note =
