@@ -15,7 +15,7 @@ import { PlanManager } from "./PlanManager";
 import { ShowSettingsEditor } from "./ShowSettingsEditor";
 import { MedicalLicenseGuide } from "./MedicalLicenseGuide";
 import { LandingEditor } from "./LandingEditor";
-import type { LandingSettings } from "@/lib/engine/landing";
+import { landingFor, type LandingSettings } from "@/lib/engine/landing";
 import type { ShowSettings } from "@/lib/engine/show";
 import type { ExtrasBiz } from "@/lib/engine/extras";
 import { allocate, forecast, minMonthlyFor } from "@/lib/engine/budget";
@@ -183,12 +183,14 @@ export function LaunchWizard(p: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function patchPlan(body: Record<string, unknown>) {
+  async function patchPlan(body: Record<string, unknown>): Promise<boolean> {
     try {
       const r = await api<{ plan: LaunchPlan }>("PATCH", "/api/launch/plan", body);
       setPlan(r.plan);
+      return true;
     } catch (e) {
       toast((e as Error).message, "error");
+      return false;
     }
   }
 
@@ -338,7 +340,7 @@ export function LaunchWizard(p: Props) {
                 ) : x.on ? (
                   <a className="btn btn-primary btn-sm self-start" href={x.href}>Подключить</a>
                 ) : (
-                  <div className="text-sm text-faint">Не настроено на сервере</div>
+                  <div className="text-sm text-faint">Скоро — подключение Яндекс Директа готовится</div>
                 )}
               </div>
             );
@@ -433,7 +435,7 @@ export function LaunchWizard(p: Props) {
             <p className="text-muted leading-relaxed text-sm max-w-xl">Робот напишет объявления для каждого канала, подберёт поисковые запросы и минус-слова, сделает картинки. Каждое объявление проверяет свою идею — какая сработает лучше, покажет статистика.{!preparing && hasAccounts ? " Нажмите «Подготовить объявления» внизу." : ""}</p>
           </div>
         ) : plan ? (
-          <div className="grid gap-6 mt-5">
+          <div className="grid grid-cols-[minmax(0,1fr)] gap-6 mt-5">
             {semantics ? (
               <details className="rounded-xl bg-paper px-4 py-3 text-sm">
                 <summary className="cursor-pointer font-semibold inline-flex items-center gap-2"><Search size={15} /> Поиск: {semantics.length} {plural(semantics.length, "группа", "группы", "групп")}, {semKw} {plural(semKw, "запрос", "запроса", "запросов")}</summary>
@@ -470,7 +472,12 @@ export function LaunchWizard(p: Props) {
           ) : null}
           <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> Первые 3 дня робот только наблюдает и копит статистику. Потом начнёт отключать слабое и тестировать новое.</li>
           <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" />
-            {p.business.siteUrl ? <span>Чтобы считать обращения, вставьте код счётчика на сайт — он появится в «Настройках» сразу после запуска.</span> : <span>Объявления будут вести на вашу страницу записи — обращения с неё считаются автоматически.</span>}
+            {(() => {
+              const l = landingFor({ siteUrl: p.landing.siteUrl, publicKey: "x", landing: p.landing.initial }, null);
+              if (l.kind === "page") return <span>Объявления будут вести на вашу страницу записи — обращения с неё считаются автоматически.</span>;
+              if (l.kind === "site") return <span>Объявления будут вести на ваш сайт. Чтобы считать обращения, вставьте код счётчика на сайт — он появится в «Настройках» сразу после запуска.</span>;
+              return <span>Объявления будут вести на {l.label}. Заявки там мы не видим — считаем переходы, а записи отмечайте раз в неделю в «Статистике».</span>;
+            })()}
           </li>
         </ul>
         {resuming && phase !== "publish" ? (
@@ -506,7 +513,7 @@ export function LaunchWizard(p: Props) {
         </div>
       </div>
 
-      <EditAdModal edit={edit} onClose={() => setEdit(null)} onSave={async (v) => { await patchPlan({ adId: edit!.ad.id, ...v }); setEdit(null); }} />
+      <EditAdModal edit={edit} onClose={() => setEdit(null)} onSave={async (v) => { if (await patchPlan({ adId: edit!.ad.id, ...v })) setEdit(null); }} />
     </div>
   );
 }
@@ -517,7 +524,9 @@ export function EditAdModal({ edit, onClose, onSave }: { edit: { ad: { title: st
   const [v, setV] = useState({ title: "", title2: "", text: "" });
   const [busy, setBusy] = useState(false);
   const [lastKey, setLastKey] = useState<string | null>(null);
-  const key = edit ? edit.ad.title + edit.ad.text : null;
+  const key = edit ? `${(edit.ad as { id?: string }).id ?? ""}|${edit.ad.title}|${edit.ad.text}` : null;
+  // Закрыли без сохранения — при следующем открытии показываем текст объявления, а не брошенный черновик
+  if (!edit && lastKey !== null) setLastKey(null);
   if (edit && key !== lastKey) {
     setLastKey(key);
     setV({ title: edit.ad.title, title2: edit.ad.title2 ?? "", text: edit.ad.text });
@@ -544,7 +553,7 @@ export function EditAdModal({ edit, onClose, onSave }: { edit: { ad: { title: st
         <p className="hint">Площадки не пропускают «лучший», «№1», капслок и обещания, которые нельзя проверить.</p>
         <div className="flex justify-end gap-2">
           <button className="btn btn-ghost" onClick={onClose}>Отмена</button>
-          <button className="btn btn-primary" disabled={busy || v.title.length > L.title || v.text.length > L.text || v.title2.length > L.title2}
+          <button className="btn btn-primary" disabled={busy || !v.title.trim() || !v.text.trim() || v.title.length > L.title || v.text.length > L.text || v.title2.length > L.title2}
             onClick={async () => { setBusy(true); try { await onSave(v); } finally { setBusy(false); } }}>
             {busy ? <Loader2 size={16} className="spin" /> : null}Сохранить
           </button>

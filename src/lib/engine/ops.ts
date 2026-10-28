@@ -52,6 +52,11 @@ export async function applyOp(op: UndoOp, cx?: Ctx): Promise<UndoOp> {
     case "campaignStatus": {
       const camp = await campaignById(c, op.campaignId);
       const prev = camp.status === "active" ? "active" : "paused";
+      // Вся реклама остановлена владельцем — робот ничего не включает (проверяем свежий статус: пауза могла прийти посреди прохода)
+      if (op.status === "active" && c.who === "robot") {
+        const [biz] = await db.select({ status: schema.businesses.status }).from(schema.businesses).where(eq(schema.businesses.id, camp.businessId));
+        if (biz?.status === "paused") return { op: "campaignStatus", campaignId: camp.id, status: prev };
+      }
       if (camp.externalId) await (await platformFor(c, camp)).setCampaignActive(camp.externalId, op.status === "active");
       // Запоминаем, кто поставил паузу: паузу владельца робот не снимает. Пометку «стоит из-за бюджета»
       // сбрасываем при любой смене статуса — робот ставит её заново сам, когда останавливает кампанию из-за бюджета.

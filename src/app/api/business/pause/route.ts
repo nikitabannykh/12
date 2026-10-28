@@ -2,14 +2,15 @@ import { and, eq, inArray } from "drizzle-orm";
 import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { applyBudgetTrims, applyOps, assertFitsBudget, logChange } from "@/lib/engine/ops";
-import { pl } from "@/lib/util";
+import { errorText, pl } from "@/lib/util";
+import { CHANNEL_NAME } from "@/lib/platforms";
 
 export const maxDuration = 60;
 
 /**
  * Вся реклама разом: { paused: true } — останавливаем все идущие кампании во всех кабинетах, робот ничего не включает;
  * { paused: false } — включаем ровно те, что остановили этой кнопкой (ваши ручные паузы и ждущий ретаргетинг не трогаем).
- * Одна запись в «Истории», её можно отменить.
+ * Одна запись в «Истории»; вернуть — той же кнопкой «Возобновить рекламу».
  */
 export const POST = route(async ({ business, req }) => {
   needBusiness(business);
@@ -20,23 +21,33 @@ export const POST = route(async ({ business, req }) => {
   if (body.paused === true) {
     if (business.status === "paused") return json({ ok: true, already: true });
     const live = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, business.id), eq(schema.campaigns.status, "active")));
+    // По одной кампании: ошибка одного кабинета не должна отменять остановку остальных
+    const stopped: typeof live = [];
+    const failed: string[] = [];
     for (const c of live) {
-      await db.update(schema.campaigns).set({ meta: { ...(c.meta ?? {}), pausedAll: true } }).where(eq(schema.campaigns.id, c.id));
+      try {
+        await applyOps([{ op: "campaignStatus", campaignId: c.id, status: "paused" }], "owner");
+        const [fresh] = await db.select({ meta: schema.campaigns.meta }).from(schema.campaigns).where(eq(schema.campaigns.id, c.id));
+        await db.update(schema.campaigns).set({ meta: { ...(fresh?.meta ?? {}), pausedAll: true } }).where(eq(schema.campaigns.id, c.id));
+        stopped.push(c);
+      } catch (e) {
+        failed.push(`${CHANNEL_NAME[c.channel] ?? c.channel}: ${errorText(e)}`);
+      }
     }
+    if (failed.length && !stopped.length) return fail(`Не получилось остановить рекламу: ${failed.join("; ")}. Попробуйте ещё раз или остановите в кабинете площадки.`);
     if (live.length) {
-      await applyOps(live.map((c) => ({ op: "campaignStatus" as const, campaignId: c.id, status: "paused" as const })), "owner");
       await logChange(
         {
           businessId: business.id, actor: "owner", kind: "pause",
           title: "Остановили всю рекламу",
-          reason: `Вы остановили ${pl(live.length, "кампанию", "кампании", "кампаний")} во всех кабинетах. Деньги больше не тратятся, настройки и статистика сохранены. Робот ничего не включит, пока вы не нажмёте «Возобновить рекламу».`,
+          reason: `Вы остановили ${pl(stopped.length, "кампанию", "кампании", "кампаний")} во всех кабинетах.${failed.length ? ` Не получилось остановить: ${failed.join("; ")} — остановите их в кабинете площадки.` : ""} Деньги больше не тратятся, настройки и статистика сохранены. Робот ничего не включит, пока вы не нажмёте «Возобновить рекламу».`,
         },
       );
     } else {
       await logChange({ businessId: business.id, actor: "owner", kind: "pause", title: "Остановили всю рекламу", reason: "Идущих кампаний не было — робот ничего не включит, пока вы не возобновите рекламу." });
     }
     await db.update(schema.businesses).set({ status: "paused", updatedAt: new Date() }).where(eq(schema.businesses.id, business.id));
-    return json({ ok: true, stopped: live.length });
+    return json({ ok: true, stopped: stopped.length, failed });
   }
 
   if (body.paused === false) {
@@ -53,8 +64,14 @@ export const POST = route(async ({ business, req }) => {
         await db.update(schema.businesses).set({ status: "paused" }).where(eq(schema.businesses.id, business.id));
         return fail((e as Error).message);
       }
-      await applyBudgetTrims(business.id, trims, "Вы возобновляете рекламу");
-      await applyOps(back.map((c) => ({ op: "campaignStatus" as const, campaignId: c.id, status: "active" as const })), "owner");
+      try {
+        await applyBudgetTrims(business.id, trims, "Вы возобновляете рекламу");
+        await applyOps(back.map((c) => ({ op: "campaignStatus" as const, campaignId: c.id, status: "active" as const })), "owner");
+      } catch (e) {
+        // Площадка не включила кампании — реклама остаётся остановленной, кнопка «Возобновить» снова доступна
+        await db.update(schema.businesses).set({ status: "paused" }).where(eq(schema.businesses.id, business.id));
+        return fail(`Не получилось включить рекламу: ${errorText(e)}. Попробуйте ещё раз через минуту.`);
+      }
       await logChange(
         {
           businessId: business.id, actor: "owner", kind: "resume",

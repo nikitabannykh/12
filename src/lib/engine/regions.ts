@@ -150,7 +150,9 @@ export async function vkLeadGoal(b: Business, client: VkAds, siteUrl?: string, e
     if (row) await db.update(schema.kv).set({ value, updatedAt: new Date() }).where(eq(schema.kv.key, pixelKey(b.id)));
     else await db.insert(schema.kv).values({ key: pixelKey(b.id), value });
   }
-  const goal = await client.leadGoal(px.counterId);
+  let goal = await client.leadGoal(px.counterId);
+  // События «Заявка» нет — создаём его через API (у подтверждённого пикселя VK это разрешает)
+  if (!goal && (await client.ensureLeadGoal(px.counterId).catch(() => false))) goal = await client.leadGoal(px.counterId);
   if (!goal) {
     return {
       pricedGoal: null,

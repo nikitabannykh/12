@@ -26,6 +26,10 @@ export function ClientsWeek({ weekStart, leads, otherLeads = 0, initial, plain =
   const toast = useToast();
   const router = useRouter();
   const save = async () => {
+    if (Number(v) > leads) {
+      toast(leads ? `Клиентов не может быть больше, чем обращений за эту неделю (${leads})` : "За эту неделю обращений не было — клиентов из рекламы тоже 0", "error");
+      return;
+    }
     setBusy(true);
     try {
       await api("POST", "/api/clients", { weekStart, clients: Number(v) });

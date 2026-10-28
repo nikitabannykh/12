@@ -16,7 +16,7 @@ import type { LaunchPlan, PlanAd, PlanChannel, PlanGroup } from "@/lib/engine/la
 import type { Channel } from "@/lib/platforms/types";
 import { CHANNEL_INFO, formatOf, isRetarget, TYPE_INFO } from "@/lib/channels";
 import { LAYER_ITEM, LAYER_LABEL, LAYERS, type Layer } from "@/lib/niches";
-import { showOf, type ShowSettings } from "@/lib/engine/show";
+import { showOf, showSummary, type ShowSettings } from "@/lib/engine/show";
 
 type Names = Record<Channel, { name: string; hint: string }>;
 const ANGLE: Record<string, string> = { price: "цена", offer: "предложение новым", proof: "доверие", convenience: "удобство", result: "результат", emotion: "эмоция" };
@@ -54,7 +54,7 @@ export function PlanManager(p: {
   logo?: string | null;
   businessName: string;
   vkRadiusKm: number | null;
-  onPatch: (body: Record<string, unknown>) => Promise<void>;
+  onPatch: (body: Record<string, unknown>) => Promise<unknown>;
   onEdit: (ad: PlanAd, channel: Channel) => void;
 }) {
   const { plan } = p;
@@ -103,7 +103,7 @@ export function PlanManager(p: {
   });
 
   return (
-    <div className="grid gap-5">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
       {/* Кому покажем */}
       <details className="rounded-xl border border-line bg-white" open>
         <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-3">
@@ -112,7 +112,7 @@ export function PlanManager(p: {
         </summary>
         <div className="px-4 pb-4 grid gap-3">
           <div className="grid sm:grid-cols-2 gap-2 text-sm">
-            <div className="flex gap-2"><MapPin size={15} className="mt-0.5 shrink-0 text-muted" /><span><b>Где:</b> {p.biz.city}{p.biz.address ? `, рядом с ${p.biz.address}` : ""}</span></div>
+            <div className="flex gap-2"><MapPin size={15} className="mt-0.5 shrink-0 text-muted" /><span><b>Где:</b> {showSummary(sh, p.biz, null).where}</span></div>
             <div className="flex gap-2"><Clock size={15} className="mt-0.5 shrink-0 text-muted" /><span><b>Когда:</b> {tt ? tt.note : sh.scheduleMode === "always" ? "круглосуточно" : "круглосуточно — часы работы не указаны"}</span></div>
           </div>
           <div className="grid md:grid-cols-2 gap-2">
@@ -207,7 +207,7 @@ export function PlanManager(p: {
               <button className="font-medium text-ink-2 hover:text-ink" onClick={() => setOpen(allOpen ? {} : Object.fromEntries(groups.map(({ g }) => [g.id, true])))}>{allOpen ? "Свернуть все" : "Развернуть все"}</button>
             </div>
 
-            <ul className="p-2 sm:p-3 grid gap-2">
+            <ul className="p-2 sm:p-3 grid grid-cols-[minmax(0,1fr)] gap-2">
               {groups.map(({ g, ads }) => {
                 const isOpen = open[g.id] || (searching && Boolean(q.trim()));
                 const on = g.ads.filter((a) => a.enabled).length;
@@ -217,7 +217,7 @@ export function PlanManager(p: {
                     <div className="flex items-center gap-3 px-3 py-2.5">
                       <button className="flex-1 min-w-0 text-left flex items-center gap-2.5" onClick={() => setOpen({ ...open, [g.id]: !open[g.id] })} aria-expanded={!!isOpen}>
                         <ChevronDown size={16} className={`shrink-0 text-muted transition-transform ${isOpen ? "" : "-rotate-90"}`} />
-                        <span className="min-w-0">
+                        <span className="min-w-0 flex-1">
                           <span className="font-semibold flex flex-wrap items-center gap-x-2">
                             {g.name}
                             {ch.channel === "search" && g.layer && g.layer !== "service" ? <span className="pill bg-paper text-xs text-muted">{LAYER_ITEM[g.layer]}</span> : null}

@@ -241,3 +241,57 @@ export function vkReachGoalJs(counterId: number, goal = VK_LEAD_GOAL): string {
   if (!Number.isFinite(id) || id <= 0) return "";
   return `(window._tmr = window._tmr || []).push({type: "reachGoal", id: ${id}, goal: ${JSON.stringify(goal)}});`;
 }
+
+// ─── Шаблоны баннеров (BannerPattern) ────────────────────────────────────
+// Баннер должен ровно соответствовать одному шаблону пакета: GET v2/banner_patterns.json →
+// {id, name, status, format:[{field:"url"|"textblock"|"content", role, required}]} (https://ads.vk.ru/en/doc/api/object/BannerPattern).
+// Разрешённые шаблоны пакета VK присылает в ошибке arguments.patterns, если баннер не подошёл.
+
+export type VkPRole = { field: "url" | "textblock" | "content"; role: string; required: boolean };
+export type VkPattern = { id: number; name: string; roles: VkPRole[] };
+/** Что мы можем положить в баннер: тексты, «о компании», логотип и пропорции картинок */
+export type VkHave = { title: boolean; text: boolean; about: boolean; logo: boolean; ratios: number[] };
+
+export function parsePatterns(items: any[]): VkPattern[] {
+  return (items ?? [])
+    .filter((p) => p && (p.status ?? "active") === "active")
+    .map((p) => ({
+      id: Number(p.id),
+      name: String(p.name ?? ""),
+      roles: (Array.isArray(p.format) ? p.format : []).map((f: any) => ({ field: f.field, role: String(f.role ?? ""), required: Boolean(f.required) })),
+    }))
+    .filter((p) => p.id && p.roles.length);
+}
+
+export function canFill(r: VkPRole, h: VkHave): boolean {
+  if (r.field === "url") return r.role === "primary";
+  if (r.field === "textblock") {
+    if (/^title_\d+/.test(r.role)) return h.title;
+    if (/^text_\d+/.test(r.role)) return h.text;
+    if (/^about_company_/.test(r.role)) return h.about;
+    if (/^cta_sites/.test(r.role)) return true;
+    return false;
+  }
+  if (/_slide_|_app$|^video|^html5|^audio|^animated/.test(r.role)) return false;
+  if (/^icon_/.test(r.role)) return h.logo;
+  const s = sizeFromKey(r.role);
+  return !!s && h.ratios.some((q) => Math.abs(q - s.width / s.height) / q < 0.06);
+}
+
+/** Шаблон, который мы можем заполнить целиком (все обязательные роли), — с максимумом заполняемых ролей */
+export function pickPattern(ps: VkPattern[], h: VkHave): VkPattern | null {
+  const score = (p: VkPattern) => p.roles.filter((r) => canFill(r, h)).length;
+  return ps.filter((p) => p.roles.every((r) => !r.required || canFill(r, h))).sort((a, b) => score(b) - score(a))[0] ?? null;
+}
+
+/** ID разрешённых шаблонов из ошибки VK (arguments.patterns на любой глубине) */
+export function patternIdsFromError(x: any, depth = 0): number[] {
+  if (!x || typeof x !== "object" || depth > 12) return [];
+  const a = x?.arguments?.patterns;
+  if (Array.isArray(a)) return a.map(Number).filter(Boolean);
+  for (const v of Object.values(x)) {
+    const r = patternIdsFromError(v, depth + 1);
+    if (r.length) return r;
+  }
+  return [];
+}

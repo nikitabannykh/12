@@ -74,9 +74,9 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
           options={[{ v: "auto", label: "Как советует робот" }, { v: "city", label: "Весь город" }, { v: "radius", label: "Рядом с адресом" }]} />
         <p className="text-sm text-muted leading-relaxed max-w-2xl">
           {(s.geoMode ?? "auto") === "auto"
-            ? <>Яндекс — весь {city}. ВКонтакте — люди, которые живут или работают {autoRadiusKm ? `в ${String(autoRadiusKm).replace(".", ",")} км` : "рядом"} от {address || "вашего адреса"}.</>
+            ? <>Яндекс — весь город ({city}). ВКонтакте — люди, которые живут или работают {autoRadiusKm ? `в ${String(autoRadiusKm).replace(".", ",")} км` : "рядом"} от {address || "вашего адреса"}.</>
             : s.geoMode === "city" ? <>И в Яндексе, и во ВКонтакте — весь город ({city}).</>
-            : <>ВКонтакте — в радиусе от {address || "адреса"}. Яндекс Директ не умеет показывать в радиусе через API, там — весь {city}.</>}
+            : <>ВКонтакте — в радиусе от {address || "адреса"}. Яндекс Директ не умеет показывать в радиусе через API, там — весь город ({city}).</>}
         </p>
         {s.geoMode === "radius" ? (
           <label className="flex items-center gap-2 text-sm">Радиус

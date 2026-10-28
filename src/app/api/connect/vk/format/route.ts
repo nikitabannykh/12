@@ -12,6 +12,6 @@ export const GET = route(async ({ user, req }) => {
   const c = await clientFor(acc);
   if (!(c instanceof VkAds)) return fail("VK не подключён");
   const url = new URL(req.url);
-  const ids = (url.searchParams.get("packages") ?? "").split(",").map(Number).filter(Boolean);
+  const ids = (url.searchParams.get("packages") ?? "").split(",").map(Number).filter(Boolean).slice(0, 5);
   return json(await c.diagnostics(ids));
 });

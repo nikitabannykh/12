@@ -55,6 +55,21 @@ function secret() {
 
 const key = () => createHash("sha256").update("enc:" + secret()).digest();
 
+/**
+ * Прежний секрет (от строки подключения к базе), если теперь задан APP_SECRET: им проверяем старые сессии и
+ * расшифровываем старые токены — переход на APP_SECRET никого не разлогинивает и не отключает кабинеты.
+ */
+function legacySecret(): string | null {
+  const app = process.env.APP_SECRET?.trim();
+  const dbUrl = (process.env.DATABASE_URL || process.env.POSTGRES_URL)?.trim();
+  if (!app || app.length < 16 || !dbUrl) return null;
+  return createHash("sha256").update("pz-secret:" + dbUrl).digest("hex");
+}
+const legacyKey = () => {
+  const l = legacySecret();
+  return l ? createHash("sha256").update("enc:" + l).digest() : null;
+};
+
 /** AES-256-GCM: токены рекламных кабинетов храним только в зашифрованном виде */
 export function encrypt(plain: string): string {
   const iv = randomBytes(12);
@@ -66,9 +81,18 @@ export function encrypt(plain: string): string {
 export function decrypt(token: string): string {
   const [v, iv, tag, data] = token.split(".");
   if (v !== "v1") return token; // незашифрованное значение (демо)
-  const d = createDecipheriv("aes-256-gcm", key(), Buffer.from(iv, "base64url"));
-  d.setAuthTag(Buffer.from(tag, "base64url"));
-  return Buffer.concat([d.update(Buffer.from(data, "base64url")), d.final()]).toString("utf8");
+  const open = (k: Buffer) => {
+    const d = createDecipheriv("aes-256-gcm", k, Buffer.from(iv, "base64url"));
+    d.setAuthTag(Buffer.from(tag, "base64url"));
+    return Buffer.concat([d.update(Buffer.from(data, "base64url")), d.final()]).toString("utf8");
+  };
+  try {
+    return open(key());
+  } catch (e) {
+    const old = legacyKey();
+    if (!old) throw e;
+    return open(old);
+  }
 }
 
 export function sign(payload: object): string {
@@ -81,9 +105,13 @@ export function verify<T>(token: string | undefined | null): T | null {
   if (!token || typeof token !== "string") return null;
   const [body, mac] = token.split(".");
   if (!body || !mac) return null;
-  const expected = createHmac("sha256", secret()).update(body).digest();
   const got = Buffer.from(mac, "base64url");
-  if (got.length !== expected.length || !timingSafeEqual(got, expected)) return null;
+  const ok = (sec: string) => {
+    const expected = createHmac("sha256", sec).update(body).digest();
+    return got.length === expected.length && timingSafeEqual(got, expected);
+  };
+  const legacy = legacySecret();
+  if (!ok(secret()) && !(legacy && ok(legacy))) return null;
   try {
     const data = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
     if (data.exp && Date.now() > data.exp) return null;

@@ -35,7 +35,7 @@ export async function applyShowSettings(b: Business): Promise<{ updated: number;
       if (!client.updateTargeting) continue;
       if (client instanceof VkAds) client.useBusiness({ ...vkAdContext(b), localGeo: await vkLocalGeo(b).catch(() => null) });
       const regionIds = await regionIdsFor(b, acc.platform, client).catch((e) => {
-        warnings.push(`${name}: ${(e as Error).message}`);
+        warnings.push(`${name}: регион не определили (${(e as Error).message}) — регион кампании оставили прежним`);
         return [] as number[];
       });
       const groups = await db.select().from(schema.adGroups).where(and(eq(schema.adGroups.campaignId, camp.id), isNotNull(schema.adGroups.externalId)));

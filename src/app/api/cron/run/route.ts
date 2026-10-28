@@ -52,5 +52,7 @@ export async function GET(req: Request) {
     digests = { error: errorText(e) };
   }
   await cleanup().catch((e) => console.error("cleanup", e));
+  // Без CRON_SECRET (вызов по User-Agent) не отдаём логи бизнесов — только счётчики
+  if (!secret) return NextResponse.json({ ok: true, businesses: Array.isArray((r as { done?: unknown[] }).done) ? (r as { done: unknown[] }).done.length : undefined });
   return NextResponse.json({ ...r, digests });
 }

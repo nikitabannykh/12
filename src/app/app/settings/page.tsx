@@ -42,7 +42,7 @@ export default async function Settings() {
   const notifyStatus = { configured: tgConfigured(), connected, name: notify?.telegramName ?? null, digest: notify ? notify.digest === 1 : true, unlinked: connected ? null : await getUnlinked(b.id) };
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-6">
       <h1 className="text-3xl font-extrabold tracking-tight">Настройки</h1>
 
       <section className="card p-5 sm:p-7">

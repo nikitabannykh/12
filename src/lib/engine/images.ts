@@ -216,13 +216,15 @@ export async function collectGarbageImages(opts: { ignorePlanOf?: string; minAge
   add(await db.select().from(schema.adGroups));
   add(await db.select().from(schema.campaigns));
   add(await db.select().from(schema.experiments));
-  add(await db.select().from(schema.changes));
+  add(await db.select({ d: schema.changes.details, u: schema.changes.undo }).from(schema.changes));
+  // Черновики добавления канала (kv addch:*) — их картинки ещё понадобятся при публикации
+  add(await db.select({ v: schema.kv.value }).from(schema.kv).where(like(schema.kv.key, "addch:%")));
   const sets = await db.select().from(schema.kv).where(like(schema.kv.key, "imgset:%"));
   for (const r of sets) if (refs.has(r.key.slice(7))) add(r.value);
   const cands = await db
     .select({ id: schema.images.id, layout: schema.images.layout })
     .from(schema.images)
-    .where(and(eq(schema.images.kind, "creative"), sql`(${schema.images.createdAt} < now() - (${minAge} || ' minutes')::interval OR ${schema.images.businessId} = ${opts.ignorePlanOf ?? ""})`));
+    .where(and(eq(schema.images.kind, "creative"), sql`${schema.images.createdAt} < now() - (${minAge} || ' minutes')::interval`));
   const dead = new Set(cands.filter((c) => c.layout !== "logo" && !refs.has(c.id)).map((c) => c.id));
   const ids = [...dead];
   for (let i = 0; i < ids.length; i += 200) await db.delete(schema.images).where(inArray(schema.images.id, ids.slice(i, i + 200)));

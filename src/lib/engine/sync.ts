@@ -25,7 +25,8 @@ export async function syncBusiness(b: Business) {
     try {
       const client = await clientFor(acc);
       const now = acc.platform === "demo" ? await demoNow({ accountId: acc.id }) : new Date();
-      const to = isoDay(now);
+      // Площадки считают сутки по Москве: в 00:00–03:00 MSK UTC-дата ещё вчерашняя, и сегодняшний расход терялся
+      const to = acc.platform === "demo" ? isoDay(now) : isoDay(new Date(now.getTime() + 3 * 3600e3));
       const from = isoDay(addDays(now, -29));
       const ads = await db.select().from(schema.ads).where(inArray(schema.ads.campaignId, list.map((c) => c.id)));
       const adByExt = new Map(ads.filter((a) => a.externalId).map((a) => [a.externalId!, a]));

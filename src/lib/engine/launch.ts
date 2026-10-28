@@ -562,6 +562,12 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
   const svc0 = b.services?.[0];
   const toInput = (img: NonNullable<Awaited<ReturnType<typeof getImage>>>) => ({ imageId: img.id, data: img.data, mime: img.mime, width: img.width, height: img.height, cachedRef: img.platformRefs?.[account.platform] });
   for (const g of ch.groups) {
+    // Владелец показывает рекламу только женщинам (или мужчинам) — группу поиска для другого пола не запускаем
+    const sexNow = showOf(b).sex;
+    if (ch.channel === "search" && g.layer === "audience" && ((sexNow === "female" && /мужчин|мужск/i.test(g.name)) || (sexNow === "male" && /женщин|женск/i.test(g.name)))) {
+      warnings.push(`Поиск: группу «${g.name}» не запускаем — в «Где, кому и когда показывать» выбран другой пол`);
+      continue;
+    }
     const ads = [];
     // Директ: не больше 3 объявлений в группе (уже созданные в прошлых попытках тоже считаются)
     const already = Object.keys(build.groups[g.id]?.ads ?? {}).length;
@@ -1039,7 +1045,8 @@ export type AddChannelStep = { done: boolean; ok: boolean; stage: "copy" | "imag
 export async function addChannelStep(b: Business, accounts: AdAccount[], channel: Channel | null, opts: { deadline?: number } = {}): Promise<AddChannelStep> {
   const db = await getDb();
   const deadline = opts.deadline ?? Date.now() + PUBLISH_BUDGET_MS;
-  if (b.status !== "active" && b.status !== "paused") throw Object.assign(new Error("Добавить канал можно, когда реклама уже запущена"), { status: 409 });
+  if (b.status === "paused") throw Object.assign(new Error("Реклама остановлена — сначала возобновите её, потом добавляйте каналы"), { status: 409 });
+  if (b.status !== "active") throw Object.assign(new Error("Добавить канал можно, когда реклама уже запущена"), { status: 409 });
   let st = await readAddState(b.id);
   if (st && channel && st.channel !== channel) throw Object.assign(new Error(`Уже добавляем канал «${CHANNEL_NAME[st.channel]}» — дождитесь окончания`), { status: 409 });
 

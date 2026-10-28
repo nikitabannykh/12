@@ -729,7 +729,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                                   return <ResponsiveAssets titles={ra.titles} texts={ra.texts} className={ch === "search" ? "max-w-xl" : "max-w-sm"} />;
                                 })() : null}
                                 <div className="text-xs text-muted">{pl(s.impressions, "показ", "показа", "показов")} · потрачено {rub(s.cost)}{s.conversions ? ` · обращение по ${rub(s.cost / s.conversions)}` : ""}</div>
-                                <AdActions ad={{ id: ad.id, title: ad.title, title2: ad.title2, text: ad.text, status: ad.status }} channel={fmt} canTest={!inTest && camp.status === "active"} />
+                                <AdActions ad={{ id: ad.id, title: ad.title, title2: ad.title2, text: ad.text, status: ad.status }} channel={fmt} canTest={!inTest && camp.status === "active" && !running.some((e) => gAds.some((x) => x.id === e.controlId || x.id === e.variantId))} />
                               </div>
                             </details>
                           </li>
@@ -742,7 +742,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                   {cg.length > 1 ? (
                     <label className="absolute right-5 sm:right-7 top-4 flex items-center gap-2 text-sm font-semibold">
                       {campOff ? (
-                        <span className="pointer-events-none opacity-50" title="Канал выключен"><LiveToggle key="off" url={`/api/groups/${g.id}`} on={false} label={`${item} ${g.name}: канал выключен`} /></span>
+                        <span className="pointer-events-none opacity-50" title="Канал выключен" inert><LiveToggle key="off" url={`/api/groups/${g.id}`} on={false} label={`${item} ${g.name}: канал выключен`} /></span>
                       ) : <LiveToggle url={`/api/groups/${g.id}`} on={g.status === "active"} label={`${item} ${g.name}`} />}
                     </label>
                   ) : null}

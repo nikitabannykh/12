@@ -2,7 +2,7 @@ import "server-only";
 import type { AdSpec, AdState, AudienceSpec, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, StatRow, Strategy, TargetingUpdate } from "./types";
 import { PlatformError } from "./types";
 import { sleep } from "../util";
-import { ctaValue, defaultFormat, fit, iconKey, imageKeyFor, legalAbout, parseBannerFormat, textKeys, type Fulltime, type VkFormat } from "./vk-formats";
+import { canFill, ctaValue, defaultFormat, fit, iconKey, imageKeyFor, legalAbout, lengthFromKey, parseBannerFormat, parsePatterns, patternIdsFromError, pickPattern, sizeFromKey, textKeys, type Fulltime, type VkFormat, type VkHave, type VkPattern } from "./vk-formats";
 /** Максимальный размер страницы в списках VK Ads API v2 */
 const VK_PAGE = 50;
 export { vkPixelSnippet, vkReachGoalJs, VK_LEAD_GOAL } from "./vk-formats";
@@ -285,6 +285,18 @@ export class VkAds implements PlatformClient {
    * {counter_id, goal, description} (https://ads.vk.ru/en/doc/api/resource/Goals). Создать событие через API нельзя
    * (не документировано) — его создают в кабинете: Пиксели → Настройки → События → JS-событие с ID `lead`.
    */
+  /** Событие «Заявка» в пикселе: JS-событие lead (POST v2/remarketing/counters/{id}/goals.json, CounterGoals) */
+  async ensureLeadGoal(counterId: number, goal = "lead"): Promise<boolean> {
+    const have = ((await this.req("GET", `v2/remarketing/counters/${counterId}/goals.json`).catch(() => null))?.items ?? []) as any[];
+    if (have.some((g) => String(g.substr ?? "") === goal && String(g.condition ?? "jse") === "jse")) return true;
+    try {
+      await this.req("POST", `v2/remarketing/counters/${counterId}/goals.json`, { body: { name: "Заявка", condition: "jse", substr: goal, goal_type: "lead" } });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async leadGoal(counterId: number, goal = "lead"): Promise<{ name: string; source_id: number } | null> {
     const j = await this.req("GET", "v2/goals.json").catch(() => null);
     const list: any[] = (j?.topmailru ?? []).filter((g: any) => Number(g.counter_id) === counterId);
@@ -310,10 +322,13 @@ export class VkAds implements PlatformClient {
     const found = ((list?.items ?? []) as any[]).find((x) => x.name === name);
     if (found) return String(found.id);
     const left = Math.max(1, Math.min(365, a.days));
-    const relations: Record<string, unknown>[] = [
-      { object_type: "remarketing_counter", params: { source_id: a.pixelId, goal_id: "uss", type: "positive", left, right: 0 } },
-    ];
-    if (a.leadGoal) relations.push({ object_type: "remarketing_counter", params: { source_id: a.pixelId, goal_id: a.leadGoal, type: "negative", left, right: 0 } });
+    // Все посетители пикселя — goal_id "" (пример документации Segments); исключаем тех, у кого есть цель «Заявка» —
+    // нужен числовой id цели счётчика (GET v2/remarketing/counters/{id}/goals.json)
+    const goals = ((await this.req("GET", `v2/remarketing/counters/${a.pixelId}/goals.json`).catch(() => null))?.items ?? []) as any[];
+    const lead = a.leadGoal ? goals.find((g) => String(g.substr ?? "") === a.leadGoal || String(g.name ?? "").toLowerCase().includes("заявк")) : null;
+    const rel = (goal_id: string, type: string) => ({ object_type: "remarketing_counter", params: { source_id: a.pixelId, goal_id, type, left, right: 0 } });
+    const relations: Record<string, unknown>[] = [rel("", "positive")];
+    if (lead?.id) relations.push(rel(String(lead.id), "negative"));
     try {
       const j = await this.req("POST", "v2/remarketing/segments.json", { body: { name, pass_condition: relations.length, relations } });
       return String(j.id);
@@ -375,7 +390,14 @@ export class VkAds implements PlatformClient {
 
   async createUrl(href: string): Promise<number> {
     const j = await this.req("POST", "v2/urls.json", { body: { url: href } });
-    return Number(j.id);
+    const id = Number(j.id);
+    // VK проверяет ссылку асинхронно: пока url_types пуст, баннер с ней отклоняется (url_not_checked)
+    for (let i = 0; i < 10 && !(j.url_types?.length); i++) {
+      const u = await this.req("GET", `v2/urls/${id}.json`).catch(() => null);
+      if (u?.url_types?.length) break;
+      await sleep(1000);
+    }
+    return id;
   }
 
   private imageCache = new Map<string, number>();
@@ -395,12 +417,77 @@ export class VkAds implements PlatformClient {
     return Number(j.id);
   }
 
+  private allPatterns?: VkPattern[];
+  /** Разрешённые шаблоны пакета (из ошибки VK или из формата пакета) */
+  pkgPatterns = new Map<number, number[]>();
+  private async patternsFor(pkg: number): Promise<VkPattern[]> {
+    this.allPatterns ??= parsePatterns(await this.listAll("v2/banner_patterns.json").catch(() => []));
+    let ids = this.pkgPatterns.get(pkg);
+    if (!ids) {
+      const fid = Number((await this.packages()).find((p) => Number(p.id) === pkg)?.banner_format_id);
+      const raw = fid ? await this.req("GET", `v2/banner_formats/${fid}.json`).catch(() => null) : null;
+      ids = (Array.isArray(raw?.patterns) ? raw.patterns : []).map((x: any) => Number(x?.id ?? x)).filter(Boolean);
+      this.pkgPatterns.set(pkg, ids!);
+    }
+    return ids!.length ? this.allPatterns.filter((p) => ids!.includes(p.id)) : [];
+  }
+
+  /** Картинка ровно нужного размера для роли шаблона (VK требует точные размеры, например 600×600) */
+  private async uploadSized(img: NonNullable<AdSpec["image"]>, w: number, h: number): Promise<number> {
+    if (img.width === w && img.height === h) return this.uploadImage(img);
+    const sharp = (await import("sharp")).default;
+    const same = Math.abs(img.width / img.height - w / h) / (w / h) < 0.06;
+    const data = await sharp(img.data).resize(w, h, { fit: same ? "cover" : "contain", background: "#ffffff" }).jpeg({ quality: 88 }).toBuffer();
+    return this.uploadImage({ imageId: `${img.imageId}@${w}x${h}`, data, mime: "image/jpeg", width: w, height: h });
+  }
+
+  /** Баннер по выбранному шаблону: только его роли, тексты по длине роли, картинки точного размера */
+  private async bannerByPattern(ad: AdSpec, urlId: number, p: VkPattern, have: VkHave, about: string | null, level: Level) {
+    const textblocks: Record<string, { text: string }> = {};
+    const content: Record<string, { id: number }> = {};
+    let imageRef: string | undefined;
+    const longText = ad.extras?.longText || [ad.text, ad.title2].filter(Boolean).join(". ");
+    for (const r of p.roles) {
+      if (!canFill(r, have) || r.field === "url") continue;
+      if (r.field === "textblock") {
+        const max = lengthFromKey(r.role);
+        if (/^title_/.test(r.role)) textblocks[r.role] = { text: fit(ad.title, max) };
+        else if (/^text_/.test(r.role)) textblocks[r.role] = { text: fit((max ?? 90) > 120 ? longText : ad.text, max) };
+        else if (/^about_company_/.test(r.role) && about) textblocks[r.role] = { text: fit(about, max) };
+        else if (/^cta_sites/.test(r.role)) textblocks[r.role] = { text: ctaValue(undefined, level > 0) };
+        continue;
+      }
+      const sz = sizeFromKey(r.role);
+      if (!sz) continue;
+      if (/^icon_/.test(r.role)) {
+        if (ad.logo) content[r.role] = { id: await this.uploadSized(ad.logo, sz.width, sz.height) };
+        continue;
+      }
+      const src = [ad.image, ...(ad.images ?? [])].filter(Boolean).find((x) => Math.abs(x!.width / x!.height - sz.width / sz.height) / (sz.width / sz.height) < 0.06) ?? ad.image;
+      if (!src) continue;
+      const id = await this.uploadSized(src, sz.width, sz.height);
+      content[r.role] = { id };
+      imageRef ??= String(id);
+    }
+    return { banner: { name: ad.title.slice(0, 60), urls: { primary: { id: urlId } }, textblocks, content }, imageRef };
+  }
+
   /**
    * Баннер под формат пакета: ключи textblocks/content берём из формата (vk-formats.ts), а не вслепую.
    * level ≥ 1 — без необязательного («о компании», логотип, длинный текст), кнопка visitSite.
    */
   private async banner(ad: AdSpec, urlId: number, packageId: number, level: Level = 0, warn?: (s: string) => void) {
     if (!ad.title.trim() || !ad.text.trim()) throw new PlatformError("vk", "У объявления пустой заголовок или текст");
+    // Есть список шаблонов пакета — собираем баннер строго под подходящий шаблон
+    const patterns = await this.patternsFor(packageId).catch(() => [] as VkPattern[]);
+    if (patterns.length) {
+      const about = legalAbout(this.biz.legalInfo) ?? legalAbout(ad.extras?.about);
+      const imgs = [ad.image, ...(ad.images ?? [])].filter(Boolean) as NonNullable<AdSpec["image"]>[];
+      const have: VkHave = { title: true, text: true, about: !!about && level === 0, logo: !!ad.logo, ratios: imgs.length ? [...new Set(imgs.map((x) => x.width / x.height)), 1, 1080 / 607].filter((v, i, a) => a.indexOf(v) === i) : [] };
+      const p = pickPattern(patterns, have);
+      if (p) return this.bannerByPattern(ad, urlId, p, have, about, level);
+      warn?.(`VK: ни один шаблон объявления пакета не подходит (${patterns.map((x) => x.name).slice(0, 4).join(", ")}) — пробуем стандартный набор полей`);
+    }
     const f = await this.packageFormat(packageId);
     const def = textKeys(defaultFormat());
     const k = textKeys(f);
@@ -591,6 +678,13 @@ export class VkAds implements PlatformClient {
             break;
           }
           if (!VkAds.isValidation(e)) throw e;
+          // VK назвал разрешённые шаблоны баннеров — запоминаем и пересобираем баннеры под них
+          const pids = patternIdsFromError((e as PlatformError).detail);
+          if (pids.length && JSON.stringify(this.pkgPatterns.get(packageId) ?? []) !== JSON.stringify(pids)) {
+            this.pkgPatterns.set(packageId, pids);
+            li--;
+            continue;
+          }
           // Пакет принимает другую цель плана — повторяем с ней на том же уровне
           const obj = allowedObjective(e);
           if (obj && obj !== objective) {
@@ -693,7 +787,9 @@ export class VkAds implements PlatformClient {
       try {
         const cur = await this.req("GET", `v2/ad_groups/${g.groupExt}.json`, { query: { fields: "id,targetings" } }).catch(() => null);
         const targetings: Record<string, unknown> = { ...((cur?.targetings ?? {}) as Record<string, unknown>) };
-        targetings.geo = !g.retargetingId && biz.localGeo?.locations.length ? { local_geo: biz.localGeo } : { regions: g.regionIds.length ? g.regionIds : [188] };
+        // Регион не определился — гео не трогаем (иначе [188] = вся Россия и сгоревший бюджет)
+        if (!g.retargetingId && biz.localGeo?.locations.length) targetings.geo = { local_geo: biz.localGeo };
+        else if (g.regionIds.length) targetings.geo = { regions: g.regionIds };
         targetings.age = { ...((targetings.age as object) ?? {}), age_list: this.age(g.ageFrom, g.ageTo) };
         if (g.sex && g.sex !== "any") targetings.sex = [g.sex];
         else delete targetings.sex;

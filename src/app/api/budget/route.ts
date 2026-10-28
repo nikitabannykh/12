@@ -45,6 +45,12 @@ export const PATCH = route(async ({ user, business, req }) => {
       return json({ ok: true });
     }
     const raising = m > business.monthlyBudget;
+    if (business.status === "paused") {
+      // Реклама остановлена целиком: только запоминаем бюджет — ничего не включаем, лимиты пересчитаем при возобновлении
+      const db = await getDb();
+      await db.update(schema.businesses).set({ monthlyBudget: m, updatedAt: new Date() }).where(eq(schema.businesses.id, business.id));
+      return json({ ok: true, activated: [], addable: [], paused: true });
+    }
     await applyMonthlyBudget(business, m);
     // Бюджет вырос — включаем и остальные типы кампаний: выключенные каналы, ретаргетинг без автозапуска,
     // и подсказываем, какие ещё не созданные каналы теперь помещаются (мастер создаст их сам)
