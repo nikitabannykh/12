@@ -19,6 +19,7 @@ import { ANGLES, LAYERS, LAYER_ITEM, LAYER_LABEL, type Layer } from "@/lib/niche
 import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
 import { adExtras, responsiveAssets, timeTargeting, withPlanCallouts } from "@/lib/engine/extras";
 import { ageText, sexText, showOf } from "@/lib/engine/show";
+import { landingFor } from "@/lib/engine/landing";
 import { vkRadiusFor } from "@/lib/platforms/vk-formats";
 import { displayKeyword } from "@/lib/engine/semantics";
 import { placeName, scoreGroup, liftBy, addS, zeroS, ctrOf, VERDICT, type S, type AdScore } from "@/lib/engine/insights";
@@ -26,7 +27,7 @@ import Link from "next/link";
 import { PauseAll } from "@/components/PauseAll";
 import { pausedSince } from "@/lib/util";
 import { Fragment } from "react";
-import { addDays, hostOf, isoDay, num, pl, plural, rub } from "@/lib/util";
+import { addDays, appUrl, hostOf, isoDay, num, pl, plural, rub } from "@/lib/util";
 import type { Channel } from "@/lib/platforms/types";
 import { CHANNELS, CHANNEL_INFO, TYPE_INFO, FAMILY_NAME, adsHref, cabinetUrl, familyOf, formatOf, isRetarget, typeOf, type CampaignType, type Family } from "@/lib/channels";
 import { audiencesFor } from "@/lib/engine/retarget";
@@ -481,6 +482,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
               <p className="text-sm text-muted mt-1 max-w-2xl"><Purpose type={typeOf(ch)} />. {CHANNEL_HINT[ch]}.</p>
               <div className="mt-2 grid gap-0.5 text-sm text-ink-2 max-w-3xl">
                 <div className="flex flex-wrap items-baseline justify-between gap-x-3"><span className="text-faint text-xs uppercase tracking-wide font-semibold">Показ</span><Link href="/app/settings#show" className="text-sm font-semibold underline underline-offset-2 text-ink-2 hover:text-ink">Изменить регион, возраст, время</Link></div>
+                <div><span className="text-muted">Ведёт на:</span> {(() => { const l = landingFor(b, ch, appUrl()); return <><a href={l.url} target="_blank" rel="noreferrer" className="underline underline-offset-2">{l.kind === "page" ? "страницу записи" : l.kind === "site" ? "сайт" : l.label}</a>{l.kind === "link" ? <span className="text-faint"> — заявки там не видим, считаем переходы</span> : null} · <Link href="/app/settings#landing" className="text-ink-2 underline underline-offset-2">изменить</Link></>; })()}</div>
                 <div><span className="text-muted">Кому:</span> {ch === "search" ? `тем, кто ищет в Яндексе — ${pl(cg.reduce((n, g) => n + new Set((g.keywords ?? []).map(displayKeyword)).size, 0), "запрос", "запроса", "запросов")} в ${pl(cg.length, "группе", "группах", "группах")}` : isRetarget(ch) ? `заходили на ${b.siteUrl ? "сайт" : "страницу записи"} и не записались` : (() => { const sh = showOf(b); const own = [sexText(sh.sex), ageText(sh.ageFrom, sh.ageTo)].filter(Boolean).join(", "); return own ? `${own} (вы задали в настройках показа)` : [...new Set(cg.map((g) => g.audience).filter(Boolean))].slice(0, 4).join(" · ") || "подбирает площадка"; })()}</div>
                 <div><span className="text-muted">Где:</span> {(() => { const sh = showOf(b); const extra = sh.extraRegions?.length ? ` + ${sh.extraRegions.join(", ")}` : ""; return ch === "vk" && b.geo && sh.geoMode !== "city" && !extra ? `в ${String(sh.geoMode === "radius" && sh.radiusKm ? sh.radiusKm : Math.round(vkRadiusFor(b.city) / 100) / 10).replace(".", ",")} км от ${b.address ?? "вас"}` : `${b.city}${extra}`; })()}{(() => { const sh = showOf(b); const a = ageText(sh.ageFrom, sh.ageTo); const x = sexText(sh.sex); return a || x ? <> · <span className="text-muted">Пол и возраст:</span> {[x, a].filter(Boolean).join(", ")}</> : null; })()}{(() => { const tt = timeTargeting(b); return tt ? <> · <span className="text-muted">Когда:</span> {tt.note.replace(/^Реклама показывается /, "")}</> : null; })()}</div>
               </div>

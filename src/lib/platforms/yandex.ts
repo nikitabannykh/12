@@ -786,6 +786,24 @@ export class YandexDirect implements PlatformClient {
    * Правка текста (ads.update → ResponsiveAd). Titles и Texts в update передаются целиком: без готовых списков
    * берём текущие у Директа и меняем в них основной вариант (первый), убирая склейки со старым основным заголовком.
    */
+  /** Новая ссылка объявлений (ResponsiveAd.Href) — объявления уходят на модерацию заново */
+  async updateAdsHref(adExts: string[], href: string): Promise<string[]> {
+    const warnings: string[] = [];
+    for (let i = 0; i < adExts.length; i += 1000) {
+      const ids = adExts.slice(i, i + 1000).map(Number);
+      try {
+        const res = await this.call("ads", "update", { Ads: ids.map((Id) => ({ Id, ResponsiveAd: { Href: href } })) });
+        const local: string[] = [];
+        try { this.items(res.UpdateResults, "Ссылка объявления", local); } catch (e) { warnings.push((e as Error).message); }
+        warnings.push(...local);
+        await this.call("ads", "moderate", { SelectionCriteria: { Ids: ids } }).catch(() => null);
+      } catch (e) {
+        warnings.push((e as Error).message);
+      }
+    }
+    return warnings;
+  }
+
   async updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string; titles?: string[]; texts?: string[] }) {
     let titles = t.titles, texts = t.texts;
     if (!titles || !texts) {

@@ -1,5 +1,7 @@
 import { VkConnect } from "@/components/VkConnect";
 import { ShowSettingsEditor } from "@/components/ShowSettingsEditor";
+import { LandingEditor } from "@/components/LandingEditor";
+import { pageUrl, type LandingSettings } from "@/lib/engine/landing";
 import { timeTargeting } from "@/lib/engine/extras";
 import { vkRadiusFor } from "@/lib/platforms/vk-formats";
 import type { ShowSettings } from "@/lib/engine/show";
@@ -94,6 +96,12 @@ export default async function Settings() {
       <section id="notify" className="card p-5 sm:p-7 scroll-mt-6">
         <h2 className="text-lg font-bold">Уведомления о заявках</h2>
         <NotifySettings initial={notifyStatus} />
+      </section>
+
+      <section id="landing" className="card p-5 sm:p-7 scroll-mt-6">
+        <h2 className="text-lg font-bold">Куда ведёт реклама</h2>
+        <p className="hint mt-1 mb-5">Куда попадает человек после клика по объявлению. Можно одну ссылку для всех каналов и свою — для отдельного канала.</p>
+        <LandingEditor initial={(b.landing ?? {}) as LandingSettings} siteUrl={b.siteUrl} pageUrl={pageUrl(b, appUrl())} channels={channels} live={b.status === "active" || b.status === "paused"} hasYandex={accounts.some((a) => a.platform === "yandex")} />
       </section>
 
       <section id="show" className="card p-5 sm:p-7 scroll-mt-6">

@@ -1,5 +1,6 @@
 import "server-only";
 import { directDemographics, showOf } from "./show";
+import { landingFor } from "./landing";
 import { and, asc, eq, inArray, notInArray } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { AdAccount, Business, Campaign, UndoOp } from "../db/schema";
@@ -168,8 +169,9 @@ export function channelsFor(accounts: AdAccount[]): { channel: Channel; account:
   return out;
 }
 
-export function landingUrl(b: Business) {
-  return b.siteUrl || `${appUrl()}/p/${b.publicKey}`;
+/** Куда ведёт реклама (в канале — с учётом настройки для канала). Без настроек: сайт или страница записи */
+export function landingUrl(b: Business, channel?: string | null) {
+  return landingFor(b, channel, appUrl()).url;
 }
 
 /** Каналы Директа: комбинаторные объявления, лимит 3 неархивных объявления в группе */
@@ -499,7 +501,7 @@ type ChannelResult = { state: "ready"; campaignId: string; ads: number; errors: 
  */
 async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, account: AdAccount, launchId: string, warnings: string[], deadline: number): Promise<ChannelResult> {
   const db = await getDb();
-  const href = landingUrl(b);
+  const href = landingUrl(b, ch.channel);
   const n = nicheById(b.niche);
   const client = await clientFor(account);
 

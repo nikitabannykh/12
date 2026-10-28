@@ -12,6 +12,8 @@ import { api, Modal, useToast, resizeToJpeg } from "./client";
 import { VkConnect } from "./VkConnect";
 import { PlanManager } from "./PlanManager";
 import { ShowSettingsEditor } from "./ShowSettingsEditor";
+import { LandingEditor } from "./LandingEditor";
+import type { LandingSettings } from "@/lib/engine/landing";
 import type { ShowSettings } from "@/lib/engine/show";
 import type { ExtrasBiz } from "@/lib/engine/extras";
 import { allocate, forecast, minMonthlyFor } from "@/lib/engine/budget";
@@ -64,6 +66,7 @@ type Props = {
   /** Радиус показа во ВКонтакте вокруг адреса, км (если адрес найден на карте) */
   vkRadiusKm?: number | null;
   /** Настройки показа: регион, пол и возраст, расписание */
+  landing: { initial: LandingSettings; siteUrl: string | null; pageUrl: string };
   show: { initial: ShowSettings; city: string; address: string | null; autoTime: string | null; autoRadiusKm: number | null };
 };
 
@@ -399,6 +402,10 @@ export function LaunchWizard(p: Props) {
 
       <Section id="show" title="Где, кому и когда показывать" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>
         <ShowSettingsEditor initial={p.show.initial} city={p.show.city} address={p.show.address} autoTime={p.show.autoTime} autoRadiusKm={p.show.autoRadiusKm} live={false} />
+      </Section>
+
+      <Section id="landing" title="Куда ведёт реклама" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>
+        <LandingEditor initial={p.landing.initial} siteUrl={p.landing.siteUrl} pageUrl={p.landing.pageUrl} channels={channels} live={false} hasYandex={usable.some((a) => a.platform === "yandex")} />
       </Section>
 
       <Section id="ads" title="Объявления" done={ready && !preparing} active={hasAccounts} note={hasAccounts ? undefined : "После кабинета"}

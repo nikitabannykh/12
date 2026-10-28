@@ -567,6 +567,25 @@ export class VkAds implements PlatformClient {
   }
 
   /** Секция textblocks при обновлении заменяется целиком — поэтому берём текущие блоки и меняем только тексты */
+  /** Новая ссылка объявлений: создаём URL в VK и подменяем urls.primary у баннеров */
+  async updateAdsHref(adExts: string[], href: string): Promise<string[]> {
+    const warnings: string[] = [];
+    let urlId: number;
+    try {
+      urlId = await this.createUrl(href);
+    } catch (e) {
+      return [`VK не принял ссылку: ${(e as Error).message}`];
+    }
+    for (const id of adExts) {
+      try {
+        await this.req("POST", `v2/banners/${id}.json`, { body: { urls: { primary: { id: urlId } } } });
+      } catch (e) {
+        warnings.push(`Объявление ${id}: ${(e as Error).message}`);
+      }
+    }
+    return warnings;
+  }
+
   async updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string }) {
     if (!t.title.trim() || !t.text.trim()) throw new PlatformError("vk", "У объявления пустой заголовок или текст");
     // Без текущих блоков не обновляем: POST заменил бы textblocks целиком и стёр «о компании», кнопку и длинный текст

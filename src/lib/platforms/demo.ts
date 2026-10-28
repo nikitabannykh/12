@@ -354,6 +354,10 @@ export class DemoPlatform implements PlatformClient {
     await this.save(s);
   }
 
+  async updateAdsHref(): Promise<string[]> {
+    return [];
+  }
+
   async updateTargeting(): Promise<string[]> {
     return []; // демо: показы моделируются, настройки хранятся у нас
   }

@@ -183,6 +183,8 @@ export interface PlatformClient {
   setBudget(campaignExt: string, p: { channel: Channel; weeklyBudget: number; strategy: Strategy; goalId?: number | null; bidCeiling?: number | null }): Promise<void>;
   setNegativeKeywords(campaignExt: string, words: string[]): Promise<void>;
   /** Поменять регион, возраст/пол и расписание у идущей кампании (без пересоздания) */
+  /** Сменить ссылку у идущих объявлений (куда ведёт реклама). Возвращает предупреждения */
+  updateAdsHref?(adExts: string[], href: string): Promise<string[]>;
   updateTargeting?(campaignExt: string, t: TargetingUpdate): Promise<string[]>;
   updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string; titles?: string[]; texts?: string[] }): Promise<void>;
   getAdStates(adExts: string[]): Promise<Record<string, AdState>>;

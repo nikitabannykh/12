@@ -258,4 +258,5 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version integer NOT NULL DEFA
 ALTER TABLE users ADD COLUMN IF NOT EXISTS current_business_id text;
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS source_links jsonb NOT NULL DEFAULT '[]';
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS show_settings jsonb NOT NULL DEFAULT '{}';
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS landing jsonb NOT NULL DEFAULT '{}';
 `;

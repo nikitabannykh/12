@@ -219,7 +219,7 @@ function chooseAngle(cx: Ctx, channel: string, groupId: string, exclude: string[
  * все заголовки и тексты комбинаторного объявления и картинки других пропорций.
  */
 async function adSpecFor(cx: Ctx, camp: Campaign, group: AdGroup, platform: string, a: { title: string; title2?: string | null; text: string; imageId?: string | null }, localId: string): Promise<AdSpec> {
-  const href = landingUrl(cx.b);
+  const href = landingUrl(cx.b, camp.channel);
   const img = a.imageId ? await getImage(a.imageId) : null;
   const direct = isDirectChannel(camp.channel) && platform !== "vk";
   const svc0 = cx.b.services?.[0];
