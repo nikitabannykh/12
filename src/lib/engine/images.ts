@@ -169,6 +169,7 @@ export async function imageSet(b: Business, baseImageId: string, ctx: { headline
   if (!base || !base.layout || base.layout === "logo") return [];
   const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, key));
   const known = { ...((row?.value as Record<string, string> | undefined) ?? {}) };
+  for (const [r, id] of Object.entries(known)) if (!(await db.select({ id: schema.images.id }).from(schema.images).where(eq(schema.images.id, id))).length) delete known[r];
   const own = ratioKey(base.width, base.height);
   const srcPhoto = base.prompt?.startsWith("img_") ? base.prompt : null;
   // Владелец удалил исходное фото — новые пропорции без него получились бы другой картинкой, не дорисовываем
@@ -197,33 +198,57 @@ export async function imageSet(b: Business, baseImageId: string, ctx: { headline
 
 
 /**
- * Уборка: удаляем нарисованные картинки, на которые больше ничего не ссылается
- * (старые черновики после перегенерации). Фото владельца не трогаем никогда.
- * ignorePlan — при перегенерации старый черновик всё равно будет заменён.
+ * Уборка базы (на бесплатном Neon всего 512 МБ):
+ *  - удаляем нарисованные картинки, на которые больше ничего не ссылается (старые черновики после перегенерации);
+ *  - наборы пропорций (kv imgset:*) живут, пока жива исходная картинка; кэш фото-макетов (ownphoto:*) не держит картинки;
+ *  - крупные фото владельца пережимаем в JPEG до 1600 px. Сами фото владельца не удаляем никогда.
+ * ignorePlanOf — бизнес, черновик которого сейчас будет заменён.
  */
-export async function collectGarbageImages(businessId?: string, opts: { ignorePlan?: boolean; minAgeMin?: number } = {}) {
+export async function collectGarbageImages(opts: { ignorePlanOf?: string; minAgeMin?: number; recompress?: number } = {}) {
   const db = await getDb();
-  const { sql } = await import("drizzle-orm");
+  const { sql, like } = await import("drizzle-orm");
   const minAge = opts.minAgeMin ?? 30;
   const refs = new Set<string>();
   const add = (v: unknown) => { for (const m of JSON.stringify(v ?? null).matchAll(/img_[A-Za-z0-9_-]+/g)) refs.add(m[0]); };
-  const biz = await db.select({ id: schema.businesses.id, plan: schema.businesses.launchPlan }).from(schema.businesses).where(businessId ? eq(schema.businesses.id, businessId) : sql`true`);
-  for (const b of biz) if (!(opts.ignorePlan && b.id === businessId)) add(b.plan);
-  add(await db.select().from(schema.ads).where(businessId ? eq(schema.ads.businessId, businessId) : sql`true`));
+  const biz = await db.select({ id: schema.businesses.id, plan: schema.businesses.launchPlan }).from(schema.businesses);
+  for (const b of biz) if (b.id !== opts.ignorePlanOf) add(b.plan);
+  add(await db.select().from(schema.ads));
   add(await db.select().from(schema.adGroups));
   add(await db.select().from(schema.campaigns));
   add(await db.select().from(schema.experiments));
-  add(await db.select().from(schema.changes).where(businessId ? eq(schema.changes.businessId, businessId) : sql`true`));
-  add(await db.select({ v: schema.kv.value }).from(schema.kv));
+  add(await db.select().from(schema.changes));
+  const sets = await db.select().from(schema.kv).where(like(schema.kv.key, "imgset:%"));
+  for (const r of sets) if (refs.has(r.key.slice(7))) add(r.value);
   const cands = await db
+    .select({ id: schema.images.id, layout: schema.images.layout })
+    .from(schema.images)
+    .where(and(eq(schema.images.kind, "creative"), sql`(${schema.images.createdAt} < now() - (${minAge} || ' minutes')::interval OR ${schema.images.businessId} = ${opts.ignorePlanOf ?? ""})`));
+  const dead = new Set(cands.filter((c) => c.layout !== "logo" && !refs.has(c.id)).map((c) => c.id));
+  const ids = [...dead];
+  for (let i = 0; i < ids.length; i += 200) await db.delete(schema.images).where(inArray(schema.images.id, ids.slice(i, i + 200)));
+  // Кэш-записи, указывающие на удалённое, больше не нужны
+  const caches = [...sets, ...(await db.select().from(schema.kv).where(like(schema.kv.key, "ownphoto:%")))];
+  const staleKeys = caches.filter((r) => dead.has(r.key.split(":")[1]) || [...JSON.stringify(r.value).matchAll(/img_[A-Za-z0-9_-]+/g)].some((m) => dead.has(m[0]))).map((r) => r.key);
+  for (let i = 0; i < staleKeys.length; i += 200) await db.delete(schema.kv).where(inArray(schema.kv.key, staleKeys.slice(i, i + 200)));
+  // Тяжёлые фото владельца → JPEG
+  let squeezed = 0;
+  const heavy = await db
     .select({ id: schema.images.id })
     .from(schema.images)
-    .where(and(eq(schema.images.kind, "creative"), businessId ? eq(schema.images.businessId, businessId) : sql`true`, sql`${schema.images.createdAt} < now() - (${minAge} || ' minutes')::interval`));
-  const dead = cands.map((c) => c.id).filter((id) => !refs.has(id));
-  for (let i = 0; i < dead.length; i += 200) await db.delete(schema.images).where(inArray(schema.images.id, dead.slice(i, i + 200)));
-  // Возвращаем место базе сразу, не дожидаясь автоочистки
-  if (dead.length) {
-    try { await db.execute(sql`VACUUM images`); } catch { /* PGlite / транзакция — не страшно */ }
+    .where(and(inArray(schema.images.kind, ["photo", "generated"]), sql`octet_length(${schema.images.data}) > 700000`))
+    .limit(opts.recompress ?? 15);
+  for (const h of heavy) {
+    const img = await getImage(h.id);
+    if (!img) continue;
+    const data = await compact(img.kind, Buffer.from(img.data));
+    const size = imageSize(data);
+    if (size && data.length < img.data.length) {
+      await db.update(schema.images).set({ data, mime: size.mime, width: size.width, height: size.height }).where(eq(schema.images.id, h.id));
+      squeezed++;
+    }
   }
-  return dead.length;
+  if (ids.length || squeezed) {
+    try { await db.execute(sql`VACUUM images`); } catch { /* PGlite / внутри транзакции — не страшно */ }
+  }
+  return { deleted: ids.length, squeezed };
 }

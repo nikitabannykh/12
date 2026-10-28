@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 async function cleanup() {
   const db = await getDb();
   await db.delete(schema.rateLimits).where(lt(schema.rateLimits.resetAt, new Date()));
-  await collectGarbageImages(undefined, { minAgeMin: 120 }).catch(() => 0);
+  await collectGarbageImages({ minAgeMin: 120, recompress: 40 }).catch(() => 0);
   await db
     .update(schema.leads)
     .set({ name: null, contact: null, visitorId: null })

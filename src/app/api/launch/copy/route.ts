@@ -9,7 +9,8 @@ export const POST = route(async ({ user, business }) => {
   if (business.status === "active") return fail("Реклама уже запущена");
   if ((business.launchPlan as LaunchPlan | null)?.launch) return fail("Запуск уже начат — дождитесь окончания или продолжите его", 409);
   // Старый черновик сейчас заменим — его картинки больше не нужны
-  await collectGarbageImages(business.id, { ignorePlan: true, minAgeMin: 0 }).catch(() => 0);
+  const gc = await collectGarbageImages({ ignorePlanOf: business.id, minAgeMin: 15 }).catch((e) => String(e));
+  console.log("image gc", JSON.stringify(gc));
   const accounts = await accountsFor(user.id);
   const plan = await prepareCopy(business, accounts);
   await savePlan(business.id, plan);
