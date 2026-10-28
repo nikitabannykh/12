@@ -3,6 +3,8 @@ import type { AdSpec, AdState, AudienceSpec, CampaignSpec, Channel, LaunchHooks,
 import { PlatformError } from "./types";
 import { sleep } from "../util";
 import { ctaValue, defaultFormat, fit, iconKey, imageKeyFor, legalAbout, parseBannerFormat, textKeys, type Fulltime, type VkFormat } from "./vk-formats";
+/** Максимальный размер страницы в списках VK Ads API v2 */
+const VK_PAGE = 50;
 export { vkPixelSnippet, vkReachGoalJs, VK_LEAD_GOAL } from "./vk-formats";
 
 /**
@@ -136,10 +138,21 @@ export class VkAds implements PlatformClient {
     return this.req("GET", "v2/user.json");
   }
 
+  /** Весь список постранично (VK отдаёт не больше 50 за раз) */
+  private async listAll(path: string, query: Record<string, string | number | undefined> = {}, maxPages = 20): Promise<any[]> {
+    const out: any[] = [];
+    for (let p = 0; p < maxPages; p++) {
+      const j = await this.req("GET", path, { query: { ...query, limit: VK_PAGE, offset: p * VK_PAGE } });
+      const items: any[] = j?.items ?? [];
+      out.push(...items);
+      if (items.length < VK_PAGE || (typeof j?.count === "number" && out.length >= j.count)) break;
+    }
+    return out;
+  }
+
   private async packages(): Promise<any[]> {
     if (this.packagesCache) return this.packagesCache;
-    const j = await this.req("GET", "v2/packages.json", { query: { limit: 250 } });
-    this.packagesCache = j.items ?? [];
+    this.packagesCache = await this.listAll("v2/packages.json");
     return this.packagesCache!;
   }
 
@@ -174,8 +187,8 @@ export class VkAds implements PlatformClient {
         if (fid) {
           let raw: any = await this.req("GET", `v2/banner_formats/${fid}.json`).catch(() => null);
           if (!raw) {
-            const list = await this.req("GET", "v2/banner_formats.json", { query: { limit: 250 } }).catch(() => null);
-            raw = (list?.items ?? []).find((x: any) => Number(x.id) === fid) ?? null;
+            const list = await this.listAll("v2/banner_formats.json").catch(() => [] as any[]);
+            raw = list.find((x: any) => Number(x.id) === fid) ?? null;
           }
           const parsed = raw ? parseBannerFormat(raw) : null;
           if (parsed?.known) f = parsed;
@@ -204,7 +217,7 @@ export class VkAds implements PlatformClient {
    *     владельца Top@Mail.ru — их у нас нет; пробуем без них (VK_ADS_CREATE_PIXEL=0 — не пытаться). Не вышло — null.
    */
   async ensurePixel(o: { name: string; url: string; tag: string; known?: number | null }): Promise<{ counterId: number | null; note?: string }> {
-    const items = async (query: Record<string, string>) => ((await this.req("GET", "v2/remarketing/counters.json", { query: { ...query, limit: 250 } })).items ?? []) as any[];
+    const items = async (query: Record<string, string>) => (await this.listAll("v2/remarketing/counters.json", query, 10)) as any[];
     const ok = (c: any) => c && c.status !== "deleted" && c.system_status !== "blocked";
     try {
       if (o.known) {
@@ -254,7 +267,7 @@ export class VkAds implements PlatformClient {
   async ensureAudience(a: AudienceSpec): Promise<string> {
     if (!a.pixelId) throw new PlatformError("vk", "Ретаргетинг: нет пикселя VK на сайте");
     const name = a.name.slice(0, 200);
-    const list = await this.req("GET", "v2/remarketing/segments.json", { query: { limit: 100, _name: name } }).catch(() => null);
+    const list = await this.req("GET", "v2/remarketing/segments.json", { query: { limit: VK_PAGE, _name: name } }).catch(() => null);
     const found = ((list?.items ?? []) as any[]).find((x) => x.name === name);
     if (found) return String(found.id);
     const left = Math.max(1, Math.min(365, a.days));
@@ -369,12 +382,13 @@ export class VkAds implements PlatformClient {
 
   /** Наш план по точному имени (кроме удалённых) — проверка перед созданием и повтором, чтобы не создать дубль */
   private async findPlanByName(name: string): Promise<string | null> {
-    for (let offset = 0; offset < 5000; offset += 250) {
-      const j = await this.req("GET", "v2/ad_plans.json", { query: { fields: "id,name,status", limit: 250, offset } });
+    // Список отдаётся страницами максимум по 50 (VK_PAGE) — больше VK отвечает «Value is more than maximum allowed»
+    for (let offset = 0; offset < 5000; offset += VK_PAGE) {
+      const j = await this.req("GET", "v2/ad_plans.json", { query: { fields: "id,name,status", limit: VK_PAGE, offset } });
       const items: any[] = j.items ?? [];
       const hit = items.filter((p) => p.name === name && p.status !== "deleted").sort((p, q) => Number(q.id) - Number(p.id))[0];
       if (hit) return String(hit.id);
-      if (items.length < 250) break;
+      if (items.length < VK_PAGE) break;
     }
     return null;
   }
@@ -470,7 +484,7 @@ export class VkAds implements PlatformClient {
 
     let groupItems: { id: string; name: string }[] = [];
     if (groupIdsFromResponse.length !== spec.groups.length) {
-      const groupsRes = await this.req("GET", "v2/ad_groups.json", { query: { _ad_plan_id: planId, fields: "id,name", limit: 100 } });
+      const groupsRes = await this.req("GET", "v2/ad_groups.json", { query: { _ad_plan_id: planId, fields: "id,name", limit: VK_PAGE } });
       groupItems = (groupsRes.items ?? []).map((x: any) => ({ id: String(x.id), name: String(x.name) }));
     }
     const out: LaunchResult = { campaignExt: planId, groups: [], warnings, complete: true };
@@ -479,7 +493,7 @@ export class VkAds implements PlatformClient {
       let bannerItems: any[] = [];
       const used = new Set<string>();
       if (groupExt) {
-        const br = await this.req("GET", "v2/banners.json", { query: { _ad_group_id: groupExt, fields: "id,name", limit: 100 } });
+        const br = await this.req("GET", "v2/banners.json", { query: { _ad_group_id: groupExt, fields: "id,name", limit: VK_PAGE } });
         bannerItems = br.items ?? [];
       }
       out.groups.push({
@@ -605,9 +619,9 @@ export class VkAds implements PlatformClient {
 
   async getAdStates(adExts: string[]): Promise<Record<string, AdState>> {
     const out: Record<string, AdState> = {};
-    for (let i = 0; i < adExts.length; i += 100) {
-      const ids = adExts.slice(i, i + 100);
-      const j = await this.req("GET", "v2/banners.json", { query: { _id__in: ids.join(","), fields: "id,status,moderation_status,moderation_reasons", limit: 100 } });
+    for (let i = 0; i < adExts.length; i += VK_PAGE) {
+      const ids = adExts.slice(i, i + VK_PAGE);
+      const j = await this.req("GET", "v2/banners.json", { query: { _id__in: ids.join(","), fields: "id,status,moderation_status,moderation_reasons", limit: VK_PAGE } });
       for (const b of j.items ?? []) {
         let status: AdState["status"] = "moderation";
         if (b.status === "deleted") status = "archived";
@@ -627,9 +641,9 @@ export class VkAds implements PlatformClient {
     // Объявления наших кампаний → статистика по дням
     const banners: { id: string; plan: string }[] = [];
     for (const plan of campaignExts) {
-      const groups = await this.req("GET", "v2/ad_groups.json", { query: { _ad_plan_id: plan, fields: "id", limit: 100 } });
+      const groups = await this.req("GET", "v2/ad_groups.json", { query: { _ad_plan_id: plan, fields: "id", limit: VK_PAGE } });
       for (const g of groups.items ?? []) {
-        const br = await this.req("GET", "v2/banners.json", { query: { _ad_group_id: g.id, fields: "id", limit: 100 } });
+        const br = await this.req("GET", "v2/banners.json", { query: { _ad_group_id: g.id, fields: "id", limit: VK_PAGE } });
         for (const b of br.items ?? []) banners.push({ id: String(b.id), plan });
       }
     }
