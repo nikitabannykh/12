@@ -65,6 +65,17 @@ export type AudienceSpec = {
 /** Расписание показов по часам работы (Директ TimeTargeting): 7 строк «день,24 коэффициента» */
 export type TimeTargetingSpec = { schedule: string[]; timeZone: string; considerWorkingWeekends: boolean; note: string };
 
+export type DemographicsAdjustment = { Gender?: "GENDER_MALE" | "GENDER_FEMALE"; Age?: string; BidModifier: number };
+
+/** Настройки показа для уже идущих кампаний (меняет владелец в «Настройках показа») */
+export type TargetingUpdate = {
+  /** Директ: расписание кампании (null — круглосуточно) */
+  timeTargeting?: TimeTargetingSpec | null;
+  demographics?: DemographicsAdjustment[];
+  /** Группы: ID на площадке → регионы, возраст и пол, аудитория ретаргетинга */
+  groups: { groupExt: string; regionIds: number[]; ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; retargetingId?: string | null }[];
+};
+
 /** Лимиты площадки на объявления в группе (Директ, комбинаторные: 3 неархивных и 10 вместе с архивными) */
 export type AdLimits = { nonArchived: number; total: number };
 
@@ -82,6 +93,8 @@ export type CampaignSpec = {
   orgId?: string | null;
   /** Директ: расписание показов по часам работы */
   timeTargeting?: TimeTargetingSpec | null;
+  /** Директ: корректировки «пол и возраст» −100% для тех, кому владелец не хочет показывать */
+  demographics?: DemographicsAdjustment[];
   groups: GroupSpec[];
   /**
    * Метка запуска (короткая, латиница/цифры). Попадает в имя кампании на площадке, где по имени ищем
@@ -169,6 +182,8 @@ export interface PlatformClient {
   setAdsActive(adExts: string[], active: boolean): Promise<void>;
   setBudget(campaignExt: string, p: { channel: Channel; weeklyBudget: number; strategy: Strategy; goalId?: number | null; bidCeiling?: number | null }): Promise<void>;
   setNegativeKeywords(campaignExt: string, words: string[]): Promise<void>;
+  /** Поменять регион, возраст/пол и расписание у идущей кампании (без пересоздания) */
+  updateTargeting?(campaignExt: string, t: TargetingUpdate): Promise<string[]>;
   updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string; titles?: string[]; texts?: string[] }): Promise<void>;
   getAdStates(adExts: string[]): Promise<Record<string, AdState>>;
   getStats(campaignExts: string[], from: string, to: string, goalIds: number[]): Promise<StatRow[]>;

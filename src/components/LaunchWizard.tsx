@@ -11,6 +11,8 @@ import { Check, ImagePlus, Loader2, Rocket, Search, Sparkles, Trash2, TriangleAl
 import { api, Modal, useToast, resizeToJpeg } from "./client";
 import { VkConnect } from "./VkConnect";
 import { PlanManager } from "./PlanManager";
+import { ShowSettingsEditor } from "./ShowSettingsEditor";
+import type { ShowSettings } from "@/lib/engine/show";
 import type { ExtrasBiz } from "@/lib/engine/extras";
 import { allocate, forecast, minMonthlyFor } from "@/lib/engine/budget";
 import type { LaunchPlan, PlanAd, PublishStep } from "@/lib/engine/launch";
@@ -61,6 +63,8 @@ type Props = {
   logo?: string | null;
   /** Радиус показа во ВКонтакте вокруг адреса, км (если адрес найден на карте) */
   vkRadiusKm?: number | null;
+  /** Настройки показа: регион, пол и возраст, расписание */
+  show: { initial: ShowSettings; city: string; address: string | null; autoTime: string | null; autoRadiusKm: number | null };
 };
 
 /** Раздел этапа: заголовок, справа — состояние («Готово», «Необязательно», «Сначала подключите кабинет») */
@@ -391,6 +395,10 @@ export function LaunchWizard(p: Props) {
           </div>
         </div>
         <p className="hint mt-4">Бюджет — жёсткая граница: робот следит за расходами каждый день и не выйдет за неё. Пополнять кабинеты нужно самим, примерно на эту сумму в месяц.</p>
+      </Section>
+
+      <Section id="show" title="Где, кому и когда показывать" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>
+        <ShowSettingsEditor initial={p.show.initial} city={p.show.city} address={p.show.address} autoTime={p.show.autoTime} autoRadiusKm={p.show.autoRadiusKm} live={false} />
       </Section>
 
       <Section id="ads" title="Объявления" done={ready && !preparing} active={hasAccounts} note={hasAccounts ? undefined : "После кабинета"}

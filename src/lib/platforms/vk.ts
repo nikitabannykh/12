@@ -1,5 +1,5 @@
 import "server-only";
-import type { AdSpec, AdState, AudienceSpec, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, StatRow, Strategy } from "./types";
+import type { AdSpec, AdState, AudienceSpec, CampaignSpec, Channel, LaunchHooks, LaunchResult, PlatformClient, StatRow, Strategy, TargetingUpdate } from "./types";
 import { PlatformError } from "./types";
 import { sleep } from "../util";
 import { ctaValue, defaultFormat, fit, iconKey, imageKeyFor, legalAbout, parseBannerFormat, textKeys, type Fulltime, type VkFormat } from "./vk-formats";
@@ -535,6 +535,31 @@ export class VkAds implements PlatformClient {
 
   async setBudget(campaignExt: string, p: { channel: Channel; weeklyBudget: number; strategy: Strategy }) {
     await this.req("POST", `v2/ad_plans/${campaignExt}.json`, { body: { budget_limit_day: vkDailyNet(p.weeklyBudget) } });
+  }
+
+  /**
+   * Регион, возраст, пол и время у идущих групп: читаем текущие таргетинги (там могут быть сегменты, интересы)
+   * и меняем только geo / age / sex / fulltime. Контекст бизнеса (радиус, расписание) — из useBusiness().
+   */
+  async updateTargeting(_campaignExt: string, t: TargetingUpdate): Promise<string[]> {
+    const warnings: string[] = [];
+    const biz = this.biz;
+    for (const g of t.groups) {
+      try {
+        const cur = await this.req("GET", `v2/ad_groups/${g.groupExt}.json`, { query: { fields: "id,targetings" } }).catch(() => null);
+        const targetings: Record<string, unknown> = { ...((cur?.targetings ?? {}) as Record<string, unknown>) };
+        targetings.geo = !g.retargetingId && biz.localGeo?.locations.length ? { local_geo: biz.localGeo } : { regions: g.regionIds.length ? g.regionIds : [188] };
+        targetings.age = { ...((targetings.age as object) ?? {}), age_list: this.age(g.ageFrom, g.ageTo) };
+        if (g.sex && g.sex !== "any") targetings.sex = [g.sex];
+        else delete targetings.sex;
+        if (biz.fulltime) targetings.fulltime = biz.fulltime;
+        else delete targetings.fulltime;
+        await this.req("POST", `v2/ad_groups/${g.groupExt}.json`, { body: { targetings } });
+      } catch (e) {
+        warnings.push(`Группа ${g.groupExt}: ${(e as Error).message}`);
+      }
+    }
+    return warnings;
   }
 
   async setNegativeKeywords() {

@@ -61,6 +61,8 @@ export const businesses = pgTable("businesses", {
   status: text("status").notNull().default("draft"), // draft | launching | active | paused
   counterId: bigint("counter_id", { mode: "number" }),
   goalIds: jsonb("goal_ids").$type<Record<string, number>>().notNull().default({}),
+  /** Настройки показа владельца: регион, возраст и пол, расписание (engine/show.ts) */
+  showSettings: jsonb("show_settings").$type<Record<string, unknown>>().notNull().default({}),
   regionIds: jsonb("region_ids").$type<{ yandex?: number[]; vk?: number[] }>().notNull().default({}),
   launchPlan: jsonb("launch_plan").$type<unknown>(),
   createdAt: createdAt(),

@@ -354,6 +354,10 @@ export class DemoPlatform implements PlatformClient {
     await this.save(s);
   }
 
+  async updateTargeting(): Promise<string[]> {
+    return []; // демо: показы моделируются, настройки хранятся у нас
+  }
+
   async setNegativeKeywords(campaignExt: string, words: string[]) {
     const s = await this.load();
     const c = s.campaigns[campaignExt];

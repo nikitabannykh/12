@@ -16,6 +16,7 @@ import type { LaunchPlan, PlanAd, PlanChannel, PlanGroup } from "@/lib/engine/la
 import type { Channel } from "@/lib/platforms/types";
 import { CHANNEL_INFO, formatOf, isRetarget, TYPE_INFO } from "@/lib/channels";
 import { LAYER_ITEM, LAYER_LABEL, LAYERS, type Layer } from "@/lib/niches";
+import { showOf, type ShowSettings } from "@/lib/engine/show";
 
 type Names = Record<Channel, { name: string; hint: string }>;
 const ANGLE: Record<string, string> = { price: "цена", offer: "предложение новым", proof: "доверие", convenience: "удобство", result: "результат", emotion: "эмоция" };
@@ -28,14 +29,17 @@ function plural(n: number, one: string, few: string, many: string) {
   return many;
 }
 
-function who(g: Pick<PlanGroup, "ageFrom" | "ageTo" | "sex">) {
+function whoOf(g: Pick<PlanGroup, "ageFrom" | "ageTo" | "sex">) {
   const sex = g.sex === "female" ? "женщины" : g.sex === "male" ? "мужчины" : "все";
   const age = g.ageFrom || g.ageTo ? `${g.ageFrom ?? 18}–${g.ageTo ?? 65} лет` : "любой возраст";
   return `${sex[0].toUpperCase()}${sex.slice(1)}, ${age}`;
 }
 
-function geoText(ch: Channel, city: string, vkRadiusKm: number | null, address: string | null) {
-  if (ch === "vk" && vkRadiusKm) return `Живут или работают в ${vkRadiusKm} км от ${address ? address : "вас"}`;
+function geoText(ch: Channel, city: string, vkRadiusKm: number | null, address: string | null, sh: ShowSettings = {}) {
+  const extra = sh.extraRegions?.length ? ` + ${sh.extraRegions.join(", ")}` : "";
+  if (extra && !isRetarget(ch)) return `${city}${extra}`;
+  if (ch === "vk" && sh.geoMode === "radius" && sh.radiusKm) return `Живут или работают в ${String(sh.radiusKm).replace(".", ",")} км от ${address ? address : "вас"}`;
+  if (ch === "vk" && sh.geoMode !== "city" && vkRadiusKm) return `Живут или работают в ${vkRadiusKm} км от ${address ? address : "вас"}`;
   if (isRetarget(ch)) return `${city} — только те, кто уже был на сайте`;
   return `${city} и пригороды`;
 }
@@ -62,6 +66,8 @@ export function PlanManager(p: {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const ch = plan.channels.find((c) => c.channel === tab) ?? plan.channels[0];
   const tt = timeTargeting(p.biz);
+  const sh = showOf(p.biz);
+  const who = (g: Pick<PlanGroup, "ageFrom" | "ageTo" | "sex">) => whoOf({ ageFrom: sh.ageFrom ?? g.ageFrom, ageTo: sh.ageTo ?? g.ageTo, sex: sh.sex ?? g.sex });
 
   const count = (c: PlanChannel) => {
     const ads = c.groups.flatMap((g) => g.ads);
@@ -101,20 +107,20 @@ export function PlanManager(p: {
       {/* Кому покажем */}
       <details className="rounded-xl border border-line bg-white" open>
         <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-3">
-          <span className="font-bold inline-flex items-center gap-2"><Users size={16} /> Кому покажем рекламу</span>
+          <span className="font-bold inline-flex items-center gap-2"><Users size={16} /> Кому покажем рекламу <a href="#show" className="text-sm font-medium text-ink-2 underline underline-offset-2" onClick={(e) => e.stopPropagation()}>изменить</a></span>
           <ChevronDown size={16} className="text-muted" />
         </summary>
         <div className="px-4 pb-4 grid gap-3">
           <div className="grid sm:grid-cols-2 gap-2 text-sm">
             <div className="flex gap-2"><MapPin size={15} className="mt-0.5 shrink-0 text-muted" /><span><b>Где:</b> {p.biz.city}{p.biz.address ? `, рядом с ${p.biz.address}` : ""}</span></div>
-            <div className="flex gap-2"><Clock size={15} className="mt-0.5 shrink-0 text-muted" /><span><b>Когда:</b> {tt ? tt.note : "круглосуточно — часы работы не указаны"}</span></div>
+            <div className="flex gap-2"><Clock size={15} className="mt-0.5 shrink-0 text-muted" /><span><b>Когда:</b> {tt ? tt.note : sh.scheduleMode === "always" ? "круглосуточно" : "круглосуточно — часы работы не указаны"}</span></div>
           </div>
           <div className="grid md:grid-cols-2 gap-2">
             {audience.map(({ c, kw, whos, interests, auto }) => (
               <button key={c.channel} type="button" onClick={() => setTab(c.channel)}
                 className={`text-left rounded-lg border px-3 py-2.5 text-sm grid gap-1 hover:border-ink ${tab === c.channel ? "border-ink" : "border-line"}`}>
                 <span className="font-semibold flex flex-wrap items-center gap-2">{p.names[c.channel].name} <TypeBadge type={CHANNEL_INFO[c.channel].type} /></span>
-                <span className="text-ink-2"><b className="font-medium">Где:</b> {geoText(c.channel, p.biz.city, p.vkRadiusKm, p.biz.address)}</span>
+                <span className="text-ink-2"><b className="font-medium">Где:</b> {geoText(c.channel, p.biz.city, p.vkRadiusKm, p.biz.address, sh)}</span>
                 {c.channel === "search" ? (
                   <span className="text-ink-2"><b className="font-medium">Кто:</b> ищут в Яндексе — {kw} {plural(kw, "запрос", "запроса", "запросов")} в {c.groups.length} {plural(c.groups.length, "группе", "группах", "группах")}{auto ? ", плюс автотаргетинг: Яндекс сам добавит похожие запросы" : ""}</span>
                 ) : isRetarget(c.channel) ? (
@@ -236,7 +242,7 @@ export function PlanManager(p: {
                           ) : (
                             <>
                               <div><span className="text-muted">Кто:</span> {who(g)}</div>
-                              <div><span className="text-muted">Где:</span> {geoText(ch.channel, p.biz.city, p.vkRadiusKm, p.biz.address)}</div>
+                              <div><span className="text-muted">Где:</span> {geoText(ch.channel, p.biz.city, p.vkRadiusKm, p.biz.address, sh)}</div>
                               {g.audience ? <div className="sm:col-span-2"><span className="text-muted">Аудитория:</span> {g.audience}</div> : null}
                               {g.autotargeting ? <div className="sm:col-span-2 text-muted">Площадка дополнительно подберёт похожих людей сама.</div> : null}
                             </>

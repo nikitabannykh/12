@@ -4,10 +4,11 @@
  * дополнительные заголовки и тексты комбинаторного объявления Директа, расписание показов по часам работы.
  * Собирается из анкеты бизнеса — одинаково для запуска, робота и предпросмотра (модуль работает и в браузере).
  */
+import { customSchedule, showOf } from "./show";
 import type { Business } from "../db/schema";
 import { isMedical, nicheById } from "../niches";
 
-export type ExtrasBiz = Pick<Business, "name" | "niche" | "city" | "address" | "phone" | "whatsapp" | "telegram" | "hours" | "services" | "advantages" | "offer" | "review" | "description"> & {
+export type ExtrasBiz = { showSettings?: unknown } & Pick<Business, "name" | "niche" | "city" | "address" | "phone" | "whatsapp" | "telegram" | "hours" | "services" | "advantages" | "offer" | "review" | "description"> & {
   /** ID организации в Яндекс Бизнесе (permalink): адрес, телефон, часы и рейтинг Директ берёт из профиля */
   orgId?: string | null;
 };
@@ -428,7 +429,14 @@ export function timeZoneFor(city?: string | null) {
  * null — часы неизвестны, работают круглосуточно или окно вышло бы слишком узким (Директ требует от 40 часов
  * показов в рабочие дни недели).
  */
-export function timeTargeting(b: Pick<ExtrasBiz, "hours" | "city">): { schedule: string[]; timeZone: string; considerWorkingWeekends: boolean; note: string } | null {
+export function timeTargeting(b: Pick<ExtrasBiz, "hours" | "city"> & { showSettings?: unknown }): { schedule: string[]; timeZone: string; considerWorkingWeekends: boolean; note: string } | null {
+  // Владелец сам выбрал время показа
+  const s = showOf(b);
+  if (s.scheduleMode === "always") return null;
+  if (s.scheduleMode === "custom") {
+    const c = customSchedule(s);
+    return { schedule: c.schedule, timeZone: timeZoneFor(b.city), considerWorkingWeekends: false, note: c.note };
+  }
   const week = parseWeekHours(b.hours);
   if (!week) return null;
   const open = week.filter((d): d is { open: number; close: number } => !!d);

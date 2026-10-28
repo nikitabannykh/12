@@ -1,4 +1,5 @@
 import "server-only";
+import { showOf, vkFulltimeFromShow } from "./show";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import { CITY_REGIONS } from "../niches";
@@ -64,18 +65,24 @@ export async function vkRegionIds(city: string, client: VkAds): Promise<number[]
  */
 export async function regionIdsFor(b: Business, platform: string, client: PlatformClient): Promise<number[]> {
   const own = (b.regionIds ?? {}) as { yandex?: number[]; vk?: number[] };
+  const extra = showOf(b).extraRegions ?? [];
+  const uniq = (xs: number[]) => [...new Set(xs)];
   if (platform === "yandex") {
     if (own.yandex?.length) return own.yandex;
     const r = await yandexRegionIds(b.city, client as YandexDirect);
     if (!r) throw new Error(`не нашли город «${b.city}» в справочнике Яндекса — уточните название в настройках бизнеса`);
-    return r;
+    const more: number[] = [];
+    for (const name of extra) more.push(...((await yandexRegionIds(name, client as YandexDirect).catch(() => null)) ?? []));
+    return uniq([...r, ...more]);
   }
   if (platform === "vk") {
     const vk = client as VkAds;
     const ctx = await prepareVk(b, vk);
     if (own.vk?.length) return own.vk;
     const r = await vkRegionIds(b.city, vk).catch(() => null);
-    if (r) return r;
+    const more: number[] = [];
+    for (const name of extra) more.push(...((await vkRegionIds(name, vk).catch(() => null)) ?? []));
+    if (r) return uniq([...r, ...more]);
     if (ctx.localGeo) return [];
     throw new Error(`не нашли город «${b.city}» в справочнике VK — уточните название в настройках бизнеса`);
   }
@@ -89,7 +96,7 @@ export function vkAdContext(b: Business): VkBusinessContext {
   return {
     legalInfo: legalAbout(b.legalInfo),
     ageRestrictions: vkAgeRestriction(b),
-    fulltime: b.hours ? vkFulltime(parseHours(b.hours).workTime) : null,
+    fulltime: showOf(b).scheduleMode === "always" ? null : vkFulltimeFromShow(showOf(b)) ?? (b.hours ? vkFulltime(parseHours(b.hours).workTime) : null),
   };
 }
 
@@ -101,6 +108,9 @@ export function vkAdContext(b: Business): VkBusinessContext {
  */
 export async function vkLocalGeo(b: Business): Promise<VkBusinessContext["localGeo"]> {
   if (process.env.VK_LOCAL_GEO === "0") return null;
+  const s = showOf(b);
+  // Владелец выбрал «весь город» или добавил другие города — показываем по регионам, а не в радиусе
+  if (s.geoMode === "city" || s.extraRegions?.length) return null;
   const own = (b.regionIds ?? {}) as { vk?: number[] };
   if (own.vk?.length) return null;
   const p = await ensureGeo(b);
@@ -108,7 +118,7 @@ export async function vkLocalGeo(b: Business): Promise<VkBusinessContext["localG
   return {
     visit_type: "all",
     loc_type: ["home", "work"],
-    locations: [{ lat: p.lat, lng: p.lng, radius: vkRadiusFor(b.city), label: b.name.slice(0, 100), ...(b.address ? { address: b.address.slice(0, 250) } : {}) }],
+    locations: [{ lat: p.lat, lng: p.lng, radius: s.geoMode === "radius" && s.radiusKm ? Math.round(s.radiusKm * 1000) : vkRadiusFor(b.city), label: b.name.slice(0, 100), ...(b.address ? { address: b.address.slice(0, 250) } : {}) }],
   };
 }
 

@@ -17,6 +17,8 @@ import { MAX_MONTHLY, MIN_WEEKLY, allocate } from "@/lib/engine/budget";
 import { ANGLES, LAYERS, LAYER_ITEM, LAYER_LABEL, type Layer } from "@/lib/niches";
 import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
 import { adExtras, responsiveAssets, timeTargeting, withPlanCallouts } from "@/lib/engine/extras";
+import { ageText, sexText, showOf } from "@/lib/engine/show";
+import { vkRadiusFor } from "@/lib/platforms/vk-formats";
 import { displayKeyword } from "@/lib/engine/semantics";
 import { placeName, scoreGroup, liftBy, addS, zeroS, ctrOf, VERDICT, type S, type AdScore } from "@/lib/engine/insights";
 import Link from "next/link";
@@ -469,8 +471,9 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
               </div>
               <p className="text-sm text-muted mt-1 max-w-2xl"><Purpose type={typeOf(ch)} />. {CHANNEL_HINT[ch]}.</p>
               <div className="mt-2 grid gap-0.5 text-sm text-ink-2 max-w-3xl">
-                <div><span className="text-muted">Кому:</span> {ch === "search" ? `тем, кто ищет в Яндексе — ${pl(cg.reduce((n, g) => n + new Set((g.keywords ?? []).map(displayKeyword)).size, 0), "запрос", "запроса", "запросов")} в ${pl(cg.length, "группе", "группах", "группах")}` : isRetarget(ch) ? `заходили на ${b.siteUrl ? "сайт" : "страницу записи"} и не записались` : [...new Set(cg.map((g) => g.audience).filter(Boolean))].slice(0, 4).join(" · ") || "подбирает площадка"}</div>
-                <div><span className="text-muted">Где:</span> {ch === "vk" && b.geo ? `рядом с ${b.address ?? "вами"}, ${b.city}` : b.city}{(() => { const tt = timeTargeting(b); return tt ? <> · <span className="text-muted">Когда:</span> {tt.note.replace(/^Реклама показывается /, "")}</> : null; })()}</div>
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3"><span className="text-faint text-xs uppercase tracking-wide font-semibold">Показ</span><Link href="/app/settings#show" className="text-sm font-semibold underline underline-offset-2 text-ink-2 hover:text-ink">Изменить регион, возраст, время</Link></div>
+                <div><span className="text-muted">Кому:</span> {ch === "search" ? `тем, кто ищет в Яндексе — ${pl(cg.reduce((n, g) => n + new Set((g.keywords ?? []).map(displayKeyword)).size, 0), "запрос", "запроса", "запросов")} в ${pl(cg.length, "группе", "группах", "группах")}` : isRetarget(ch) ? `заходили на ${b.siteUrl ? "сайт" : "страницу записи"} и не записались` : (() => { const sh = showOf(b); const own = [sexText(sh.sex), ageText(sh.ageFrom, sh.ageTo)].filter(Boolean).join(", "); return own ? `${own} (вы задали в настройках показа)` : [...new Set(cg.map((g) => g.audience).filter(Boolean))].slice(0, 4).join(" · ") || "подбирает площадка"; })()}</div>
+                <div><span className="text-muted">Где:</span> {(() => { const sh = showOf(b); const extra = sh.extraRegions?.length ? ` + ${sh.extraRegions.join(", ")}` : ""; return ch === "vk" && b.geo && sh.geoMode !== "city" && !extra ? `в ${String(sh.geoMode === "radius" && sh.radiusKm ? sh.radiusKm : Math.round(vkRadiusFor(b.city) / 100) / 10).replace(".", ",")} км от ${b.address ?? "вас"}` : `${b.city}${extra}`; })()}{(() => { const sh = showOf(b); const a = ageText(sh.ageFrom, sh.ageTo); const x = sexText(sh.sex); return a || x ? <> · <span className="text-muted">Пол и возраст:</span> {[x, a].filter(Boolean).join(", ")}</> : null; })()}{(() => { const tt = timeTargeting(b); return tt ? <> · <span className="text-muted">Когда:</span> {tt.note.replace(/^Реклама показывается /, "")}</> : null; })()}</div>
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
                 {camp.platform === "demo" ? (
@@ -552,7 +555,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                           {pl(gAds.length, "объявление", "объявления", "объявлений")} · {rub(gs.cost)}, {pl(gs.conversions, "обращение", "обращения", "обращений")}{gs.conversions ? ` по ${rub(gs.cost / gs.conversions)}` : ""}{ch === "search" && gTv !== null ? ` · ${placeName(gTv)}` : ""}
                         </div>
                         <div className="text-xs text-faint mt-0.5 truncate">
-                          {ch === "search" ? `${pl(new Set((g.keywords ?? []).map(displayKeyword)).size, "запрос", "запроса", "запросов")}: ${[...new Set((g.keywords ?? []).map(displayKeyword))].slice(0, 3).join(", ")}…` : [(() => { const t = (g.targeting ?? {}) as { ageFrom?: number; ageTo?: number; sex?: string }; const sx = t.sex === "female" ? "женщины" : t.sex === "male" ? "мужчины" : "все"; return t.ageFrom || t.ageTo ? `${sx}, ${t.ageFrom ?? 18}–${t.ageTo ?? 65} лет` : sx === "все" ? "" : sx; })(), g.audience].filter(Boolean).join(" · ")}
+                          {ch === "search" ? `${pl(new Set((g.keywords ?? []).map(displayKeyword)).size, "запрос", "запроса", "запросов")}: ${[...new Set((g.keywords ?? []).map(displayKeyword))].slice(0, 3).join(", ")}…` : [(() => { const t = (g.targeting ?? {}) as { ageFrom?: number; ageTo?: number; sex?: string }; const sx = t.sex === "female" ? "женщины" : t.sex === "male" ? "мужчины" : "все"; return t.ageFrom || t.ageTo ? `${sx}, ${t.ageFrom ?? 18}–${t.ageTo ?? 65} лет` : sx === "все" ? "" : sx; })(), showOf(b).ageFrom != null || showOf(b).ageTo != null || showOf(b).sex ? null : g.audience].filter(Boolean).join(" · ")}
                         </div>
                       </div>
                     </summary>

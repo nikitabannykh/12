@@ -1,4 +1,5 @@
 import "server-only";
+import { directDemographics, showOf } from "./show";
 import { and, asc, eq, inArray, notInArray } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { AdAccount, Business, Campaign, UndoOp } from "../db/schema";
@@ -538,6 +539,7 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
     // Профиль организации (BusinessId, Карты) и расписание показов по часам работы
     spec.orgId = b.orgId ?? null;
     spec.timeTargeting = timeTargeting(b);
+    spec.demographics = directDemographics(showOf(b));
   }
   // Ретаргетинг: аудитория «были на сайте, но не оставили заявку» (Директ — условие по целям Метрики, VK — сегмент пикселя)
   let audienceId: string | null = null;
@@ -592,7 +594,7 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
       });
     }
     if (!ads.length && !build.groups[g.id]) continue;
-    spec.groups.push({ localId: g.id, name: g.name, keywords: vkFormat || audienceId ? [] : g.keywords, negatives: vkFormat || audienceId ? [] : g.negatives ?? [], autotargeting: audienceId ? false : g.autotargeting, regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, retargetingId: audienceId, ads });
+    spec.groups.push({ localId: g.id, name: g.name, keywords: vkFormat || audienceId ? [] : g.keywords, negatives: vkFormat || audienceId ? [] : g.negatives ?? [], autotargeting: audienceId ? false : g.autotargeting, regionIds, ...ageSexOf(b, g), retargetingId: audienceId, ads });
   }
   if (!spec.groups.length) {
     warnings.push(`${CHANNEL_NAME[ch.channel]}: нет ни одного объявления с заголовком и текстом — канал пропущен`);
@@ -642,7 +644,7 @@ async function launchChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acc
       audience: g.audience,
       keywords: g.keywords,
       targeting: {
-        regionIds, ageFrom: g.ageFrom, ageTo: g.ageTo, sex: g.sex, autotargeting: audienceId ? false : g.autotargeting, ...(audienceId ? { retargetingId: audienceId } : {}),
+        regionIds, ...ageSexOf(b, g), autotargeting: audienceId ? false : g.autotargeting, ...(audienceId ? { retargetingId: audienceId } : {}),
         ...(g.negatives?.length && !audienceId ? { negatives: g.negatives } : {}),
         ...(g.service ? { service: g.service } : {}),
         ...(g.services?.length ? { services: g.services } : {}),
@@ -1129,4 +1131,15 @@ export function launchStalled(b: Business, idleMs: number) {
 export async function campaignsOf(businessId: string) {
   const db = await getDb();
   return db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, businessId), inArray(schema.campaigns.status, ["active", "paused", "error"])));
+}
+
+
+/** Возраст и пол группы: выбор владельца в «Настройках показа» важнее аудитории ниши */
+export function ageSexOf(b: Business, g: Pick<PlanGroup, "ageFrom" | "ageTo" | "sex">) {
+  const s = showOf(b);
+  return {
+    ageFrom: s.ageFrom ?? g.ageFrom,
+    ageTo: s.ageTo ?? g.ageTo,
+    sex: s.sex ?? g.sex,
+  };
 }

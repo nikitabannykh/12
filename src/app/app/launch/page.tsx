@@ -1,3 +1,5 @@
+import { timeTargeting } from "@/lib/engine/extras";
+import type { ShowSettings } from "@/lib/engine/show";
 import { vkRadiusFor } from "@/lib/platforms/vk-formats";
 import { ensureLogo } from "@/lib/engine/images";
 import type { ExtrasBiz } from "@/lib/engine/extras";
@@ -49,12 +51,13 @@ export default async function Launch() {
         href={landingUrl(b)}
         logo={logo ? `/api/images/${logo.id}` : null}
         vkRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null}
+        show={{ initial: (b.showSettings ?? {}) as ShowSettings, city: b.city, address: b.address, autoTime: timeTargeting({ ...b, showSettings: {} })?.note ?? null, autoRadiusKm: Math.round(vkRadiusFor(b.city) / 100) / 10 }}
       />
     </div>
   );
 }
 
 function pickBiz(b: Business): ExtrasBiz {
-  const { name, niche, city, address, phone, whatsapp, telegram, hours, services, advantages, offer, review, description, orgId } = b;
-  return { name, niche, city, address, phone, whatsapp, telegram, hours, services, advantages, offer, review, description, orgId };
+  const { name, niche, city, address, phone, whatsapp, telegram, hours, services, advantages, offer, review, description, orgId, showSettings } = b;
+  return { name, niche, city, address, phone, whatsapp, telegram, hours, services, advantages, offer, review, description, orgId, showSettings };
 }

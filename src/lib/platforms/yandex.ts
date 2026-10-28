@@ -1,5 +1,5 @@
 import "server-only";
-import type { AuctionRow, AudienceSpec } from "./types";
+import type { AuctionRow, AudienceSpec, DemographicsAdjustment, TargetingUpdate } from "./types";
 import type { Sitelink } from "../engine/extras";
 import type {
   AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy,
@@ -425,6 +425,10 @@ export class YandexDirect implements PlatformClient {
         const local: string[] = [];
         const [c] = this.items(res.AddResults, "Кампания", local);
         warnings.push(...local);
+        if (spec.demographics?.length) {
+          const w = await this.setDemographics(String(c.Id), spec.demographics);
+          warnings.push(...w);
+        }
         return String(c.Id);
       } catch (e) {
         if (!optional.length) throw e;
@@ -432,6 +436,56 @@ export class YandexDirect implements PlatformClient {
         warnings.push(`Кампания: Директ не принял ${o.label}, создаём без этого — ${(e as Error).message}`);
       }
     }
+  }
+
+  /**
+   * Пол и возраст в ЕПК — корректировки ставок кампании (bidmodifiers, https://yandex.ru/dev/direct/doc/ru/bidmodifiers/add):
+   * BidModifier 0 = «−100%», т. е. не показывать этой группе. Старые корректировки «пол и возраст» сначала удаляем.
+   */
+  private async setDemographics(campaignExt: string, list: DemographicsAdjustment[]): Promise<string[]> {
+    try {
+      const got = await this.call("bidmodifiers", "get", {
+        SelectionCriteria: { CampaignIds: [Number(campaignExt)], Levels: ["CAMPAIGN"], Types: ["DEMOGRAPHICS_ADJUSTMENT"] },
+        FieldNames: ["Id", "Type"],
+      }).catch(() => null);
+      const ids = ((got?.BidModifiers ?? []) as { Id: number }[]).map((x) => x.Id);
+      if (ids.length) await this.call("bidmodifiers", "delete", { SelectionCriteria: { Ids: ids } });
+      if (!list.length) return [];
+      await this.call("bidmodifiers", "add", { BidModifiers: [{ CampaignId: Number(campaignExt), DemographicsAdjustments: list }] });
+      return [];
+    } catch (e) {
+      return [`Возраст и пол: Директ не принял корректировки — ${(e as Error).message}`];
+    }
+  }
+
+  /** Регион групп, расписание и пол/возраст у идущей кампании — без пересоздания */
+  async updateTargeting(campaignExt: string, t: TargetingUpdate): Promise<string[]> {
+    const warnings: string[] = [];
+    if (t.timeTargeting !== undefined) {
+      const tt = t.timeTargeting;
+      const all = Array.from({ length: 7 }, (_, i) => `${i + 1},${Array(24).fill(100).join(",")}`);
+      try {
+        await this.call("campaigns", "update", {
+          Campaigns: [{
+            Id: Number(campaignExt),
+            ...(tt ? { TimeZone: tt.timeZone } : {}),
+            TimeTargeting: { Schedule: { Items: tt?.schedule ?? all }, ConsiderWorkingWeekends: tt?.considerWorkingWeekends ? "YES" : "NO", HolidaysSchedule: { SuspendOnHolidays: "NO" } },
+          }],
+        });
+      } catch (e) {
+        warnings.push(`Расписание: ${(e as Error).message}`);
+      }
+    }
+    const groups = t.groups.filter((g) => g.regionIds.length);
+    for (let i = 0; i < groups.length; i += 1000) {
+      try {
+        await this.call("adgroups", "update", { AdGroups: groups.slice(i, i + 1000).map((g) => ({ Id: Number(g.groupExt), RegionIds: g.regionIds })) });
+      } catch (e) {
+        warnings.push(`Регион: ${(e as Error).message}`);
+      }
+    }
+    if (t.demographics) warnings.push(...(await this.setDemographics(campaignExt, t.demographics)));
+    return warnings;
   }
 
   /**
