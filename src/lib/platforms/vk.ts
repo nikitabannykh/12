@@ -242,18 +242,23 @@ export class VkAds implements PlatformClient {
         if (ok(c)) return { counterId: Number(c.counter_id) };
       }
       const domain = new URL(o.url).hostname;
-      const mine = (await items({ _domain: domain })).find((c) => ok(c) && String(c.name ?? "").includes(o.tag));
+      const byDomain = (await items({ _domain: domain })).filter(ok);
+      // Наш (с меткой) — первым; иначе любой пиксель кабинета на этот же домен (его мог создать сам владелец)
+      const mine = byDomain.find((c) => String(c.name ?? "").includes(o.tag)) ?? byDomain[0];
       if (mine) return { counterId: Number(mine.counter_id) };
     } catch (e) {
       return { counterId: null, note: `не смогли прочитать пиксели кабинета (${(e as Error).message})` };
     }
     if (process.env.VK_ADS_CREATE_PIXEL === "0") return { counterId: null, note: "создание пикселя отключено (VK_ADS_CREATE_PIXEL=0)" };
+    const manual = `создайте его в кабинете VK Рекламы: «Сайты» → «Добавить сайт», адрес ${o.url}`;
     try {
       const c = await this.req("POST", "v2/remarketing/counters.json", { body: { name: `${o.name.slice(0, 60)} ${o.tag}`, url: o.url } });
       const id = Number(c.counter_id);
-      return id ? { counterId: id } : { counterId: null, note: "VK не вернул номер пикселя" };
+      return id ? { counterId: id } : { counterId: null, note: `VK не вернул номер пикселя — ${manual}` };
     } catch (e) {
-      return { counterId: null, note: `VK не создал пиксель через API (${(e as Error).message})` };
+      // Через API VK создаёт пиксель только с логином Top@Mail.ru — такого доступа у нас нет
+      const needsLogin = /email|password/.test((e as Error).message);
+      return { counterId: null, note: needsLogin ? `через API VK пиксель не создаёт — ${manual}` : `VK не создал пиксель (${(e as Error).message}) — ${manual}` };
     }
   }
 
@@ -270,7 +275,7 @@ export class VkAds implements PlatformClient {
     const hit =
       list.find((g) => String(g.goal ?? "").toLowerCase() === want) ??
       list.find((g) => String(g.goal ?? "").toLowerCase().endsWith(`:${want}`)) ??
-      list.find((g) => /заявк|запис|lead/i.test(`${g.goal ?? ""} ${g.description ?? ""}`));
+      list.find((g) => /заявк|запис|lead|form|submit|контакт/i.test(`${g.goal ?? ""} ${g.description ?? ""}`));
     return hit?.goal ? { name: String(hit.goal), source_id: counterId } : null;
   }
 
@@ -578,6 +583,9 @@ export class VkAds implements PlatformClient {
         }
       }
       break;
+      }
+      if (lastErr && /priced_goal/.test(String((lastErr as Error).message)) && /required/.test(String((lastErr as Error).message))) {
+        throw new PlatformError("vk", `Ваш кабинет VK принимает только кампании «Конверсии на сайте», а им нужен пиксель с событием «Заявка». Один раз сделайте в кабинете VK Рекламы (ads.vk.ru): 1) «Сайты» → «Добавить сайт», адрес: ${spec.siteUrl.split("?")[0]}; 2) в настройках пикселя → «События» → добавьте JS-событие с ID «lead» (название «Заявка»). Код пикселя на нашу страницу записи мы поставим сами${/\/p\//.test(spec.siteUrl) ? "" : ", а на ваш сайт его нужно добавить — он появится в «Настройках»"}. Потом нажмите «Продолжить запуск».`);
       }
       if (lastErr) throw badPackage(lastErr) ? new PlatformError("vk", `Ни один формат размещения кабинета не подошёл для рекламы сайта (проверили ${candidates.length}). Укажите пакет в переменной VK_ADS_PACKAGE_ID или напишите нам.`) : lastErr;
       if (!planId) throw new PlatformError("vk", "VK не создал кампанию");
