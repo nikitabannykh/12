@@ -253,3 +253,13 @@
 .lp-fade {
   animation: lp-fade 0.35s ease-out both;
 }
+@keyframes lp-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+.lp-marquee {
+  animation: lp-marquee 60s linear infinite;
+}
+.lp-marquee-rev {
+  animation: lp-marquee 70s linear infinite reverse;
+}
