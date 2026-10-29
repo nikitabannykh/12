@@ -137,7 +137,7 @@ export default async function Home() {
         <nav className="flex items-center gap-1 rounded-full pl-4 pr-1.5 py-1.5 backdrop-blur-xl bg-[#0d0f26]/70 ring-1 ring-white/10 shadow-[0_20px_40px_-20px_rgba(0,0,0,0.6)]">
           <Link href="/" className="flex items-center gap-2 pr-3 font-semibold tracking-tight"><LogoMark size={22} />Полный зал</Link>
           <span className="hidden md:flex items-center gap-0.5 text-[13.5px] text-white/60">
-            {[["#how", "Как работает"], ["#levers", "Экономия"], ["#compare", "Сравнение"], ["#faq", "Вопросы"]].map(([h, t]) => <a key={h} href={h} className={`px-3 py-1.5 rounded-full hover:bg-white/10 hover:text-white transition-colors duration-300 ${EASE}`}>{t}</a>)}
+            {[["#how", "Как работает"], ["#features", "Возможности"], ["#levers", "Экономия"], ["#compare", "Сравнение"], ["#faq", "Вопросы"]].map(([h, t]) => <a key={h} href={h} className={`px-3 py-1.5 rounded-full hover:bg-white/10 hover:text-white transition-colors duration-300 ${EASE}`}>{t}</a>)}
           </span>
           {user ? null : <Link href="/login" className="hidden sm:inline px-3 py-1.5 text-[13.5px] text-white/70 hover:text-white">Войти</Link>}
           <Link href={cta.href} className="ml-1 rounded-full px-4 py-2 text-[13.5px] font-semibold bg-white text-ink">{user ? "Кабинет" : "Начать"}</Link>
@@ -263,32 +263,106 @@ export default async function Home() {
             ))}
           </ol>
 
-          {/* Каждый день */}
-          <div className="mt-28 grid lg:grid-cols-[0.9fr_1.1fr] gap-12 items-center">
-            <div>
-              <Eyebrow>Каждое утро</Eyebrow>
-              <h3 className="mt-6 text-[2rem] sm:text-[3rem] font-semibold tracking-[-0.045em] leading-[1]">Робот разбирает вчерашний день и делает работу за специалиста</h3>
-              <p className="mt-5 text-white/55 text-lg leading-relaxed">Решения — по накопленной статистике, первые три дня он только наблюдает. Каждое действие записано простыми словами и отменяется одной кнопкой.</p>
+          {/* Что умеет робот — со скринами */}
+          <div id="features" className="mt-32 scroll-mt-24">
+            <div className="max-w-2xl">
+              <Eyebrow>Что умеет робот</Eyebrow>
+              <h2 className="mt-6 text-[2.4rem] sm:text-[4rem] font-semibold tracking-[-0.05em] leading-[0.95]">Работа директолога. <span className="text-white/40">Каждый день.</span></h2>
             </div>
-            <Bezel dark inner="p-5 sm:p-6">
-              <ul className="relative grid gap-4 before:absolute before:left-[15px] before:top-3 before:bottom-3 before:w-px before:bg-white/10">
-                {[
-                  [Search, "Добавил 6 минус-слов", "«своими руками», «вакансии», «обучение»…", "09:04"],
-                  [PauseCircle, "Выключил слабое объявление", "его кликали в 3 раза реже соседних", "09:07"],
-                  [Scale, "Бюджет: −10% сети, +10% поиск", "в поиске обращение на 40% дешевле", "09:11"],
-                  [FlaskConical, "A/B-тест аудиторий VK", "«искали услугу» против «интересы: красота»", "09:15"],
-                ].map(([I, t, s, time], i) => {
-                  const Icon = I as typeof Search;
-                  return (
-                    <li key={t as string} className="relative flex gap-4">
-                      <span className={`relative z-10 w-8 h-8 rounded-full grid place-items-center shrink-0 ${i === 0 ? "bg-mark text-ink" : "bg-[#151838] ring-1 ring-white/10 text-white/70"}`}><Icon size={15} strokeWidth={1.75} /></span>
-                      <div className="min-w-0 flex-1"><div className="font-medium">{t as string}</div><div className="text-sm text-white/45">{s as string}</div></div>
-                      <div className="text-right shrink-0"><div className="text-[11px] text-white/30 tabular-nums">{time as string}</div><div className="text-[11px] text-white/45 flex items-center gap-1 mt-1"><Undo2 size={11} strokeWidth={1.75} />отменить</div></div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </Bezel>
+            <div className="mt-20 grid gap-28">
+              {/* 1. Настройка */}
+              <div className="grid lg:grid-cols-[0.9fr_1.1fr] gap-12 items-center">
+                <div>
+                  <span className="text-mark text-sm font-semibold">01 · Запуск</span>
+                  <h3 className="mt-4 text-[1.9rem] sm:text-[2.6rem] font-semibold tracking-[-0.045em] leading-[1.02]">Настроит рекламу за 15 минут</h3>
+                  <p className="mt-5 text-white/55 text-lg leading-relaxed">Подберёт запросы по услугам и проблемам клиентов, соберёт минус-слова, напишет тексты, сделает картинки под каждый формат и страницу записи, если нет сайта.</p>
+                  <ul className="mt-6 grid gap-2.5 text-white/75">{["Поиск, сети Яндекса, ВКонтакте и ретаргетинг", "Аудитории VK: искали услугу, интересы, живут рядом", "Перед запуском — всё так, как увидят люди"].map((x) => <li key={x} className="flex gap-3"><Check size={18} strokeWidth={2} className="text-mark shrink-0 mt-0.5" />{x}</li>)}</ul>
+                </div>
+                <Bezel dark inner="p-5 sm:p-6 grid gap-4">
+                  <div className="flex flex-wrap gap-1.5 text-[12px]">{["Поиск · 36", "Сети · 12", "VK · 9", "Ретаргетинг · 5"].map((t, i) => <span key={t} className={`rounded-full px-3 py-1 ${i === 0 ? "bg-white text-ink font-semibold" : "bg-white/[0.06] text-white/60"}`}>{t}</span>)}</div>
+                  <div className="rounded-2xl bg-white text-ink p-4">
+                    <div className="flex items-center gap-2 text-[11px] text-muted"><span className="w-3.5 h-3.5 rounded-full bg-paper border border-line" />studia-lak.ru<span className="ml-auto rounded bg-paper px-1.5 py-0.5 text-faint">Реклама</span></div>
+                    <div className="mt-1.5 text-[#2a3eb1] text-[17px] font-semibold leading-snug">Маникюр с покрытием — 1 900 ₽, Казань</div>
+                    <div className="mt-1 text-sm text-ink-2">Покрытие держится 3–4 недели. Стерилизация в сухожаре. Запишитесь онлайн.</div>
+                    <div className="mt-2 flex flex-wrap gap-x-4 text-[13px] text-[#2a3eb1]"><span>Цены</span><span>Педикюр</span><span>Наращивание</span><span>Запись</span></div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-px rounded-2xl overflow-hidden bg-white/[0.06] text-center">
+                    {[["62", "объявления"], ["12", "групп запросов"], ["54", "минус-слова"]].map(([n, t]) => <div key={t} className="bg-[#0d0f26] py-3"><div className="text-2xl font-semibold tracking-tight">{n}</div><div className="text-[11px] text-white/40">{t}</div></div>)}
+                  </div>
+                </Bezel>
+              </div>
+
+              {/* 2. Каждое утро */}
+              <div className="grid lg:grid-cols-[1.1fr_0.9fr] gap-12 items-center">
+                <div className="lg:order-2">
+                  <span className="text-mark text-sm font-semibold">02 · Оптимизация</span>
+                  <h3 className="mt-4 text-[1.9rem] sm:text-[2.6rem] font-semibold tracking-[-0.045em] leading-[1.02]">Каждое утро разбирает вчерашний день</h3>
+                  <p className="mt-5 text-white/55 text-lg leading-relaxed">Выключает слабые объявления, проверяет новые тексты и аудитории, убирает нецелевые запросы. Решения — по накопленной статистике, каждое объяснено и отменяется одной кнопкой.</p>
+                </div>
+                <Bezel dark inner="p-5 sm:p-6" className="lg:order-1">
+                  <div className="flex items-center justify-between mb-4"><span className="font-semibold">История решений</span><span className="rounded-full bg-white/[0.06] px-3 py-1 text-[12px] text-white/60">сегодня</span></div>
+                  <ul className="relative grid gap-4 before:absolute before:left-[15px] before:top-3 before:bottom-3 before:w-px before:bg-white/10">
+                    {[
+                      [Search, "Добавил 6 минус-слов", "«своими руками», «вакансии», «обучение»…", "09:04"],
+                      [PauseCircle, "Выключил слабое объявление", "его кликали в 3 раза реже соседних", "09:07"],
+                      [Scale, "Бюджет: −10% сети, +10% поиск", "в поиске обращение на 40% дешевле", "09:11"],
+                      [FlaskConical, "A/B-тест аудиторий VK", "«искали услугу» против «интересы: красота»", "09:15"],
+                    ].map(([I, t, s, time], i) => {
+                      const Icon = I as typeof Search;
+                      return (
+                        <li key={t as string} className="relative flex gap-4">
+                          <span className={`relative z-10 w-8 h-8 rounded-full grid place-items-center shrink-0 ${i === 0 ? "bg-mark text-ink" : "bg-[#151838] ring-1 ring-white/10 text-white/70"}`}><Icon size={15} strokeWidth={1.75} /></span>
+                          <div className="min-w-0 flex-1"><div className="font-medium">{t as string}</div><div className="text-sm text-white/45">{s as string}</div></div>
+                          <div className="text-right shrink-0"><div className="text-[11px] text-white/30 tabular-nums">{time as string}</div><div className="text-[11px] text-white/45 flex items-center gap-1 mt-1"><Undo2 size={11} strokeWidth={1.75} />отменить</div></div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </Bezel>
+              </div>
+
+              {/* 3. Бюджет */}
+              <div className="grid lg:grid-cols-[0.9fr_1.1fr] gap-12 items-center">
+                <div>
+                  <span className="text-mark text-sm font-semibold">03 · Бюджет</span>
+                  <h3 className="mt-4 text-[1.9rem] sm:text-[2.6rem] font-semibold tracking-[-0.045em] leading-[1.02]">Каждый рубль — туда, где он работает</h3>
+                  <p className="mt-5 text-white/55 text-lg leading-relaxed">Деньги перетекают в каналы, где обращение дешевле. Бюджет лежит в ваших кабинетах, месячный лимит — жёсткая граница, а всю рекламу можно остановить одной кнопкой.</p>
+                </div>
+                <Bezel dark inner="p-5 sm:p-6 grid gap-5">
+                  <div>
+                    <div className="flex justify-between text-sm"><span className="text-white/50">Потрачено в октябре</span><span className="font-semibold tabular-nums">41 200 из 70 000 ₽</span></div>
+                    <div className="mt-2 h-2.5 rounded-full bg-white/[0.06] overflow-hidden"><div className="h-full w-[59%] rounded-full bg-[linear-gradient(90deg,#fff,rgba(255,255,255,0.7))]" /></div>
+                    <div className="mt-1.5 text-[12px] text-white/40">Прогноз на конец месяца — 68 900 ₽, в пределах лимита</div>
+                  </div>
+                  <div className="grid gap-2.5">
+                    {[["Поиск Яндекса", 38, "390 ₽", "+10%"], ["ВКонтакте", 27, "410 ₽", "+15%"], ["Сети Яндекса", 22, "620 ₽", "−20%"], ["Ретаргетинг", 13, "280 ₽", ""]].map(([n, w, c, d]) => (
+                      <div key={n as string} className="grid grid-cols-[7.5rem_1fr_auto] items-center gap-3 text-sm">
+                        <span className="text-white/80 truncate">{n as string}</span>
+                        <span className="h-2 rounded-full bg-white/[0.06] overflow-hidden"><span className="block h-full rounded-full bg-mark shadow-[0_0_10px_rgba(255,216,74,0.5)]" style={{ width: `${(w as number) * 2.4}%` }} /></span>
+                        <span className="flex items-center gap-2 tabular-nums"><span className="text-white/40 text-xs">{c as string}</span>{d ? <span className={`text-[11px] font-semibold w-9 text-right ${(d as string).startsWith("+") ? "text-[#3ddc97]" : "text-[#ff7a7a]"}`}>{d as string}</span> : <span className="w-9" />}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="rounded-xl ring-1 ring-[#ff7a7a]/30 text-[#ff9a9a] text-center py-2.5 text-sm font-semibold">Остановить всю рекламу</div>
+                </Bezel>
+              </div>
+
+              {/* 4. Тексты */}
+              <div className="grid lg:grid-cols-[1.1fr_0.9fr] gap-12 items-center">
+                <div className="lg:order-2">
+                  <span className="text-mark text-sm font-semibold">04 · Тексты</span>
+                  <h3 className="mt-4 text-[1.9rem] sm:text-[2.6rem] font-semibold tracking-[-0.045em] leading-[1.02]">Перепишет объявления по одной фразе</h3>
+                  <p className="mt-5 text-white/55 text-lg leading-relaxed">Не нравятся тексты — напишите, какими они должны быть. Робот перепишет все объявления канала и сохранит прежние. В текстах — только факты о вашем бизнесе, без выдуманных скидок и «лучших мастеров».</p>
+                </div>
+                <Bezel dark inner="p-5 sm:p-6 grid gap-4" className="lg:order-1">
+                  <div className="font-semibold">Переписать тексты — ВКонтакте</div>
+                  <div className="rounded-xl ring-2 ring-white/80 bg-white/[0.03] px-4 py-3 text-[15px]">Живее и больше про цену<span className="inline-block w-px h-4 bg-white align-middle ml-0.5 animate-pulse" /></div>
+                  <div className="flex flex-wrap gap-1.5">{["Короче", "Понятнее, что за услуга", "Без канцелярита"].map((x) => <span key={x} className="rounded-full ring-1 ring-white/15 px-3 py-1 text-[13px] text-white/70">{x}</span>)}</div>
+                  <div className="grid gap-1.5"><div className="text-[12px] text-white/40">Переписываем… 6 из 9</div><div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden"><div className="h-full w-2/3 bg-mark" /></div></div>
+                  <div className="flex justify-end"><span className="rounded-full bg-mark text-ink px-4 py-2 text-sm font-semibold flex items-center gap-2"><Sparkles size={14} strokeWidth={1.75} />Переписать</span></div>
+                </Bezel>
+              </div>
+            </div>
           </div>
         </div>
       </section>
