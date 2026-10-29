@@ -633,9 +633,116 @@ function V17() {
   );
 }
 
+
+/* 18. Тёмный: один экран кабинета в тёмной теме */
+function DarkShot() {
+  const week = [
+    { d: "Пт", s: 58, l: 3 }, { d: "Сб", s: 46, l: 4 }, { d: "Вс", s: 52, l: 3 }, { d: "Пн", s: 63, l: 5 },
+    { d: "Вт", s: 70, l: 6 }, { d: "Ср", s: 66, l: 6 }, { d: "Чт", s: 64, l: 8 },
+  ];
+  const nav = ["Главное", "Реклама", "Статистика", "История", "Настройки"];
+  return (
+    <div className="rounded-[1.6rem] overflow-hidden bg-[#0d0f26] ring-1 ring-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] text-left">
+      <div className="h-11 flex items-center gap-2 px-4 border-b border-white/[0.06]">
+        <span className="w-2.5 h-2.5 rounded-full bg-white/15" /><span className="w-2.5 h-2.5 rounded-full bg-white/15" /><span className="w-2.5 h-2.5 rounded-full bg-white/15" />
+        <span className="mx-auto text-[11px] text-white/35 rounded-md bg-white/[0.04] px-3 py-1">polny-zal.ru/app</span>
+      </div>
+      <div className="grid md:grid-cols-[13rem_minmax(0,1fr)]">
+        <aside className="hidden md:flex flex-col gap-5 p-4 border-r border-white/[0.06]">
+          <span className="flex items-center gap-2 font-semibold"><LogoMark size={22} />Полный зал</span>
+          <span className="flex items-center gap-2 rounded-xl bg-white/[0.04] ring-1 ring-white/[0.06] px-2.5 py-2 text-sm"><span className="w-6 h-6 rounded-md bg-mark text-ink grid place-items-center text-xs font-bold">С</span>Студия Лак</span>
+          <nav className="grid gap-0.5 text-[13.5px]">
+            {nav.map((t, i) => <span key={t} className={`rounded-lg px-2.5 py-2 ${i === 0 ? "bg-white/[0.08] text-white" : "text-white/45"}`}>{t}</span>)}
+          </nav>
+          <div className="mt-auto rounded-xl bg-white/[0.03] ring-1 ring-white/[0.06] p-3 text-[12px] text-white/50">
+            <div className="flex items-center gap-1.5 text-white/80"><span className="w-1.5 h-1.5 rounded-full bg-[#3ddc97]" />Робот на связи</div>
+            Следующая проверка завтра в 09:00
+          </div>
+        </aside>
+        <div className="p-5 sm:p-7 grid gap-5 min-w-0">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <div className="text-[13px] text-white/40">Последние 7 дней</div>
+              <div className="mt-1 text-xl sm:text-[1.6rem] font-semibold tracking-tight leading-snug max-w-[34rem]">Реклама привела <span className="text-mark">33 обращения</span>. Одно обошлось в <span className="text-mark">414 ₽</span> — на 28% дешевле, чем на старте.</div>
+            </div>
+            <span className="rounded-full bg-[#3ddc97]/10 text-[#3ddc97] ring-1 ring-[#3ddc97]/20 px-3 py-1 text-[12px] font-semibold">Здоровье рекламы 86</span>
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-px rounded-2xl overflow-hidden bg-white/[0.06]">
+            {[["Потрачено", "13 660 ₽", "из 18 000 ₽ лимита"], ["Обращения", "33", "+50% к прошлой неделе"], ["Цена обращения", "414 ₽", "−28% со старта"], ["Сэкономлено", "3 140 ₽", "на мусорных кликах"]].map(([k, v, s], i) => (
+              <div key={k} className="bg-[#0d0f26] p-4">
+                <div className="text-[12px] text-white/40">{k}</div>
+                <div className={`mt-1 text-2xl font-semibold tracking-tight tabular-nums ${i === 3 ? "text-mark" : ""}`}>{v}</div>
+                <div className={`text-[11.5px] ${i === 1 || i === 2 ? "text-[#3ddc97]" : "text-white/35"}`}>{s}</div>
+              </div>
+            ))}
+          </div>
+          <div className="grid lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] gap-4">
+            <div className="rounded-2xl bg-white/[0.03] ring-1 ring-white/[0.06] p-4">
+              <div className="flex justify-between text-[12px] text-white/40"><span>Расход и обращения</span><span className="flex gap-3"><span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-white/20" />расход</span><span className="flex items-center gap-1.5"><span className="w-2 h-[3px] rounded bg-mark" />обращение</span></span></div>
+              <div className="mt-4 flex items-end justify-between h-44 px-1">
+                {week.map((w, i) => (
+                  <div key={w.d} className="flex flex-col items-center gap-[3px] w-7">
+                    {Array.from({ length: w.l }).map((_, j) => <span key={j} className="lp-pop w-full h-[3px] rounded-full bg-mark shadow-[0_0_8px_rgba(255,216,74,0.6)]" style={{ animationDelay: `${600 + i * 90 + j * 40}ms` }} />)}
+                    <span className="lp-bar w-full rounded-t-md bg-[linear-gradient(180deg,rgba(255,255,255,0.22),rgba(255,255,255,0.06))]" style={{ height: `${Math.round(w.s * 1.55)}px`, animationDelay: `${200 + i * 70}ms` }} />
+                    <span className="text-[10px] text-white/30 mt-1">{w.d}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-2xl bg-white/[0.03] ring-1 ring-white/[0.06] p-4">
+              <div className="text-[12px] text-white/40">Сегодня робот</div>
+              <ul className="mt-3 grid gap-3 text-[13.5px]">
+                {[["09:04", "Минус-слово «обучение»", "−460 ₽ в неделю"], ["09:07", "Выключил слабое объявление", "кликали в 3 раза реже"], ["09:11", "+15% бюджета во ВКонтакте", "обращение там дешевле"], ["09:15", "Тест заголовка с ценой", "неделя на проверку"]].map(([t, a, b], i) => (
+                  <li key={t} className="flex gap-3 lp-pop" style={{ animationDelay: `${900 + i * 220}ms` }}>
+                    <span className="text-[11px] text-white/30 tabular-nums pt-0.5">{t}</span>
+                    <div className="min-w-0 flex-1"><div className="text-white/90 truncate">{a}</div><div className="text-[11.5px] text-white/40">{b}</div></div>
+                    <span className="text-[11px] text-white/30 pt-0.5">отменить</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function V18() {
+  return (
+    <main className="min-h-[100dvh] bg-[#07081a] text-white overflow-hidden relative">
+      <div className="pointer-events-none fixed inset-0 opacity-[0.05] mix-blend-overlay" style={{ backgroundImage: NOISE }} aria-hidden />
+      <div className="pointer-events-none absolute -top-48 left-1/2 -translate-x-1/2 w-[72rem] h-[42rem] rounded-full bg-[radial-gradient(closest-side,rgba(255,216,74,0.14),transparent)]" aria-hidden />
+      <div className="pointer-events-none absolute top-[38rem] -left-60 w-[46rem] h-[46rem] rounded-full bg-[radial-gradient(closest-side,rgba(99,102,241,0.16),transparent)]" aria-hidden />
+      <div className="pointer-events-none absolute top-[44rem] -right-60 w-[40rem] h-[40rem] rounded-full bg-[radial-gradient(closest-side,rgba(255,216,74,0.08),transparent)]" aria-hidden />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-[60rem] [background-image:linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] [background-size:64px_64px] [mask-image:radial-gradient(ellipse_at_top,black_15%,transparent_65%)]" aria-hidden />
+      <PillNav dark />
+      <section className="relative mx-auto max-w-6xl px-4 sm:px-6 pt-20 sm:pt-28 text-center">
+        <span className="inline-flex items-center gap-2 rounded-full bg-white/[0.06] ring-1 ring-white/10 px-3.5 py-1.5 text-[12.5px] text-white/70">
+          <span className="relative flex w-1.5 h-1.5"><span className="absolute inset-0 rounded-full bg-mark animate-ping opacity-70" /><span className="relative w-1.5 h-1.5 rounded-full bg-mark" /></span>
+          Автопилот для Яндекс Директа и VK Рекламы
+        </span>
+        <h1 className="mt-8 text-[3rem] sm:text-[5.6rem] font-semibold tracking-[-0.055em] leading-[0.92] bg-[linear-gradient(180deg,#fff_30%,rgba(255,255,255,0.55))] bg-clip-text text-transparent">Ваш рекламный отдел.<br />Без отдела.</h1>
+        <p className="mt-8 mx-auto max-w-[36rem] text-[1.15rem] sm:text-xl text-white/60 leading-relaxed font-light">Робот настраивает рекламу в Яндексе и VK, каждый день убирает лишние траты и переносит бюджет туда, где он приносит заявки.</p>
+        <div className="mt-10 flex flex-wrap justify-center items-center gap-4">
+          <Cta dark>Запустить рекламу</Cta>
+          <span className="rounded-full px-6 py-3.5 text-[15px] text-white/80 ring-1 ring-white/15">Как это работает</span>
+        </div>
+      </section>
+      <section className="relative mx-auto max-w-[74rem] px-4 sm:px-6 mt-20 pb-28">
+        <div className="absolute inset-x-24 top-10 h-72 rounded-full bg-mark/20 blur-[130px]" aria-hidden />
+        <div className="relative rounded-[2rem] p-2 bg-white/[0.05] ring-1 ring-white/10 shadow-[0_80px_160px_-40px_rgba(0,0,0,0.85)]">
+          <DarkShot />
+        </div>
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-[#07081a] to-transparent" aria-hidden />
+      </section>
+    </main>
+  );
+}
+
 export default async function Variant({ params }: { params: Promise<{ v: string }> }) {
   const { v } = await params;
-  const C = { "1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11, "12": V12, "13": V13, "14": V14, "15": V15, "16": V16, "17": V17 }[v];
+  const C = { "1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11, "12": V12, "13": V13, "14": V14, "15": V15, "16": V16, "17": V17, "18": V18 }[v];
   if (!C) notFound();
   return <C />;
 }
