@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
-import { MousePointer2, ArrowRight, Ban, Check, CircleCheck, FlaskConical, Globe, PauseCircle, Scale, Search, Sparkles, TrendingDown, X } from "lucide-react";
-import { Logo } from "@/components/Logo";
+import { MousePointer2, ArrowUpRight, ArrowRight, Ban, Check, CircleCheck, FlaskConical, Globe, PauseCircle, Scale, Search, Sparkles, TrendingDown, X } from "lucide-react";
+import { Logo, LogoMark } from "@/components/Logo";
+import { HeroDemo } from "@/components/HeroDemo";
 import { Command, NicheTabs, Recs, Rotator } from "@/components/LpBits";
 
 /** Черновики первого экрана (5 вариантов) — для выбора, не для поиска */
@@ -488,9 +489,153 @@ function V15() {
   );
 }
 
+
+/* ─── Премиальные черновики ─────────────────────────────────────── */
+
+function PillNav({ dark = false }: { dark?: boolean }) {
+  return (
+    <div className="pt-5 px-4 flex justify-center relative z-20">
+      <nav className={`flex items-center gap-1 rounded-full pl-4 pr-1.5 py-1.5 backdrop-blur-xl ${dark ? "bg-white/[0.06] ring-1 ring-white/10 text-white" : "bg-white/70 ring-1 ring-black/[0.06] shadow-[0_10px_40px_-20px_rgba(29,32,69,0.25)]"}`}>
+        <span className="flex items-center gap-2 pr-4 font-bold tracking-tight"><LogoMark size={22} />Полный зал</span>
+        <span className={`hidden md:flex items-center gap-1 text-[13.5px] ${dark ? "text-white/60" : "text-ink-2"}`}>
+          {["Как работает", "Возможности", "Клиенты", "Вопросы"].map((x) => <span key={x} className={`px-3 py-1.5 rounded-full ${dark ? "hover:bg-white/10" : "hover:bg-black/5"}`}>{x}</span>)}
+        </span>
+        <span className={`ml-2 rounded-full px-4 py-2 text-[13.5px] font-semibold ${dark ? "bg-white text-ink" : "bg-ink text-white"}`}>Начать</span>
+      </nav>
+    </div>
+  );
+}
+
+function Cta({ children, dark = false }: { children: React.ReactNode; dark?: boolean }) {
+  return (
+    <span className={`group inline-flex items-center gap-3 rounded-full pl-6 pr-1.5 py-1.5 text-[15px] font-semibold transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.98] ${dark ? "bg-mark text-ink" : "bg-ink text-white"}`}>
+      {children}
+      <span className={`w-9 h-9 rounded-full grid place-items-center transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:translate-x-0.5 group-hover:-translate-y-px ${dark ? "bg-ink/10" : "bg-white/15"}`}><ArrowUpRight size={16} strokeWidth={1.75} /></span>
+    </span>
+  );
+}
+
+const NOISE = "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='.5'/></svg>\")";
+
+/* 16. Тёмный, кинематографичный: продукт под наклоном в стеклянной раме */
+function V16() {
+  return (
+    <main className="min-h-[100dvh] bg-[#07081a] text-white overflow-hidden relative">
+      <div className="pointer-events-none fixed inset-0 opacity-[0.05] mix-blend-overlay" style={{ backgroundImage: NOISE }} aria-hidden />
+      <div className="pointer-events-none absolute -top-40 left-1/2 -translate-x-1/2 w-[70rem] h-[40rem] rounded-full bg-[radial-gradient(closest-side,rgba(255,216,74,0.16),transparent)]" aria-hidden />
+      <div className="pointer-events-none absolute top-60 -left-40 w-[40rem] h-[40rem] rounded-full bg-[radial-gradient(closest-side,rgba(99,102,241,0.18),transparent)]" aria-hidden />
+      <div className="pointer-events-none absolute inset-0 [background-image:linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] [background-size:64px_64px] [mask-image:radial-gradient(ellipse_at_top,black_20%,transparent_70%)]" aria-hidden />
+      <PillNav dark />
+      <section className="relative mx-auto max-w-6xl px-4 sm:px-6 pt-20 sm:pt-28 text-center">
+        <span className="inline-flex items-center gap-2 rounded-full bg-white/[0.06] ring-1 ring-white/10 px-3.5 py-1.5 text-[12.5px] text-white/70">
+          <span className="relative flex w-1.5 h-1.5"><span className="absolute inset-0 rounded-full bg-mark animate-ping opacity-70" /><span className="relative w-1.5 h-1.5 rounded-full bg-mark" /></span>
+          Автопилот для Яндекс Директа и VK Рекламы
+        </span>
+        <h1 className="mt-8 text-[3rem] sm:text-[5.6rem] font-semibold tracking-[-0.055em] leading-[0.92] bg-[linear-gradient(180deg,#fff_30%,rgba(255,255,255,0.55))] bg-clip-text text-transparent">
+          Ваш рекламный отдел.<br />Без отдела.
+        </h1>
+        <p className="mt-8 mx-auto max-w-[36rem] text-[1.15rem] sm:text-xl text-white/60 leading-relaxed font-light">Робот настраивает рекламу в Яндексе и VK, каждый день убирает лишние траты и переносит бюджет туда, где он приносит заявки.</p>
+        <div className="mt-10 flex flex-wrap justify-center items-center gap-4">
+          <Cta dark>Запустить рекламу</Cta>
+          <span className="rounded-full px-6 py-3.5 text-[15px] text-white/80 ring-1 ring-white/15 hover:bg-white/5">Как это работает</span>
+        </div>
+      </section>
+      <section className="relative mx-auto max-w-[76rem] px-4 sm:px-6 mt-20 pb-24 [perspective:2000px]">
+        <div className="absolute inset-x-20 top-24 h-80 rounded-full bg-mark/25 blur-[120px]" aria-hidden />
+        <div className="relative [transform:rotateX(14deg)] origin-top rounded-[2.2rem] p-2 bg-white/[0.06] ring-1 ring-white/10 shadow-[0_80px_160px_-40px_rgba(0,0,0,0.8)]">
+          <div className="rounded-[calc(2.2rem-0.5rem)] overflow-hidden shadow-[inset_0_1px_1px_rgba(255,255,255,0.15)] bg-white text-ink p-4 sm:p-6">
+            <HeroDemo />
+          </div>
+        </div>
+        <div className="absolute -left-2 top-40 hidden lg:flex items-center gap-3 rounded-2xl bg-[#13153a]/90 ring-1 ring-white/10 px-4 py-3 shadow-2xl lp-pop" style={{ animationDelay: "900ms" }}>
+          <span className="w-9 h-9 rounded-xl bg-mark text-ink grid place-items-center"><TrendingDown size={17} strokeWidth={1.75} /></span>
+          <div><div className="text-[11px] text-white/50">за неделю</div><div className="font-semibold">−3 140 ₽ лишних трат</div></div>
+        </div>
+        <div className="absolute -right-2 top-72 hidden lg:flex items-center gap-3 rounded-2xl bg-[#13153a]/90 ring-1 ring-white/10 px-4 py-3 shadow-2xl lp-pop" style={{ animationDelay: "1400ms" }}>
+          <CircleCheck size={20} strokeWidth={1.75} className="text-mark" />
+          <div><div className="text-[11px] text-white/50">A/B-тест</div><div className="font-semibold">+34% обращений</div></div>
+        </div>
+      </section>
+      <section className="relative mx-auto max-w-6xl px-4 sm:px-6 pb-24">
+        <p className="text-center text-[12px] uppercase tracking-[0.25em] text-white/35">Рекламу с нами ведут</p>
+        <div className="mt-8 flex flex-wrap justify-center items-center gap-x-14 gap-y-6 opacity-60 [&_img]:[filter:brightness(0)_invert(1)]">
+          <img src="/clients/sushkof.svg" alt="Сушкоф" className="h-8" /><span className="flex items-center gap-2 text-xl font-semibold"><img src="/clients/goulash-mark.svg" alt="" className="h-7 w-7 !filter-none grayscale" />Goulash.tech</span><img src="/clients/delpesto.png" alt="Del Pesto" className="h-10" /><img src="/clients/lifemart.svg" alt="Жизньмарт" className="h-10" />
+        </div>
+      </section>
+    </main>
+  );
+}
+
+/* 17. Светлый, «мягкая структура»: асимметричный бенто с живыми деталями */
+function Bezel({ children, className = "", inner = "" }: { children: React.ReactNode; className?: string; inner?: string }) {
+  return (
+    <div className={`rounded-[2rem] p-1.5 bg-black/[0.03] ring-1 ring-black/[0.05] ${className}`}>
+      <div className={`h-full rounded-[calc(2rem-0.375rem)] ${/bg-/.test(inner) ? "" : "bg-white"} shadow-[inset_0_1px_1px_rgba(255,255,255,0.9),0_30px_60px_-30px_rgba(29,32,69,0.18)] ${inner}`}>{children}</div>
+    </div>
+  );
+}
+
+function V17() {
+  const days = [44, 52, 40, 61, 58, 70, 66, 79, 74, 86];
+  return (
+    <main className="min-h-[100dvh] bg-[#f3f4f7] text-ink overflow-hidden">
+      <PillNav />
+      <section className="mx-auto max-w-[72rem] px-4 sm:px-6 pt-20 sm:pt-28 pb-28">
+        <div className="grid lg:grid-cols-[1.15fr_0.85fr] gap-10 items-end">
+          <div>
+            <span className="inline-flex rounded-full bg-white ring-1 ring-black/[0.06] px-3 py-1 text-[10.5px] uppercase tracking-[0.2em] font-semibold text-ink-2">Яндекс Директ · VK Реклама</span>
+            <h1 className="mt-7 text-[3rem] sm:text-[5.4rem] font-bold tracking-[-0.055em] leading-[0.9]">Реклама работает.<br /><span className="text-ink/35">Вы — нет.</span></h1>
+          </div>
+          <div className="lg:pb-3">
+            <p className="text-lg text-ink-2 leading-relaxed">Робот делает всю работу директолога: настраивает, запускает и каждый день оптимизирует рекламу, чтобы бюджет приносил заявки, а не клики.</p>
+            <div className="mt-7"><Cta>Запустить рекламу</Cta></div>
+          </div>
+        </div>
+
+        <div className="mt-16 grid grid-cols-1 md:grid-cols-12 gap-4 md:auto-rows-[12.5rem]">
+          <Bezel className="md:col-span-7 md:row-span-2" inner="p-7 flex flex-col">
+            <div className="flex items-center justify-between text-sm"><span className="text-muted">Цена обращения</span><span className="rounded-full bg-good-soft text-good px-2.5 py-0.5 text-xs font-semibold">−41% за 2 недели</span></div>
+            <div className="mt-2 flex items-baseline gap-3"><span className="text-6xl font-bold tracking-[-0.04em]">310 ₽</span><span className="text-xl text-faint line-through">520 ₽</span></div>
+            <div className="mt-auto flex items-end gap-2 h-36">
+              {days.map((h, i) => <span key={i} className={`lp-bar flex-1 rounded-[10px] ${i >= 6 ? "bg-ink" : "bg-[#e4e6ee]"}`} style={{ height: `${110 - h}%`, animationDelay: `${i * 60}ms` }} />)}
+            </div>
+          </Bezel>
+          <Bezel className="md:col-span-5" inner="p-6 flex flex-col justify-between bg-mark">
+            <div className="text-sm text-ink/70">Не заплатили за мусор</div>
+            <div><div className="text-5xl font-bold tracking-[-0.04em]">3 140 ₽</div><div className="text-sm text-ink/70 mt-1">«обучение», «вакансии», «своими руками»</div></div>
+          </Bezel>
+          <Bezel className="md:col-span-5" inner="p-6 flex flex-col justify-between">
+            <div className="text-sm text-muted">Сегодня, 09:12</div>
+            <div className="grid gap-2 text-[14px]">
+              {["Минус-слово «обучение»", "+15% бюджета во ВКонтакте", "Выключено слабое объявление"].map((x, i) => (
+                <div key={x} className="flex items-center gap-2.5 lp-pop" style={{ animationDelay: `${600 + i * 250}ms` }}><span className="w-5 h-5 rounded-full bg-ink text-mark grid place-items-center"><Check size={11} strokeWidth={3} /></span>{x}</div>
+              ))}
+            </div>
+          </Bezel>
+          <Bezel className="md:col-span-4" inner="p-6 flex flex-col justify-between">
+            <div className="text-sm text-muted">Запуск</div>
+            <div className="text-5xl font-bold tracking-[-0.04em]">15 мин</div>
+            <div className="text-sm text-muted">вместо недели работы специалиста</div>
+          </Bezel>
+          <Bezel className="md:col-span-4" inner="p-6 flex flex-col justify-between">
+            <div className="text-sm text-muted">Каналы</div>
+            <div className="flex -space-x-2">{[["Я", "#fc3f1d"], ["VK", "#0077ff"], ["Р", "#1d2045"], ["◎", "#ffd84a"]].map(([l, c]) => <span key={c} className="w-12 h-12 rounded-full ring-4 ring-white grid place-items-center text-white font-bold" style={{ background: c }}>{l}</span>)}</div>
+            <div className="text-sm text-muted">поиск, сети, ВКонтакте, ретаргетинг</div>
+          </Bezel>
+          <Bezel className="md:col-span-4" inner="p-6 flex flex-col justify-between bg-ink text-white">
+            <div className="text-sm text-white/60">Сверх лимита</div>
+            <div className="text-5xl font-bold tracking-[-0.04em] text-mark">0 ₽</div>
+            <div className="text-sm text-white/60">бюджет — жёсткая граница</div>
+          </Bezel>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 export default async function Variant({ params }: { params: Promise<{ v: string }> }) {
   const { v } = await params;
-  const C = { "1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11, "12": V12, "13": V13, "14": V14, "15": V15 }[v];
+  const C = { "1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11, "12": V12, "13": V13, "14": V14, "15": V15, "16": V16, "17": V17 }[v];
   if (!C) notFound();
   return <C />;
 }
