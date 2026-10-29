@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowUpRight, Check, CircleCheck, Clock, Dumbbell, FlaskConical, Flower2, Hand, Music, PauseCircle, Scale, Scissors, Search, Sparkles, Stethoscope, Undo2, X } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
+import { HeroBg } from "@/components/HeroBg";
 import { getUser } from "@/lib/auth";
 
 /**
@@ -149,7 +150,7 @@ export default async function Home() {
         <Glow className="-top-72 left-1/2 -translate-x-1/2 w-[72rem] h-[42rem] bg-[radial-gradient(closest-side,rgba(255,216,74,0.14),transparent)]" />
         <Glow className="top-[34rem] -left-60 w-[46rem] h-[46rem] bg-[radial-gradient(closest-side,rgba(99,102,241,0.16),transparent)]" />
         <Glow className="top-[40rem] -right-60 w-[40rem] h-[40rem] bg-[radial-gradient(closest-side,rgba(255,216,74,0.08),transparent)]" />
-        <div className="pointer-events-none absolute inset-x-0 -top-20 h-[60rem] [background-image:linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] [background-size:64px_64px] [mask-image:radial-gradient(ellipse_at_top,black_15%,transparent_65%)]" aria-hidden />
+        <HeroBg kind="line" />
         <div className="relative mx-auto max-w-6xl px-4 sm:px-6 pt-16 sm:pt-24 text-center">
           <span className="inline-flex items-center gap-2 rounded-full bg-white/[0.06] ring-1 ring-white/10 px-3.5 py-1.5 text-[12.5px] text-white/70">
             <span className="relative flex w-1.5 h-1.5"><span className="absolute inset-0 rounded-full bg-mark animate-ping opacity-70" /><span className="relative w-1.5 h-1.5 rounded-full bg-mark" /></span>

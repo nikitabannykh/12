@@ -263,3 +263,38 @@
 .lp-marquee-rev {
   animation: lp-marquee 70s linear infinite reverse;
 }
+@keyframes lp-slot {
+  0% { background: transparent; }
+  30%, 100% { background: var(--slot); box-shadow: 0 0 24px -6px var(--slot); }
+}
+.lp-slot {
+  animation: lp-slot 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes lp-floor {
+  from { background-position: 0 0; }
+  to { background-position: 0 80px; }
+}
+.lp-floor {
+  animation: lp-floor 3s linear infinite;
+}
+@keyframes lp-beam {
+  0%, 100% { transform: rotate(var(--deg)); opacity: 0.8; }
+  50% { transform: rotate(calc(var(--deg) + 6deg)); opacity: 1; }
+}
+.lp-beam {
+  animation: lp-beam 9s ease-in-out infinite;
+}
+@keyframes lp-pulse {
+  from { transform: translate(-50%, -8rem); opacity: 0; }
+  10% { opacity: 1; }
+  to { transform: translate(-50%, 56rem); opacity: 0; }
+}
+.lp-pulse {
+  animation: lp-pulse 6s linear infinite both;
+}
+
+@keyframes lp-draw-k { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+.lp-draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: lp-draw-k 2.6s cubic-bezier(0.32,0.72,0,1) 0.2s forwards; }
+@keyframes lp-fadein-k { from { opacity: 0; } to { opacity: 1; } }
+.lp-fadein { opacity: 0; animation: lp-fadein-k 2s ease 0.8s forwards; }
+@media (prefers-reduced-motion: reduce) { .lp-draw { animation: none; stroke-dashoffset: 0; } .lp-fadein { animation: none; opacity: 1; } }

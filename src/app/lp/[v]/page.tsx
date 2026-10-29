@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { MousePointer2, ArrowUpRight, ArrowRight, Ban, Check, CircleCheck, FlaskConical, Globe, PauseCircle, Scale, Search, Sparkles, TrendingDown, X } from "lucide-react";
 import { Logo, LogoMark } from "@/components/Logo";
 import { HeroDemo } from "@/components/HeroDemo";
+import { HeroBg } from "@/components/HeroBg";
 import { Command, NicheTabs, Recs, Rotator } from "@/components/LpBits";
 
 /** Черновики первого экрана (5 вариантов) — для выбора, не для поиска */
@@ -740,8 +741,42 @@ function V18() {
   );
 }
 
+function VBg({ kind }: { kind: string }) {
+  return (
+    <main className="min-h-[100dvh] bg-[#07081a] text-white overflow-hidden relative">
+      <div className="pointer-events-none fixed inset-0 opacity-[0.05] mix-blend-overlay" style={{ backgroundImage: NOISE }} aria-hidden />
+      <div className="pointer-events-none absolute -top-48 left-1/2 -translate-x-1/2 w-[72rem] h-[42rem] rounded-full bg-[radial-gradient(closest-side,rgba(255,216,74,0.14),transparent)]" aria-hidden />
+      <div className="pointer-events-none absolute top-[38rem] -left-60 w-[46rem] h-[46rem] rounded-full bg-[radial-gradient(closest-side,rgba(99,102,241,0.16),transparent)]" aria-hidden />
+      <div className="pointer-events-none absolute top-[44rem] -right-60 w-[40rem] h-[40rem] rounded-full bg-[radial-gradient(closest-side,rgba(255,216,74,0.08),transparent)]" aria-hidden />
+      <HeroBg kind={kind} />
+      <PillNav dark />
+      <section className="relative mx-auto max-w-6xl px-4 sm:px-6 pt-20 sm:pt-28 text-center">
+        <span className="inline-flex items-center gap-2 rounded-full bg-white/[0.06] ring-1 ring-white/10 px-3.5 py-1.5 text-[12.5px] text-white/70">
+          <span className="relative flex w-1.5 h-1.5"><span className="absolute inset-0 rounded-full bg-mark animate-ping opacity-70" /><span className="relative w-1.5 h-1.5 rounded-full bg-mark" /></span>
+          Автопилот для Яндекс Директа и VK Рекламы
+        </span>
+        <h1 className="mt-8 text-[3rem] sm:text-[5.6rem] font-semibold tracking-[-0.055em] leading-[0.92] bg-[linear-gradient(180deg,#fff_30%,rgba(255,255,255,0.55))] bg-clip-text text-transparent">Вы ведёте бизнес.<br />Робот ведёт рекламу.</h1>
+        <p className="mt-8 mx-auto max-w-[36rem] text-[1.15rem] sm:text-xl text-white/60 leading-relaxed font-light">Робот настраивает рекламу в Яндексе и VK, каждый день убирает лишние траты и переносит бюджет туда, где он приносит заявки.</p>
+        <div className="mt-10 flex flex-wrap justify-center items-center gap-4">
+          <Cta dark>Запустить рекламу</Cta>
+          <span className="rounded-full px-6 py-3.5 text-[15px] text-white/80 ring-1 ring-white/15">Как это работает</span>
+        </div>
+      </section>
+      <section className="relative mx-auto max-w-[74rem] px-4 sm:px-6 mt-20 pb-28">
+        <div className="absolute inset-x-24 top-10 h-72 rounded-full bg-mark/20 blur-[130px]" aria-hidden />
+        <div className="relative rounded-[2rem] p-2 bg-white/[0.05] ring-1 ring-white/10 shadow-[0_80px_160px_-40px_rgba(0,0,0,0.85)]">
+          <DarkShot />
+        </div>
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-[#07081a] to-transparent" aria-hidden />
+      </section>
+    </main>
+  );
+}
+
+
 export default async function Variant({ params }: { params: Promise<{ v: string }> }) {
   const { v } = await params;
+  if (v.startsWith("bg-")) return <VBg kind={v.slice(3)} />;
   const C = { "1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11, "12": V12, "13": V13, "14": V14, "15": V15, "16": V16, "17": V17, "18": V18 }[v];
   if (!C) notFound();
   return <C />;
