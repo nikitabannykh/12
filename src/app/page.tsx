@@ -197,7 +197,7 @@ export default async function Home() {
           <p className="mt-6 mx-auto max-w-[38rem] text-lg sm:text-[1.3rem] text-ink-2 leading-relaxed">Сервис делает работу директолога: настраивает, запускает и каждый день оптимизирует рекламу. Вам не нужно разбираться в кабинетах, а каждый рубль бюджета работает на результат.</p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">
             <Link href={cta.href} className="btn btn-primary h-12 px-6 text-base">{cta.text}</Link>
-            <Link href="/login?demo=1" className="btn btn-ghost h-12 px-6 text-base">Демо без регистрации</Link>
+            <a href="#features" className="btn btn-ghost h-12 px-6 text-base">Как это работает</a>
           </div>
           <dl className="mt-8 flex flex-wrap justify-center gap-x-8 gap-y-3 text-sm">
             {[["15 мин", "на запуск"], ["5 каналов", "из одного окна"], ["0 ₽", "сверх лимита"]].map(([v, k]) => (
@@ -488,31 +488,24 @@ export default async function Home() {
               </div>
             ))}
           </div>
-          <div className="mt-6 rounded-2xl border border-dashed border-line-2 px-6 py-5 flex flex-wrap items-center justify-between gap-4">
-            <p className="text-ink-2"><b className="text-ink">Остались вопросы?</b> Откройте демо — там всё работает по-настоящему, только показы моделируются.</p>
-            <Link href="/login?demo=1" className="btn btn-ghost">Открыть демо</Link>
+        </div>
+      </section>
+
+      {/* Финал — во всю ширину */}
+      <section className="relative overflow-hidden bg-ink text-white">
+        <div className="absolute right-0 bottom-0 flex items-end gap-2 h-56 w-[55%] opacity-25 pr-6 sm:pr-16" aria-hidden>
+          {BARS.map((h, i) => <span key={i} className={`flex-1 rounded-t ${i >= 9 ? "bg-mark" : "bg-white/50"}`} style={{ height: `${h}%` }} />)}
+        </div>
+        <div className="relative mx-auto max-w-6xl px-4 sm:px-6 py-20 sm:py-28">
+          <div className="max-w-xl">
+            <h2 className="text-4xl sm:text-6xl font-extrabold tracking-[-0.035em] leading-[1.02]">Отдайте рутину роботу</h2>
+            <p className="mt-5 text-lg sm:text-xl text-white/75 leading-relaxed">Запуск — 15 минут. Дальше сервис сам ведёт рекламу и бережёт ваш бюджет.</p>
+            <Link href={cta.href} className="mt-9 btn h-12 px-7 text-base bg-mark text-ink hover:bg-mark/90">{cta.text}</Link>
           </div>
         </div>
       </section>
 
-      {/* Финал */}
-      <section className="mx-auto max-w-6xl px-4 sm:px-6 py-16 sm:py-24">
-        <div className="relative overflow-hidden rounded-3xl bg-ink text-white px-6 py-12 sm:px-14 sm:py-16">
-          <div className="absolute right-0 bottom-0 flex items-end gap-1.5 h-40 w-[45%] opacity-25 pr-8" aria-hidden>
-            {BARS.map((h, i) => <span key={i} className={`flex-1 rounded-t ${i >= 9 ? "bg-mark" : "bg-white/50"}`} style={{ height: `${h}%` }} />)}
-          </div>
-          <div className="relative max-w-xl">
-            <h2 className="text-3xl sm:text-5xl font-extrabold tracking-[-0.03em] leading-[1.05]">Отдайте рутину роботу</h2>
-            <p className="mt-4 text-lg text-white/75 leading-relaxed">Запуск — 15 минут. Дальше сервис сам ведёт рекламу и бережёт бюджет. Посмотреть можно на демо — без регистрации и оплаты.</p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <Link href={cta.href} className="btn h-12 px-6 text-base bg-mark text-ink hover:bg-mark/90">{cta.text}</Link>
-              <Link href="/login?demo=1" className="btn h-12 px-6 text-base border border-white/25 text-white hover:bg-white/10">Открыть демо</Link>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <footer className="border-t border-line">
+      <footer>
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-8 flex flex-wrap gap-x-8 gap-y-3 justify-between items-center text-sm text-muted">
           <Logo size={22} />
           <span className="max-w-xl">Работаем напрямую через API Яндекс Директа и VK Рекламы. Маркировку рекламы площадки делают автоматически.</span>
