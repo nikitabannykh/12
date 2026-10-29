@@ -1,14 +1,11 @@
 export function LogoMark({ size = 28 }: { size?: number }) {
-  // Журнал записи, в котором все окна заняты
-  const c = [0, 1, 2];
+  // «С» с жёлтой фарой: реклама едет сама
   return (
     <svg width={size} height={size} viewBox="0 0 28 28" aria-hidden="true">
       <rect x="0.75" y="0.75" width="26.5" height="26.5" rx="7" fill="#1d2045" />
-      {c.map((col) =>
-        c.map((row) => (
-          <rect key={`${col}-${row}`} x={5.5 + col * 6} y={5.5 + row * 6} width="5" height="5" rx="1.3" fill={row === 2 && col === 2 ? "#ffffff" : "#ffd84a"} opacity={row === 2 && col === 2 ? 0.25 : 1} />
-        )),
-      )}
+      <path d="M20 8.6 A7.6 7.6 0 1 0 20 19.4" fill="none" stroke="#ffffff" strokeWidth="3.4" strokeLinecap="round" />
+      <circle cx="21.2" cy="14" r="2.4" fill="#ffd84a" />
+      <rect x="13" y="13" width="5" height="2" rx="1" fill="#ffd84a" opacity="0.35" />
     </svg>
   );
 }
