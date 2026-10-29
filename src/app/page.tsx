@@ -185,7 +185,7 @@ export default async function Home() {
 
       {/* 2. Светлый лист: рычаги экономии */}
       <section id="levers" className="relative z-10 bg-[#f3f4f7] text-ink rounded-t-[2.5rem] sm:rounded-t-[3.5rem] scroll-mt-20">
-        <div className="mx-auto max-w-[72rem] px-4 sm:px-6 py-24 sm:py-32">
+        <div className="mx-auto max-w-[72rem] px-4 sm:px-6 py-20 sm:py-24">
           <div className="grid lg:grid-cols-[1.1fr_0.9fr] gap-8 items-end">
             <div>
               <Eyebrow dark={false}>Эффективный бюджет</Eyebrow>
@@ -195,7 +195,7 @@ export default async function Home() {
           </div>
 
           {/* Условия примера */}
-          <div className="mt-12 flex flex-wrap items-center gap-x-6 gap-y-3 rounded-[1.5rem] bg-white ring-1 ring-black/[0.05] px-5 sm:px-6 py-4">
+          <div className="mt-10 flex flex-wrap items-center gap-x-6 gap-y-3 rounded-[1.5rem] bg-white ring-1 ring-black/[0.05] px-5 sm:px-6 py-4">
             <span className="rounded-full bg-mark px-3 py-1 text-[12px] font-semibold uppercase tracking-[0.12em]">Пример</span>
             <span className="text-[15px]"><b>Студия маникюра</b> в Казани</span>
             <span className="text-[15px]">Бюджет на рекламу — <b>15 000 ₽ в месяц</b></span>
@@ -204,10 +204,10 @@ export default async function Home() {
 
           <div className="mt-4 grid grid-cols-1 md:grid-cols-12 gap-4">
             {/* Главное: сколько клиентов на те же деньги */}
-            <Bezel className="md:col-span-7 md:row-span-2" inner="p-6 sm:p-8 flex flex-col gap-7">
+            <Bezel className="md:col-span-7" inner="p-6 sm:p-7 flex flex-col gap-6">
               <div>
                 <div className="text-sm text-muted">Итог за месяц</div>
-                <div className="mt-2 text-[1.7rem] sm:text-[2.1rem] font-semibold tracking-[-0.03em] leading-tight">На те же 15 000 ₽ — <span className="bg-mark px-1.5 rounded-lg">48 заявок вместо 29</span></div>
+                <div className="mt-2 text-[1.7rem] sm:text-[2.1rem] font-semibold tracking-[-0.03em] leading-tight">На те же 15 000 ₽ — <span className="bg-mark px-1.5 rounded-lg whitespace-nowrap">48 заявок вместо 29</span></div>
                 <p className="mt-3 text-ink-2 leading-relaxed">Каждая заявка стала обходиться дешевле: было 520 ₽ рекламы на одного клиента, стало 310 ₽. Деньги те же — клиентов на 19 больше.</p>
               </div>
               <div className="grid gap-5 mt-auto">
@@ -226,73 +226,26 @@ export default async function Home() {
               </div>
             </Bezel>
 
-            {/* Мусорные запросы */}
-            <Bezel className="md:col-span-5" inner="p-6 flex flex-col gap-4 bg-mark">
-              <div>
-                <div className="text-[1.25rem] font-semibold tracking-tight leading-snug">Не платит за тех, кто не станет клиентом</div>
-                <p className="mt-1.5 text-[14.5px] text-ink/70 leading-relaxed">Люди ищут «маникюр обучение» или «вакансии мастера» — им не нужна запись. Робот убирает такие запросы.</p>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {["маникюр обучение", "вакансии мастера", "своими руками", "гель-лак купить"].map((q) => <span key={q} className="rounded-full bg-ink/[0.08] px-2.5 py-1 text-[12.5px] line-through decoration-ink/50">{q}</span>)}
-              </div>
-              <div className="mt-auto flex items-baseline gap-2"><span className="text-3xl font-semibold tracking-tight">3 140 ₽</span><span className="text-[14px] text-ink/70">остались у вас за месяц</span></div>
-            </Bezel>
-
-            {/* A/B */}
-            <Bezel className="md:col-span-5" inner="p-6 flex flex-col gap-4">
-              <div>
-                <div className="text-[1.25rem] font-semibold tracking-tight leading-snug">Проверяет, какой текст работает лучше</div>
-                <p className="mt-1.5 text-[14.5px] text-muted leading-relaxed">Показывает два варианта объявления и оставляет тот, после которого чаще записываются.</p>
-              </div>
-              <div className="grid gap-2">
-                {[["Маникюр с покрытием — 1 900 ₽", "13 заявок", true], ["Маникюр, который держится 3 недели", "9 заявок", false]].map(([t, r, win]) => (
-                  <div key={t as string} className={`flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-3 rounded-xl px-3.5 py-2.5 text-[13.5px] ${win ? "bg-good-soft/70 ring-1 ring-good/25" : "bg-paper text-muted"}`}>
-                    <span className="flex-1 min-w-0 sm:truncate">{t as string}</span>
-                    <span className={`shrink-0 font-semibold ${win ? "text-good" : ""}`}>{r as string}{win ? " · оставил" : " · выключил"}</span>
-                  </div>
+            {/* Что сделал робот — коротким списком */}
+            <Bezel className="md:col-span-5" inner="p-6 sm:p-7 flex flex-col">
+              <div className="text-sm text-muted">Что для этого сделал робот</div>
+              <ul className="mt-4 grid divide-y divide-line">
+                {[
+                  ["Убрал запросы тех, кто не станет клиентом", "«маникюр обучение», «вакансии мастера»", "+3 140 ₽", "mark"],
+                  ["Оставил текст, после которого чаще записываются", "13 заявок против 9", "×1,4", "good"],
+                  ["Перевёл часть денег во ВКонтакте", "там заявка 280 ₽, в Яндексе 450 ₽", "3 000 ₽", "good"],
+                  ["Запустил всё за 15 минут", "специалисту нужно 5–7 дней", "15 мин", "ink"],
+                  ["Не вышел за лимит", "13 660 из 15 000 ₽", "0 ₽ сверху", "ink"],
+                ].map(([t, d, v, tone]) => (
+                  <li key={t} className="py-3.5 first:pt-0 last:pb-0 flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold leading-snug text-[15px]">{t}</div>
+                      <div className="text-[13px] text-muted mt-0.5">{d}</div>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2.5 py-1 text-[12.5px] font-semibold tabular-nums ${tone === "mark" ? "bg-mark" : tone === "good" ? "bg-good-soft text-good" : "bg-paper"}`}>{v}</span>
+                  </li>
                 ))}
-              </div>
-            </Bezel>
-
-            {/* Перенос бюджета */}
-            <Bezel className="md:col-span-4" inner="p-6 flex flex-col gap-4">
-              <div>
-                <div className="text-[1.15rem] font-semibold tracking-tight leading-snug">Переводит деньги туда, где клиенты дешевле</div>
-                <p className="mt-1.5 text-[14px] text-muted leading-relaxed">Если во ВКонтакте заявка обходится дешевле, чем в Яндексе, — часть бюджета уходит туда.</p>
-              </div>
-              <div className="mt-auto grid gap-2 text-[13.5px]">
-                {[["Яндекс", "450 ₽ за заявку", "−3 000 ₽", false], ["ВКонтакте", "280 ₽ за заявку", "+3 000 ₽", true]].map(([k, c, d, up]) => (
-                  <div key={k as string} className="flex items-center gap-3 rounded-xl bg-paper px-3.5 py-2.5">
-                    <span className="flex-1 min-w-0"><span className="block font-semibold">{k as string}</span><span className="block text-muted text-[12.5px]">{c as string}</span></span>
-                    <span className={`font-semibold ${up ? "text-good" : "text-bad"}`}>{d as string}</span>
-                  </div>
-                ))}
-              </div>
-            </Bezel>
-
-            {/* Запуск */}
-            <Bezel className="md:col-span-4" inner="p-6 flex flex-col gap-4">
-              <div>
-                <div className="text-[1.15rem] font-semibold tracking-tight leading-snug">Запускает рекламу за 15 минут</div>
-                <p className="mt-1.5 text-[14px] text-muted leading-relaxed">Вы указываете сайт и бюджет — робот сам пишет объявления, подбирает запросы и настраивает кабинеты.</p>
-              </div>
-              <div className="mt-auto grid grid-cols-2 gap-2 text-center">
-                <div className="rounded-xl bg-paper px-3 py-3"><div className="text-[12px] text-muted">Специалист</div><div className="text-lg font-semibold text-muted line-through decoration-1">5–7 дней</div></div>
-                <div className="rounded-xl bg-ink text-white px-3 py-3"><div className="text-[12px] text-white/60">Робот</div><div className="text-lg font-semibold">15 минут</div></div>
-              </div>
-            </Bezel>
-
-            {/* Лимит */}
-            <Bezel className="md:col-span-4" inner="p-6 flex flex-col gap-4 bg-ink text-white">
-              <div>
-                <div className="text-[1.15rem] font-semibold tracking-tight leading-snug">Не потратит больше, чем вы решили</div>
-                <p className="mt-1.5 text-[14px] text-white/60 leading-relaxed">Сказали 15 000 ₽ в месяц — значит, 15 000 ₽. Робот распределяет их по дням и не выходит за лимит.</p>
-              </div>
-              <div className="mt-auto">
-                <div className="flex justify-between text-[12.5px] text-white/60"><span>Потрачено 13 660 ₽</span><span>лимит 15 000 ₽</span></div>
-                <div className="mt-2 h-2.5 rounded-full bg-white/10 overflow-hidden"><div className="h-full rounded-full bg-mark" style={{ width: "91%" }} /></div>
-                <div className="mt-2 text-[13px] text-mark font-semibold">Ни рубля сверху</div>
-              </div>
+              </ul>
             </Bezel>
           </div>
           <p className="mt-5 text-[13px] text-faint">Цифры примерные — у каждого бизнеса свои. Все решения робота видны в кабинете, любое можно отменить.</p>
