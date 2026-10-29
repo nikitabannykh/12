@@ -210,6 +210,18 @@ export default async function Home() {
         </div>
       </section>
 
+      {/* Клиенты */}
+      <section className="mx-auto max-w-6xl px-4 sm:px-6 pb-16 sm:pb-20">
+        <p className="text-center text-sm text-muted">Рекламу с «Полным залом» ведут</p>
+        <ul className="mt-6 flex flex-wrap items-center justify-center gap-x-12 gap-y-6">
+          <li><img src="/clients/sushkof.svg" alt="Сушкоф и пицца" className="h-8 w-auto [filter:brightness(0)_opacity(0.55)]" /></li>
+          <li className="flex items-center gap-2 text-[1.35rem] font-bold tracking-tight text-ink/55"><img src="/clients/goulash-mark.svg" alt="" className="h-7 w-7 grayscale opacity-60" />Goulash.tech</li>
+          <li className="text-[1.35rem] font-bold tracking-tight text-ink/55">Дель Песо</li>
+          <li className="text-[1.35rem] font-bold tracking-tight text-ink/55">Жизньмарт</li>
+          <li className="rounded-full bg-paper border border-line px-4 py-1.5 text-sm font-semibold text-ink-2">и ещё 100+ компаний</li>
+        </ul>
+      </section>
+
       {/* Рутина, которую забирает робот */}
       <section className="border-y border-line bg-paper">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-14 grid lg:grid-cols-[18rem_1fr] gap-8 items-center">
