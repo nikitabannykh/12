@@ -17,7 +17,9 @@ import { CHANNEL_HINT, CHANNEL_NAME, PLATFORM_NAME } from "@/lib/platforms";
 import { MAX_MONTHLY, MIN_WEEKLY, allocate } from "@/lib/engine/budget";
 import { ANGLES, LAYERS, LAYER_ITEM, LAYER_LABEL, type Layer } from "@/lib/niches";
 import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
-import { adExtras, responsiveAssets, timeTargeting, withPlanCallouts } from "@/lib/engine/extras";
+import { adExtras, claimProblems, responsiveAssets, timeTargeting, withPlanCallouts } from "@/lib/engine/extras";
+import { isMedical } from "@/lib/niches";
+import { MedicalLicenseGuide } from "@/components/MedicalLicenseGuide";
 import { ageText, sexText, showOf } from "@/lib/engine/show";
 import { landingFor } from "@/lib/engine/landing";
 import { vkRadiusFor } from "@/lib/platforms/vk-formats";
@@ -735,7 +737,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                         const layout = ad.imageId ? layoutOf.get(ad.imageId) : null;
                         return (
                           <li key={ad.id} className={`rounded-xl border ${sc.verdict === "leader" ? "border-good/40 bg-good-soft/40" : "border-line"} ${ad.status === "paused" ? "opacity-60" : ""}`}>
-                            <details className="group">
+                            <details className="group" open={ad.status === "rejected"}>
                               <summary className="list-none cursor-pointer p-3 sm:p-4 grid grid-cols-[2rem_1fr] sm:grid-cols-[2rem_1fr_15rem] gap-x-3 gap-y-2 items-center">
                                 <div className={`w-8 h-8 rounded-full grid place-items-center text-sm font-extrabold ${sc.verdict === "leader" ? "bg-good text-white" : sc.rank ? "bg-paper text-ink-2" : "bg-paper text-faint"}`}>
                                   {sc.rank ?? "·"}
@@ -752,7 +754,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                                     {ch === "search" && tvOf([ad.id]) !== null ? <span className="pill bg-paper text-muted">Место: {placeName(tvOf([ad.id])!).replace(" над результатами", "")}</span> : null}
                                   </div>
                                   <p className="text-sm text-muted mt-1.5 leading-snug">
-                                    {ad.statusNote && (ad.status === "rejected") ? <span className="text-bad">{ad.statusNote}</span> : sc.why}
+                                    {ad.status === "rejected" ? <span className="text-bad">{cleanNote(ad.statusNote) ?? "Модерация не пропустила объявление — что делать, ниже"}</span> : sc.why}
                                   </p>
                                 </div>
                                 <div className="col-start-2 sm:col-start-3 sm:row-start-1 grid gap-1.5">
@@ -772,6 +774,15 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                                 </div>
                               </summary>
                               <div className="px-3 pb-4 sm:px-4 sm:pl-[3.75rem] grid grid-cols-1 gap-3 min-w-0">
+                                {ad.status === "rejected" ? (
+                                  <RejectHelp
+                                    note={cleanNote(ad.statusNote)}
+                                    problems={claimProblems(`${ad.title}. ${ad.title2 ?? ""}. ${ad.text}`, isMedical(b))}
+                                    medical={isMedical(b)}
+                                    platform={camp.platform}
+                                    adLink={camp.platform === "vk" && camp.externalId && g.externalId && ad.externalId ? `https://ads.vk.ru/hq/dashboard/plans/${camp.externalId}/groups/${g.externalId}/ads/${ad.externalId}` : cabinetUrl(camp.platform, camp.externalId, loginOf.get(camp.accountId))}
+                                  />
+                                ) : null}
                                 <div className={`min-w-0 ${ch === "search" ? "max-w-xl" : "max-w-sm"}`}>
                                   {ch === "search" ? (
                                     <SearchAdPreview title={ad.title} title2={ad.title2} text={ad.text} host={host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={withPlanCallouts(adExtras(b, { channel: ch, href: landing, service: g.name, text: ad.text }), planCallouts)} />
@@ -890,4 +901,34 @@ function CampaignPill({ s, ch, short = false }: { s?: { stopped: string | null; 
       </span>
     );
   return <span className="pill bg-good-soft text-good">Идёт</span>;
+}
+
+/** Причина отклонения без мусора вроде «[object Object]» */
+function cleanNote(n: string | null | undefined): string | null {
+  const t = (n ?? "").replace(/\[object Object\];?\s*/g, "").trim();
+  return t || null;
+}
+
+/** Отклонённое объявление: почему и что делать — по шагам */
+function RejectHelp({ note, problems, medical, platform, adLink }: { note: string | null; problems: string[]; medical: boolean; platform: string; adLink: string | null }) {
+  const where = platform === "vk" ? "VK Рекламы" : "Яндекс Директа";
+  return (
+    <div className="rounded-xl border border-bad/30 bg-bad-soft/50 p-4 text-sm text-ink-2 grid gap-3 max-w-2xl">
+      <div className="font-bold text-ink">Модерация не пропустила объявление. Что делать</div>
+      <ol className="list-decimal pl-5 grid gap-2 leading-relaxed">
+        <li>
+          {note ? <>Причина от площадки: <b className="text-bad">{note}</b>.</> : <>Площадка не передала причину текстом — она видна в кабинете {where} у этого объявления.</>}
+          {adLink ? <> <a href={adLink} target="_blank" rel="noreferrer" className="font-semibold underline underline-offset-2 inline-flex items-center gap-1">Открыть объявление в кабинете<ExternalLink size={12} /></a></> : null}
+        </li>
+        {problems.length ? (
+          <li>Мы проверили текст и нашли, что могло помешать: <b>{problems.join(", ")}</b>. Нажмите «Текст» ниже и уберите это из заголовка и текста.</li>
+        ) : null}
+        {medical ? (
+          <li>Для медицинских услуг {platform === "vk" ? "VK" : "Директ"} просит лицензию. Если в причине упомянуты документы — загрузите лицензию в кабинете у объявления (кнопка загрузки документов появится там же). Какой документ нужен — <a href="#license-help" className="font-semibold underline underline-offset-2">ниже</a>.</li>
+        ) : null}
+        <li>Или ничего не делайте: при следующей проверке (раз в день) робот сам перепишет объявление без спорных мест и отправит на модерацию заново.</li>
+      </ol>
+      {medical ? <details id="license-help"><summary className="cursor-pointer font-semibold text-ink">Какая лицензия нужна и куда её загрузить</summary><div className="mt-3"><MedicalLicenseGuide /></div></details> : null}
+    </div>
+  );
 }

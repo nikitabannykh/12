@@ -879,6 +879,28 @@ export class VkAds implements PlatformClient {
   }
 
   async getAdStates(adExts: string[]): Promise<Record<string, AdState>> {
+    /** Причины модерации VK приходят строками или объектами — достаём человеческий текст, без «[object Object]» */
+    const vkReasons = (raw: unknown): string | undefined => {
+      const text = (r: unknown): string => {
+        if (typeof r === "string") return r;
+        if (typeof r === "number") return `код ${r}`;
+        if (r && typeof r === "object") {
+          const o = r as Record<string, unknown>;
+          for (const k of ["title", "name", "text", "description", "reason", "comment", "message", "value"]) {
+            const v = o[k];
+            if (typeof v === "string" && v.trim()) return v.trim();
+            if (v && typeof v === "object") { const t = text(v); if (t) return t; }
+          }
+          const fields = Array.isArray(o.banner_fields) ? ` (поля: ${(o.banner_fields as unknown[]).join(", ")})` : "";
+          const id = o.reason_id ?? o.id;
+          return id != null ? `причина №${id}${fields}` : "";
+        }
+        return "";
+      };
+      const list = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? Object.values(raw as object) : raw ? [raw] : [];
+      const out = [...new Set(list.map(text).filter(Boolean))].join("; ");
+      return out || undefined;
+    };
     const out: Record<string, AdState> = {};
     for (let i = 0; i < adExts.length; i += VK_PAGE) {
       const ids = adExts.slice(i, i + VK_PAGE);
@@ -890,7 +912,7 @@ export class VkAds implements PlatformClient {
         else if (b.moderation_status === "pending") status = "moderation";
         else if (b.status === "active") status = "active";
         else status = "paused";
-        const reasons = Array.isArray(b.moderation_reasons) ? b.moderation_reasons.map((r: any) => r.title || r.name || r).join("; ") : undefined;
+        const reasons = vkReasons(b.moderation_reasons);
         out[String(b.id)] = { status, note: reasons || undefined };
       }
     }
