@@ -207,7 +207,7 @@ export default async function Home() {
             <Bezel className="md:col-span-7 md:row-span-2" inner="p-6 sm:p-8 flex flex-col gap-7">
               <div>
                 <div className="text-sm text-muted">Итог за месяц</div>
-                <div className="mt-2 text-[1.7rem] sm:text-[2.1rem] font-semibold tracking-[-0.03em] leading-tight">На те же 15 000 ₽ — <span className="bg-mark px-1.5 rounded-lg">48 заявок вместо 29</span></div>
+                <div className="mt-2 text-[1.7rem] sm:text-[2.1rem] font-semibold tracking-[-0.03em] leading-tight">На те же 15 000 ₽ — <span className="bg-mark px-1.5 rounded-lg">48 клиентов вместо 29</span></div>
                 <p className="mt-3 text-ink-2 leading-relaxed">Каждая заявка стала обходиться дешевле: было 520 ₽ рекламы на одного клиента, стало 310 ₽. Деньги те же — клиентов на 19 больше.</p>
               </div>
               <div className="grid gap-4 mt-auto">
