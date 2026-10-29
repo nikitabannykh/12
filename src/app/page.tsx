@@ -1,7 +1,7 @@
 import Link from "next/link";
 import {
-  Ban, Check, ChevronDown, CircleCheck, Clock, FlaskConical, MousePointer2, PauseCircle, Pencil, RotateCcw, Scale, Search, ShieldCheck,
-  Sparkles, TrendingDown, Undo2, X,
+  BarChart3, History, Home as HomeIcon, Megaphone, Settings, Ban, Check, ChevronDown, CircleCheck, Clock, FlaskConical, MousePointer2, PauseCircle, Pencil, RotateCcw, Scale, Search, ShieldCheck,
+  Sparkles, TrendingDown, Undo2, X, Hand, Scissors, Flower2, Stethoscope, Dumbbell, Music,
 } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { getUser } from "@/lib/auth";
@@ -52,75 +52,106 @@ function Ring({ value }: { value: number }) {
   );
 }
 
-function Dashboard() {
+/** Кабинет «Главное» — как в сервисе: меню слева, сводка недели, график, здоровье рекламы */
+const WEEK = [
+  { d: "Пт", spend: 58, leads: 3 }, { d: "Сб", spend: 44, leads: 4 }, { d: "Вс", spend: 50, leads: 3 }, { d: "Пн", spend: 62, leads: 4 },
+  { d: "Вт", spend: 71, leads: 6 }, { d: "Ср", spend: 68, leads: 5 }, { d: "Чт", spend: 66, leads: 8 },
+];
+
+function AppMock() {
+  const nav: [typeof HomeIcon, string, boolean][] = [
+    [HomeIcon, "Главное", true], [Megaphone, "Реклама", false], [BarChart3, "Статистика", false], [History, "История", false], [Settings, "Настройки", false],
+  ];
   return (
-    <div className="relative min-w-0">
-      <Window>
-        <div className="p-4 sm:p-5 grid grid-cols-[minmax(0,1fr)] gap-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="font-bold truncate">Студия «Лак» · Казань</div>
-              <div className="text-xs text-good flex items-center gap-1.5"><span className="relative flex w-1.5 h-1.5"><span className="absolute inset-0 rounded-full bg-good animate-ping opacity-60" /><span className="relative w-1.5 h-1.5 rounded-full bg-good" /></span> Реклама идёт · 5 каналов</div>
+    <div className="relative">
+      <Window url="polny-zal.ru/app" className="rounded-[20px]">
+        <div className="grid md:grid-cols-[13.5rem_minmax(0,1fr)] bg-paper text-left">
+          {/* Меню */}
+          <aside className="hidden md:flex flex-col gap-4 bg-white border-r border-line p-4">
+            <Logo size={24} />
+            <div className="flex items-center gap-2 rounded-xl border border-line px-2.5 py-2 text-sm font-semibold">
+              <span className="w-6 h-6 rounded-md bg-mark grid place-items-center text-xs font-extrabold">С</span>Студия Лак<ChevronDown size={14} className="ml-auto text-muted" />
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <div className="relative grid place-items-center"><Ring value={86} /><span className="absolute text-[11px] font-extrabold">86</span></div>
-              <div className="hidden sm:block text-[11px] leading-tight text-muted">здоровье<br />рекламы</div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {[
-              { k: "Бюджет за 14 дней", v: "24 960 ₽", s: "из 32 600 ₽" },
-              { k: "Сэкономлено", v: "3 140 ₽", s: "на мусорных кликах", tone: "mark" },
-              { k: "Обращения", v: "58", s: "+12 к прошлым" },
-              { k: "Цена обращения", v: "430 ₽", s: "−28% со старта", good: true },
-            ].map((x) => (
-              <div key={x.k} className={`rounded-xl px-3 py-2.5 ${x.tone === "mark" ? "bg-mark" : "bg-paper"}`}>
-                <div className="text-[10.5px] text-muted leading-tight">{x.k}</div>
-                <div className="text-lg font-extrabold tracking-tight mt-0.5">{x.v}</div>
-                <div className={`text-[10.5px] ${x.good ? "text-good font-semibold" : x.tone === "mark" ? "text-ink-2" : "text-faint"}`}>{x.s}</div>
-              </div>
-            ))}
-          </div>
-
-          <div>
-            <div className="flex items-center justify-between text-[11px] text-muted mb-1.5">
-              <span>Цена обращения по дням</span>
-              <span className="flex items-center gap-3"><span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-line-2" />до робота</span><span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-ink" />с роботом</span></span>
-            </div>
-            <div className="flex items-end gap-1 h-20 border-b border-line">
-              {BARS.map((h, i) => <div key={i} className={`lp-bar flex-1 rounded-t-[3px] ${i >= 9 ? "bg-ink" : "bg-line-2"}`} style={{ height: `${100 - h + 18}%`, animationDelay: `${150 + i * 45}ms` }} />)}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-[minmax(0,1fr)] gap-1.5">
-            {[
-              [Ban, "Минус-слово «обучение»", "14 кликов без обращений", "09:12"],
-              [Scale, "+15% бюджета во ВКонтакте", "обращение там дешевле", "09:13"],
-              [FlaskConical, "Тест заголовка с ценой", "идёт 3-й день", "09:13"],
-            ].map(([I, t, s, time]) => {
-              const Icon = I as typeof Ban;
-              return (
-                <div key={t as string} className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2 text-[13px]">
-                  <span className="w-6 h-6 rounded-md bg-paper grid place-items-center shrink-0"><Icon size={13} /></span>
-                  <span className="flex-1 min-w-0 truncate"><b className="font-semibold">{t as string}</b> <span className="text-muted">— {s as string}</span></span>
-                  <span className="hidden sm:inline text-faint text-[11px] tabular-nums">{time as string}</span>
-                  <span className="text-ink-2 text-[11px] flex items-center gap-1 shrink-0"><Undo2 size={11} /> отменить</span>
+            <nav className="grid gap-0.5 text-[13.5px]">
+              {nav.map(([I, t, on], i) => (
+                <div key={t}>
+                  <div className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 font-semibold ${on ? "bg-ink text-white" : "text-ink-2"}`}><I size={15} />{t}</div>
+                  {i === 1 ? (
+                    <div className="grid gap-0.5 pl-7 py-0.5 text-[12.5px] text-ink-2">
+                      <div className="flex items-center gap-2 px-2 py-1"><span className="w-3.5 h-3.5 rounded-full bg-[#fc3f1d] text-white text-[8px] font-bold grid place-items-center">Я</span>Яндекс<span className="ml-auto text-faint">4</span></div>
+                      <div className="flex items-center gap-2 px-2 py-1"><span className="w-3.5 h-3.5 rounded bg-[#0077ff] text-white text-[7px] font-bold grid place-items-center">VK</span>VK<span className="ml-auto text-faint">2</span></div>
+                    </div>
+                  ) : null}
                 </div>
-              );
-            })}
+              ))}
+            </nav>
+          </aside>
+
+          {/* Главное */}
+          <div className="p-4 sm:p-6 grid grid-cols-[minmax(0,1fr)] gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-xl sm:text-2xl font-extrabold tracking-tight">Главное</div>
+                <div className="text-[13px] text-muted">Последние 7 дней</div>
+              </div>
+              <div className="hidden sm:flex gap-2 text-[12.5px] font-semibold">
+                <span className="rounded-lg border border-bad/30 text-bad bg-white px-3 py-1.5 flex items-center gap-1.5"><PauseCircle size={13} />Остановить всю рекламу</span>
+                <span className="rounded-lg border border-line bg-white px-3 py-1.5 flex items-center gap-1.5"><RotateCcw size={13} />Проверить сейчас</span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-white border border-line p-4 sm:p-5">
+              <div className="text-base sm:text-xl font-bold leading-snug">Реклама привела <span className="marked">33 обращения</span>, из них примерно 20 клиентов. Клиент обошёлся в 683 ₽.</div>
+              <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {[["Потрачено", "13 660 ₽", "+20%", "bad"], ["Обращения из рекламы", "33", "+50%", "good"], ["Клиенты, оценка", "20", "+54%", "good"], ["Стоимость клиента", "683 ₽", "−22%", "good"]].map(([k, v, d, t]) => (
+                  <div key={k}>
+                    <div className="text-[12px] text-muted">{k}</div>
+                    <div className="text-xl sm:text-[1.6rem] font-extrabold tracking-tight leading-tight">{v}</div>
+                    <div className={`text-[11px] font-semibold ${t === "bad" ? "text-bad" : "text-good"}`}>{d}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 flex items-end justify-around h-28 sm:h-32">
+                {WEEK.map((w, i) => (
+                  <div key={w.d} className="flex flex-col items-center gap-0.5 w-6 sm:w-7">
+                    {Array.from({ length: w.leads }).map((_, j) => <span key={j} className="lp-pop w-full h-[3px] rounded-full bg-mark" style={{ animationDelay: `${500 + i * 90 + j * 40}ms` }} />)}
+                    <span className="lp-bar w-full rounded-t-[4px] bg-line-2" style={{ height: `${w.spend}px`, animationDelay: `${150 + i * 70}ms` }} />
+                    <span className="text-[10px] text-faint mt-1">{w.d}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 flex gap-4 text-[11px] text-muted"><span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-line-2" />Расход</span><span className="flex items-center gap-1.5"><span className="w-2.5 h-[3px] rounded-full bg-mark" />Обращение из рекламы</span></div>
+            </div>
+
+            <div className="grid sm:grid-cols-[1fr_1fr] gap-3">
+              <div className="rounded-2xl bg-white border border-line p-4 flex items-center gap-3">
+                <div className="relative grid place-items-center"><Ring value={86} /><span className="absolute text-[11px] font-extrabold">86</span></div>
+                <div className="min-w-0"><div className="font-bold text-sm">Здоровье рекламы: всё в порядке</div><div className="text-[12px] text-muted truncate">Робот проверил 5 кампаний сегодня в 09:12</div></div>
+              </div>
+              <div className="rounded-2xl bg-white border border-line p-4">
+                <div className="text-[12px] text-muted">Сегодня робот</div>
+                <div className="mt-1 grid gap-1 text-[13px]">
+                  <div className="flex items-center gap-2"><Ban size={13} className="text-bad" />Минус-слово «обучение»<span className="ml-auto text-faint flex items-center gap-1 text-[11px]"><Undo2 size={11} />отменить</span></div>
+                  <div className="flex items-center gap-2"><Scale size={13} className="text-good" />+15% бюджета во ВКонтакте<span className="ml-auto text-faint flex items-center gap-1 text-[11px]"><Undo2 size={11} />отменить</span></div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </Window>
 
       {/* Всплывающие акценты */}
-      <div className="lp-pop hidden md:flex absolute -left-10 top-[56%] items-center gap-2.5 rounded-xl bg-ink text-white pl-2.5 pr-3.5 py-2 shadow-xl" style={{ animationDelay: "900ms" }}>
-        <span className="w-7 h-7 rounded-lg bg-mark text-ink grid place-items-center"><TrendingDown size={15} /></span>
-        <div className="leading-tight"><div className="text-[11px] text-white/70">сэкономлено за неделю</div><div className="font-bold text-sm">−460 ₽ на мусорных кликах</div></div>
+      <div className="lp-pop hidden lg:flex absolute -left-14 top-[42%] items-center gap-2.5 rounded-xl bg-ink text-white pl-2.5 pr-4 py-2.5 shadow-2xl" style={{ animationDelay: "1100ms" }}>
+        <span className="w-8 h-8 rounded-lg bg-mark text-ink grid place-items-center"><TrendingDown size={16} /></span>
+        <div className="leading-tight"><div className="text-[11px] text-white/70">сэкономлено за неделю</div><div className="font-bold">−460 ₽ на мусорных кликах</div></div>
       </div>
-      <div className="lp-pop hidden md:flex absolute -right-5 -bottom-5 items-center gap-2 rounded-xl bg-white border border-line pl-2.5 pr-3.5 py-2 shadow-xl" style={{ animationDelay: "1300ms" }}>
-        <CircleCheck size={18} className="text-good" />
-        <div className="leading-tight"><div className="text-[11px] text-muted">A/B-тест завершён</div><div className="font-bold text-sm">Вариант Б: +34% обращений</div></div>
+      <div className="lp-pop hidden lg:flex absolute -right-12 top-[22%] items-center gap-2.5 rounded-xl bg-white border border-line pl-2.5 pr-4 py-2.5 shadow-2xl" style={{ animationDelay: "1500ms" }}>
+        <CircleCheck size={20} className="text-good" />
+        <div className="leading-tight"><div className="text-[11px] text-muted">A/B-тест завершён</div><div className="font-bold">Вариант Б: +34% обращений</div></div>
+      </div>
+      <div className="lp-pop hidden lg:flex absolute -right-8 bottom-16 items-center gap-2.5 rounded-xl bg-white border border-line pl-2.5 pr-4 py-2.5 shadow-2xl" style={{ animationDelay: "1900ms" }}>
+        <span className="w-8 h-8 rounded-lg bg-good-soft text-good grid place-items-center"><Scale size={16} /></span>
+        <div className="leading-tight"><div className="text-[11px] text-muted">бюджет перераспределён</div><div className="font-bold">поиск +10%, сети −10%</div></div>
       </div>
     </div>
   );
@@ -156,29 +187,26 @@ export default async function Home() {
 
       {/* Первый экран */}
       <section className="relative">
-        <div className="absolute inset-x-0 top-0 h-[34rem] lp-dots [mask-image:linear-gradient(to_bottom,black,transparent)] pointer-events-none" aria-hidden />
-        <div className="relative mx-auto max-w-6xl px-4 sm:px-6 pt-10 sm:pt-20 pb-20 sm:pb-28 grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[0.92fr_1.08fr] gap-14 items-center">
-          <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-line bg-white pl-1.5 pr-3 py-1 text-[13px] text-ink-2 shadow-sm">
-              <span className="flex -space-x-1"><span className="w-5 h-5 rounded-full bg-[#fc3f1d] ring-2 ring-white" /><span className="w-5 h-5 rounded-full bg-[#0077ff] ring-2 ring-white" /></span>
-              Яндекс Директ и VK Реклама
-            </div>
-            <h1 className="mt-5 text-[2.6rem] sm:text-[3.9rem] font-extrabold tracking-[-0.04em] leading-[1.0]">Реклама в&nbsp;Яндексе и&nbsp;VK на&nbsp;автопилоте</h1>
-            <p className="mt-6 text-lg sm:text-[1.3rem] text-ink-2 leading-relaxed max-w-[33rem]">Сервис делает работу директолога: настраивает, запускает и каждый день оптимизирует рекламу. Вам не нужно разбираться в кабинетах, а каждый рубль бюджета работает на результат.</p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <Link href={cta.href} className="btn btn-primary h-12 px-6 text-base">{cta.text}</Link>
-              <Link href="/login?demo=1" className="btn btn-ghost h-12 px-6 text-base">Демо без регистрации</Link>
-            </div>
-            <dl className="mt-10 grid grid-cols-3 gap-4 max-w-md">
-              {[["15 мин", "на запуск"], ["5 каналов", "из одного окна"], ["0 ₽", "сверх лимита"]].map(([v, k]) => (
-                <div key={k} className="border-l-2 border-mark pl-3">
-                  <dt className="text-2xl font-extrabold tracking-tight">{v}</dt>
-                  <dd className="text-[13px] text-muted leading-snug">{k}</dd>
-                </div>
-              ))}
-            </dl>
+        <div className="absolute inset-x-0 top-0 h-[40rem] lp-dots [mask-image:linear-gradient(to_bottom,black,transparent)] pointer-events-none" aria-hidden />
+        <div className="relative mx-auto max-w-6xl px-4 sm:px-6 pt-12 sm:pt-20 text-center">
+          <div className="inline-flex items-center gap-2 rounded-full border border-line bg-white pl-1.5 pr-3 py-1 text-[13px] text-ink-2 shadow-sm">
+            <span className="flex -space-x-1"><span className="w-5 h-5 rounded-full bg-[#fc3f1d] ring-2 ring-white" /><span className="w-5 h-5 rounded-full bg-[#0077ff] ring-2 ring-white" /></span>
+            Яндекс Директ и VK Реклама
           </div>
-          <Dashboard />
+          <h1 className="mt-6 mx-auto max-w-[16ch] text-[2.6rem] sm:text-[4.4rem] font-extrabold tracking-[-0.045em] leading-[0.98]">Реклама в&nbsp;Яндексе и&nbsp;VK на&nbsp;автопилоте</h1>
+          <p className="mt-6 mx-auto max-w-[38rem] text-lg sm:text-[1.3rem] text-ink-2 leading-relaxed">Сервис делает работу директолога: настраивает, запускает и каждый день оптимизирует рекламу. Вам не нужно разбираться в кабинетах, а каждый рубль бюджета работает на результат.</p>
+          <div className="mt-8 flex flex-wrap justify-center gap-3">
+            <Link href={cta.href} className="btn btn-primary h-12 px-6 text-base">{cta.text}</Link>
+            <Link href="/login?demo=1" className="btn btn-ghost h-12 px-6 text-base">Демо без регистрации</Link>
+          </div>
+          <dl className="mt-8 flex flex-wrap justify-center gap-x-8 gap-y-3 text-sm">
+            {[["15 мин", "на запуск"], ["5 каналов", "из одного окна"], ["0 ₽", "сверх лимита"]].map(([v, k]) => (
+              <div key={k} className="flex items-baseline gap-1.5"><dt className="font-extrabold text-base">{v}</dt><dd className="text-muted">{k}</dd></div>
+            ))}
+          </dl>
+        </div>
+        <div className="relative mx-auto max-w-[72rem] px-4 sm:px-6 mt-12 sm:mt-16 pb-16 sm:pb-24">
+          <AppMock />
         </div>
       </section>
 
@@ -197,6 +225,35 @@ export default async function Home() {
             ))}
           </ul>
         </div>
+      </section>
+
+      {/* Рычаги эффективного бюджета */}
+      <section className="mx-auto max-w-6xl px-4 sm:px-6 pt-20 sm:pt-28">
+        <div className="max-w-2xl">
+          <h2 className="text-3xl sm:text-[2.6rem] font-extrabold tracking-[-0.03em] leading-[1.08]">Пять рычагов, на которых робот экономит бюджет</h2>
+          <p className="mt-4 text-lg text-ink-2 leading-relaxed">Не «магия алгоритмов», а понятная работа, которую специалист делает руками, — только каждый день и без выходных.</p>
+        </div>
+        <div className="mt-12 grid grid-cols-[minmax(0,1fr)] md:grid-cols-6 gap-4">
+          {[
+            { span: "md:col-span-3", n: "54", u: "минус-слова на старте", t: "Не платить за мусор", items: ["Отсекает «обучение», «вакансии», «своими руками»", "Каждый день дописывает новые по реальным запросам"], dark: true },
+            { span: "md:col-span-3", n: "×6", u: "подходов к текстам", t: "Тексты, которые кликают", items: ["Цена, предложение, удобство, результат — в разных объявлениях", "A/B-тест оставляет победителя, слабые выключает"] },
+            { span: "md:col-span-2", n: "5", u: "каналов", t: "Деньги туда, где дешевле", items: ["Сравнивает цену обращения по каналам", "Переносит бюджет раз в неделю"] },
+            { span: "md:col-span-2", n: "3", u: "аудитории VK в тесте", t: "Точная аудитория", items: ["Искали услугу, интересы, живут рядом", "Остаётся та, где обращение дешевле"] },
+            { span: "md:col-span-2", n: "0 ₽", u: "сверх лимита", t: "Без перерасхода", items: ["Месячный лимит — жёсткая граница", "Стоп всей рекламы одной кнопкой"], mark: true },
+          ].map((c) => (
+            <div key={c.t} className={`${c.span} rounded-3xl p-6 sm:p-7 flex flex-col ${c.dark ? "bg-ink text-white" : c.mark ? "bg-mark" : "bg-paper"}`}>
+              <div className="flex items-baseline gap-2">
+                <span className={`text-5xl sm:text-6xl font-extrabold tracking-[-0.04em] ${c.dark ? "text-mark" : ""}`}>{c.n}</span>
+                <span className={`text-sm ${c.dark ? "text-white/70" : "text-ink-2"}`}>{c.u}</span>
+              </div>
+              <div className="mt-6 text-xl font-bold">{c.t}</div>
+              <ul className={`mt-3 grid gap-1.5 text-[0.95rem] ${c.dark ? "text-white/80" : "text-ink-2"}`}>
+                {c.items.map((x) => <li key={x} className="flex gap-2"><Check size={16} className={`shrink-0 mt-0.5 ${c.dark ? "text-mark" : "text-good"}`} />{x}</li>)}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 text-[13px] text-faint">Цифры — пример запуска для студии маникюра; у вашего бизнеса будут свои.</p>
       </section>
 
       {/* Возможности */}
@@ -321,6 +378,36 @@ export default async function Home() {
         </div>
       </section>
 
+      {/* Кому подходит */}
+      <section className="mx-auto max-w-6xl px-4 sm:px-6 pb-20 sm:pb-28">
+        <h2 className="text-3xl sm:text-[2.6rem] font-extrabold tracking-[-0.03em] leading-[1.08] max-w-[22ch]">Кому подходит</h2>
+        <div className="mt-10 grid md:grid-cols-3 gap-4">
+          {[
+            ["Ведёте рекламу сами по вечерам", "Директ и VK съедают часы, а результат непонятен. Робот заберёт настройку и ежедневную рутину — вам останется смотреть на цифры."],
+            ["Устали от агентства", "Платите за процент от бюджета и ждёте отчёта неделями. Здесь каждое решение видно сразу, а деньги остаются в ваших кабинетах."],
+            ["Только начинаете с рекламой", "Не знаете, с чего начать и сколько тратить. Сервис соберёт рекламу по анкете и покажет прогноз до запуска."],
+          ].map(([t, d], i) => (
+            <div key={t} className="rounded-3xl border border-line p-6 sm:p-7 flex flex-col">
+              <span className="w-10 h-10 rounded-xl bg-paper grid place-items-center">{[<Clock key="c" size={18} />, <Undo2 key="u" size={18} />, <Sparkles key="s" size={18} />][i]}</span>
+              <div className="mt-3 text-xl font-bold leading-snug">{t}</div>
+              <p className="mt-3 text-ink-2 leading-relaxed">{d}</p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-10 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          {([[Hand, "Маникюр и брови"], [Scissors, "Парикмахерские"], [Flower2, "Массаж и SPA"], [Stethoscope, "Остеопатия, косметология"], [Dumbbell, "Йога и фитнес"], [Music, "Танцы"]] as const).map(([I, t]) => (
+            <div key={t} className="rounded-2xl bg-paper px-4 py-4 text-center">
+              <I size={26} className="mx-auto text-ink-2" aria-hidden />
+              <div className="mt-2 text-sm font-semibold leading-snug">{t}</div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-8 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-ink text-white px-6 py-5">
+          <p className="text-lg font-semibold">Узнайте, сколько обращений ждать за ваш бюджет — прогноз до запуска.</p>
+          <Link href={cta.href} className="btn bg-mark text-ink hover:bg-mark/90">{cta.text}</Link>
+        </div>
+      </section>
+
       {/* Как начать */}
       <section id="how" className="bg-paper border-y border-line scroll-mt-16">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20 sm:py-24">
@@ -373,21 +460,25 @@ export default async function Home() {
 
       {/* FAQ */}
       <section id="faq" className="bg-paper border-t border-line scroll-mt-16">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20 sm:py-24 grid lg:grid-cols-[20rem_1fr] gap-10">
-          <div>
-            <h2 className="text-3xl sm:text-[2.6rem] font-extrabold tracking-[-0.03em] leading-tight">Вопросы</h2>
-            <p className="mt-3 text-muted leading-relaxed">Не нашли ответ — откройте демо: там всё работает по-настоящему, только показы моделируются.</p>
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20 sm:py-24">
+          <div className="text-center">
+            <h2 className="text-3xl sm:text-[2.6rem] font-extrabold tracking-[-0.03em] leading-tight">Частые вопросы</h2>
+            <p className="mt-3 text-muted text-lg">Коротко о том, что обычно спрашивают перед запуском.</p>
           </div>
-          <div className="grid grid-cols-[minmax(0,1fr)] gap-2">
+          <div className="mt-12 grid md:grid-cols-2 gap-4">
             {FAQ.map(([q, a]) => (
-              <details key={q} className="group rounded-xl bg-white border border-line px-5 py-4 open:shadow-sm">
-                <summary className="cursor-pointer list-none flex items-center justify-between gap-4 font-semibold text-[1.05rem]">
-                  {q}
-                  <span className="w-7 h-7 rounded-full bg-paper grid place-items-center shrink-0 transition-transform group-open:rotate-180"><ChevronDown size={16} /></span>
-                </summary>
-                <p className="mt-3 text-ink-2 leading-relaxed">{a}</p>
-              </details>
+              <div key={q} className="rounded-2xl bg-white border border-line p-6 flex gap-4">
+                <span className="w-9 h-9 rounded-xl bg-mark grid place-items-center font-extrabold shrink-0">?</span>
+                <div>
+                  <h3 className="font-bold text-[1.1rem] leading-snug">{q}</h3>
+                  <p className="mt-2 text-ink-2 leading-relaxed">{a}</p>
+                </div>
+              </div>
             ))}
+          </div>
+          <div className="mt-6 rounded-2xl border border-dashed border-line-2 px-6 py-5 flex flex-wrap items-center justify-between gap-4">
+            <p className="text-ink-2"><b className="text-ink">Остались вопросы?</b> Откройте демо — там всё работает по-настоящему, только показы моделируются.</p>
+            <Link href="/login?demo=1" className="btn btn-ghost">Открыть демо</Link>
           </div>
         </div>
       </section>
