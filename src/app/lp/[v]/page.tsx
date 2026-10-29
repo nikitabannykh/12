@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
-import { ArrowRight, Ban, Check, CircleCheck, FlaskConical, Globe, PauseCircle, Scale, Search, Sparkles, TrendingDown, X } from "lucide-react";
+import { MousePointer2, ArrowRight, Ban, Check, CircleCheck, FlaskConical, Globe, PauseCircle, Scale, Search, Sparkles, TrendingDown, X } from "lucide-react";
 import { Logo } from "@/components/Logo";
+import { Command, NicheTabs, Recs, Rotator } from "@/components/LpBits";
 
 /** Черновики первого экрана (5 вариантов) — для выбора, не для поиска */
 export const metadata = { title: "Варианты первого экрана", robots: { index: false } };
@@ -373,9 +374,123 @@ function V10() {
   );
 }
 
+
+/* 11. Заголовок из плашек, ниша меняется */
+function V11() {
+  const P = ({ c, children }: { c: string; children: React.ReactNode }) => <span className={`inline-flex items-center rounded-[1.1rem] px-4 sm:px-5 py-1 sm:py-1.5 ${c}`}>{children}</span>;
+  return (
+    <main className="min-h-dvh bg-white text-ink overflow-hidden">
+      <Header />
+      <section className="mx-auto max-w-6xl px-4 sm:px-6 pt-16 sm:pt-24 pb-24 text-center">
+        <h1 className="flex flex-wrap justify-center gap-2.5 sm:gap-3 text-[2.2rem] sm:text-[4rem] font-extrabold tracking-[-0.04em] leading-none">
+          <P c="bg-ink text-white">Реклама</P><P c="bg-mark">в Яндексе и VK</P><P c="border-2 border-ink">на автопилоте</P>
+          <span className="basis-full h-0" />
+          <P c="bg-paper">для</P>
+          <P c="bg-good-soft text-good min-w-[7ch] justify-center"><Rotator words={["маникюра", "барбершопа", "остеопата", "йоги", "массажа", "косметолога"]} /></P>
+          <span className="relative">
+            <P c="border-2 border-dashed border-line-2 text-faint">и вас</P>
+            <MousePointer2 className="absolute -right-5 -bottom-5 w-8 h-8 fill-white text-ink" />
+          </span>
+        </h1>
+        <p className="mt-8 text-lg sm:text-xl text-ink-2 max-w-2xl mx-auto">Робот настраивает рекламу под вашу нишу, каждый день убирает лишние траты и переносит бюджет туда, где обращения дешевле.</p>
+        <div className="mt-9 flex justify-center gap-3"><span className="btn btn-primary h-12 px-6 text-base">Запустить рекламу</span><span className="btn btn-ghost h-12 px-6 text-base">Как это работает</span></div>
+      </section>
+    </main>
+  );
+}
+
+/* 12. Утро: робот уже сделал 4 вещи */
+function V12() {
+  return (
+    <main className="min-h-dvh bg-paper text-ink">
+      <Header />
+      <section className="mx-auto max-w-6xl px-4 sm:px-6 pt-10 sm:pt-16 pb-20 grid lg:grid-cols-[1fr_1fr] gap-12 items-center">
+        <div>
+          <h1 className="text-[2.6rem] sm:text-[4rem] font-extrabold tracking-[-0.04em] leading-[1.0]">Доброе утро. Робот уже навёл порядок в рекламе.</h1>
+          <p className="mt-6 text-lg sm:text-xl text-ink-2 leading-relaxed max-w-[32rem]">Каждое утро он разбирает Яндекс и VK, делает то, что сделал бы директолог, и коротко объясняет. Не согласны — отменяете одной кнопкой.</p>
+          <div className="mt-8 flex gap-3"><span className="btn btn-primary h-12 px-6 text-base">Запустить рекламу</span></div>
+        </div>
+        <div className="rounded-3xl bg-white border border-line p-5 sm:p-6 shadow-[0_40px_80px_-40px_rgba(29,32,69,0.35)]">
+          <div className="flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-ink grid place-items-center"><span className="grid grid-cols-3 gap-0.5">{Array.from({ length: 9 }).map((_, k) => <span key={k} className="w-1.5 h-1.5 rounded-[2px] bg-mark" />)}</span></span>
+            <div><div className="font-bold">Доброе утро, Анна</div><div className="text-sm text-muted">Робот проверил 5 кампаний · 09:12</div></div>
+          </div>
+          <div className="mt-5"><Recs /></div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+/* 13. Вкладки по нишам */
+function V13() {
+  return (
+    <main className="min-h-dvh bg-paper text-ink">
+      <Header />
+      <section className="mx-auto max-w-6xl px-4 sm:px-6 pt-10 sm:pt-16 pb-20 grid lg:grid-cols-[1fr_1fr] gap-12 items-center">
+        <div>
+          <h1 className="text-[2.6rem] sm:text-[4rem] font-extrabold tracking-[-0.04em] leading-[1.0]">Реклама, которая знает ваш бизнес</h1>
+          <p className="mt-6 text-lg sm:text-xl text-ink-2 leading-relaxed max-w-[32rem]">Робот знает, как ищут вашу услугу, какие запросы мусорные и что пропустит модерация. Выберите нишу — посмотрите, что он подготовит.</p>
+          <div className="mt-8 flex gap-3"><span className="btn btn-primary h-12 px-6 text-base">Запустить рекламу</span></div>
+        </div>
+        <NicheTabs />
+      </section>
+    </main>
+  );
+}
+
+/* 14. Команда словами (концепт) */
+function V14() {
+  return (
+    <main className="min-h-dvh bg-white text-ink">
+      <Header />
+      <section className="mx-auto max-w-4xl px-4 sm:px-6 pt-16 sm:pt-24 pb-24">
+        <h1 className="text-center text-[2.6rem] sm:text-[4.2rem] font-extrabold tracking-[-0.045em] leading-[0.98]">Управляйте рекламой как сотрудником — словами</h1>
+        <p className="mt-6 text-center text-lg sm:text-xl text-ink-2 max-w-2xl mx-auto">Не нужно искать настройку в кабинете Директа. Скажите, что изменить, — робот сделает во всех кампаниях и отчитается.</p>
+        <div className="mt-10"><Command /></div>
+        <div className="mt-10 flex justify-center gap-3"><span className="btn btn-primary h-12 px-6 text-base">Запустить рекламу</span></div>
+      </section>
+    </main>
+  );
+}
+
+/* 15. Карта: реклама находит тех, кто рядом */
+function V15() {
+  const dots = Array.from({ length: 70 }, (_, i) => {
+    const a = (i * 137.5) * Math.PI / 180, r = 40 + ((i * 53) % 260);
+    return { x: 400 + Math.cos(a) * r, y: 260 + Math.sin(a) * r * 0.75, on: r < 170 && i % 3 !== 0 };
+  });
+  return (
+    <main className="min-h-dvh bg-white text-ink overflow-hidden">
+      <Header />
+      <section className="mx-auto max-w-6xl px-4 sm:px-6 pt-10 sm:pt-16 pb-16 grid lg:grid-cols-[0.9fr_1.1fr] gap-10 items-center">
+        <div>
+          <h1 className="text-[2.6rem] sm:text-[4rem] font-extrabold tracking-[-0.04em] leading-[1.0]">Реклама для тех, кто живёт в 3 км от вас</h1>
+          <p className="mt-6 text-lg sm:text-xl text-ink-2 leading-relaxed max-w-[32rem]">Робот показывает рекламу людям рядом, которые ищут вашу услугу, и не тратит бюджет на весь город.</p>
+          <ul className="mt-6 grid gap-2 text-ink-2">{["Радиус вокруг адреса во ВКонтакте", "Поиск Яндекса в вашем городе", "Часы показа — по часам работы"].map((x) => <li key={x} className="flex gap-2"><Check size={18} className="text-good mt-0.5" />{x}</li>)}</ul>
+          <div className="mt-8 flex gap-3"><span className="btn btn-primary h-12 px-6 text-base">Запустить рекламу</span></div>
+        </div>
+        <div className="relative rounded-3xl bg-[#eef1f6] overflow-hidden aspect-[8/5.2] border border-line">
+          <svg viewBox="0 0 800 520" className="absolute inset-0 w-full h-full">
+            {[60, 150, 250, 340, 430].map((y, k) => <path key={y} d={`M0 ${y} C 200 ${y + (k % 2 ? 30 : -25)}, 500 ${y + (k % 2 ? -30 : 25)}, 800 ${y}`} stroke="white" strokeWidth={k === 2 ? 14 : 8} fill="none" />)}
+            {[90, 260, 420, 560, 700].map((x, k) => <path key={x} d={`M${x} 0 C ${x + (k % 2 ? 30 : -20)} 200, ${x + (k % 2 ? -25 : 30)} 330, ${x} 520`} stroke="white" strokeWidth={k === 2 ? 14 : 8} fill="none" />)}
+            <path d="M560 420 q60 -40 140 -10 l 0 110 l -160 0 z" fill="#d7ead6" />
+            <ellipse cx="400" cy="260" rx="190" ry="142" fill="rgba(255,216,74,0.18)" stroke="var(--color-ink)" strokeWidth="2.5" strokeDasharray="8 8" />
+            {dots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={d.on ? 7 : 5} fill={d.on ? "var(--color-mark)" : "#b9c0d3"} stroke={d.on ? "var(--color-ink)" : "none"} strokeWidth="2" className={d.on ? "lp-pop" : ""} style={d.on ? { animationDelay: `${300 + i * 30}ms` } : undefined} />)}
+            <g transform="translate(400 260)"><circle r="22" fill="var(--color-ink)" /><text y="7" textAnchor="middle" fontSize="20" fill="var(--color-mark)" fontWeight="800">●</text></g>
+          </svg>
+          <div className="absolute left-[50%] top-[50%] translate-x-4 -translate-y-14 rounded-xl bg-ink text-white px-3 py-1.5 text-sm font-semibold shadow-lg">Студия «Лак» · ул. Баумана</div>
+          <div className="absolute right-4 top-4 rounded-xl bg-white px-3 py-2 text-sm shadow"><b>3 км</b> <span className="text-muted">радиус</span></div>
+          <div className="absolute left-4 bottom-4 rounded-xl bg-white px-3 py-2 text-sm shadow flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-mark border-2 border-ink" />видят рекламу <span className="w-3 h-3 rounded-full bg-[#b9c0d3] ml-2" />далеко — не тратим</div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 export default async function Variant({ params }: { params: Promise<{ v: string }> }) {
   const { v } = await params;
-  const C = { "1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10 }[v];
+  const C = { "1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11, "12": V12, "13": V13, "14": V14, "15": V15 }[v];
   if (!C) notFound();
   return <C />;
 }
