@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Полный зал — реклама для салонов и студий, которая ведёт себя сама",
+  title: "Самоход — робот, который сам ведёт рекламу в Яндексе и VK",
   description: "Расскажите о бизнесе, выберите бюджет — сервис сам запустит и будет вести рекламу в Яндексе и ВКонтакте.",
 };
 

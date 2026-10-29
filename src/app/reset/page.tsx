@@ -3,7 +3,7 @@ import { AuthShell } from "@/components/AuthShell";
 import { ResetRequestForm } from "@/components/AuthForms";
 import { mailConfigured } from "@/lib/mail";
 
-export const metadata = { title: "Восстановление пароля — Полный зал" };
+export const metadata = { title: "Восстановление пароля — Самоход" };
 
 export default async function Reset({ searchParams }: { searchParams: Promise<{ email?: string }> }) {
   const sp = await searchParams;

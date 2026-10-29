@@ -170,6 +170,6 @@ ym(${p.counterId},"init",{clickmap:true,trackLinks:true,accurateTrackBounce:true
 <noscript><div><img src="https://mc.yandex.ru/watch/${p.counterId}" style="position:absolute;left:-9999px;" alt="" /></div></noscript>
 `
     : "";
-  return `${ym}<!-- Полный зал: считает обращения из рекламы -->
+  return `${ym}<!-- Самоход: считает обращения из рекламы -->
 <script async src="${p.appUrl}/t.js" data-key="${p.publicKey}"${p.counterId ? ` data-ym="${p.counterId}"` : ""}></script>`;
 }

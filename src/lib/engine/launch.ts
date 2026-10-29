@@ -446,7 +446,7 @@ async function setupMetrica(b: Business, account: AdAccount, warnings: string[])
   try {
     const token = decrypt(account.accessToken);
     const site = landingUrl(b);
-    const counter = b.counterId ? { id: b.counterId } : await ensureCounter(token, { name: `${b.name} — Полный зал`, site });
+    const counter = b.counterId ? { id: b.counterId } : await ensureCounter(token, { name: `${b.name} — Самоход`, site });
     const goals = await ensureGoals(token, counter.id);
     await db.update(schema.businesses).set({ counterId: counter.id, goalIds: goals }).where(eq(schema.businesses.id, b.id));
     b.counterId = counter.id;

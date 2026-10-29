@@ -5,7 +5,7 @@ import { demoAllowed, getUser, googleConfigured } from "@/lib/auth";
 import { secretError } from "@/lib/crypto";
 import { mailConfigured } from "@/lib/mail";
 
-export const metadata = { title: "Вход — Полный зал" };
+export const metadata = { title: "Вход — Самоход" };
 
 const ERRORS: Record<string, string> = {
   google_not_configured: "Вход через Google ещё не настроен на сервере. Войдите по почте и паролю.",

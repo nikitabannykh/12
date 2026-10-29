@@ -198,7 +198,7 @@ async function businessName(id: string) {
   return b ?? null;
 }
 
-const STALE = `Ссылка не сработала: она одноразовая и действует ${LINK_TTL_MIN} минут. Откройте «Настройки» в сервисе «Полный зал» и нажмите «Подключить Telegram» ещё раз.`;
+const STALE = `Ссылка не сработала: она одноразовая и действует ${LINK_TTL_MIN} минут. Откройте «Настройки» в сервисе «Самоход» и нажмите «Подключить Telegram» ещё раз.`;
 
 
 /** Чат, нажавший кнопку, должен быть тем самым, куда этот бизнес получает уведомления */
@@ -297,7 +297,7 @@ export async function processUpdate(u: TgUpdate) {
   if (text.startsWith("/start")) {
     const code = text.slice(6).trim();
     if (!code) {
-      await reply(chat.id, "Это бот сервиса «Полный зал». Чтобы получать сюда заявки, откройте «Настройки» в сервисе и нажмите «Подключить Telegram».");
+      await reply(chat.id, "Это бот сервиса «Самоход». Чтобы получать сюда заявки, откройте «Настройки» в сервисе и нажмите «Подключить Telegram».");
       return;
     }
     const rec = await peekLink(code);
@@ -306,7 +306,7 @@ export async function processUpdate(u: TgUpdate) {
     if (!b) return void (await reply(chat.id, "Бизнес не найден. Попробуйте подключить Telegram заново из настроек."));
     await reply(
       chat.id,
-      `Подключить уведомления для «${esc(b.name)}»?\n\nСюда будут приходить новые заявки с именем и телефоном клиента. Подключайте, только если это ваш бизнес и вы сами нажали «Подключить Telegram» в сервисе «Полный зал».`,
+      `Подключить уведомления для «${esc(b.name)}»?\n\nСюда будут приходить новые заявки с именем и телефоном клиента. Подключайте, только если это ваш бизнес и вы сами нажали «Подключить Telegram» в сервисе «Самоход».`,
       { reply_markup: { inline_keyboard: [[{ text: "Подключить", callback_data: `link:${code}` }, { text: "Это не я", callback_data: `no:${code}` }]] } },
     );
     return;
@@ -314,10 +314,10 @@ export async function processUpdate(u: TgUpdate) {
   if (text.startsWith("/stop")) {
     const rows = await db.update(schema.notifySettings).set({ telegramChatId: null, telegramName: null, updatedAt: new Date() }).where(eq(schema.notifySettings.telegramChatId, String(chat.id))).returning({ businessId: schema.notifySettings.businessId });
     for (const r of rows) await setUnlinked(r.businessId, "уведомления отключили командой /stop в Telegram", chatName(chat));
-    await reply(chat.id, "Уведомления отключены. Включить снова можно в настройках сервиса «Полный зал».");
+    await reply(chat.id, "Уведомления отключены. Включить снова можно в настройках сервиса «Самоход».");
     return;
   }
-  await reply(chat.id, "Я присылаю заявки и утреннюю сводку. Управлять уведомлениями можно в настройках сервиса «Полный зал». /stop — отключить.");
+  await reply(chat.id, "Я присылаю заявки и утреннюю сводку. Управлять уведомлениями можно в настройках сервиса «Самоход». /stop — отключить.");
 }
 
 /** Локальный режим без https: забираем обновления сами (вызывается при проверке статуса подключения) */

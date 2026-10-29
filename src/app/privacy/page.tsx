@@ -29,7 +29,7 @@ export default async function Privacy({ searchParams }: { searchParams: Promise<
       <section className="mt-8 grid gap-6">
         <div>
           <h2 className="text-lg font-bold">Кто обрабатывает</h2>
-          <p className="mt-1">Оператор персональных данных — {operator}. По его поручению данные хранит и передаёт ему сервис «Полный зал», через который работает страница записи.</p>
+          <p className="mt-1">Оператор персональных данных — {operator}. По его поручению данные хранит и передаёт ему сервис «Самоход», через который работает страница записи.</p>
         </div>
         <div>
           <h2 className="text-lg font-bold">Какие данные</h2>

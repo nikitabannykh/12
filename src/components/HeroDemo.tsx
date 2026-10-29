@@ -13,13 +13,13 @@ import {
 import { Logo } from "./Logo";
 
 const STEPS = [
-  { t: "Адрес сайта", url: "polny-zal.ru/app/business", ms: 5200 },
-  { t: "Объявления", url: "polny-zal.ru/app/launch", ms: 5600 },
-  { t: "Кабинеты и бюджет", url: "polny-zal.ru/app/launch", ms: 5000 },
-  { t: "Готово", url: "polny-zal.ru/app", ms: 7500 },
+  { t: "Адрес сайта", url: "Самоход · бизнес", ms: 5200 },
+  { t: "Объявления", url: "Самоход · запуск", ms: 5600 },
+  { t: "Кабинеты и бюджет", url: "Самоход · запуск", ms: 5000 },
+  { t: "Готово", url: "Самоход · кабинет", ms: 7500 },
 ] as const;
 
-export function Window({ children, url = "polny-zal.ru/app", className = "" }: { children: React.ReactNode; url?: string; className?: string }) {
+export function Window({ children, url = "Самоход · кабинет", className = "" }: { children: React.ReactNode; url?: string; className?: string }) {
   return (
     <div className={`min-w-0 rounded-2xl bg-white border border-line shadow-[0_40px_80px_-40px_rgba(29,32,69,0.4)] overflow-hidden ${className}`}>
       <div className="h-9 bg-paper border-b border-line flex items-center gap-1.5 px-3.5">

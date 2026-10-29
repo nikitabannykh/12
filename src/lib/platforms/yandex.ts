@@ -504,7 +504,7 @@ export class YandexDirect implements PlatformClient {
       RetargetingLists: [{
         Type: "RETARGETING",
         Name: name,
-        Description: "Полный зал: были на сайте или странице записи, но не оставили заявку",
+        Description: "Самоход: были на сайте или странице записи, но не оставили заявку",
         Rules: [
           { Operator: "ANY", Arguments: [{ ExternalId: a.visitGoalId, MembershipLifeSpan: days }] },
           { Operator: "NONE", Arguments: [{ ExternalId: a.leadGoalId, MembershipLifeSpan: days }] },

@@ -3,7 +3,7 @@ import { AuthShell } from "@/components/AuthShell";
 import { ResetConfirmForm } from "@/components/AuthForms";
 import { checkResetToken, MSG } from "@/lib/account";
 
-export const metadata = { title: "Новый пароль — Полный зал", referrer: "no-referrer" };
+export const metadata = { title: "Новый пароль — Самоход", referrer: "no-referrer" };
 export const dynamic = "force-dynamic";
 
 export default async function ResetToken({ params }: { params: Promise<{ token: string }> }) {

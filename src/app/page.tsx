@@ -5,7 +5,7 @@ import { HeroBg } from "@/components/HeroBg";
 import { getUser } from "@/lib/auth";
 
 /**
- * Лендинг «Полного зала». Тёмная кинематографичная база (свет, стекло, сетка, зерно),
+ * Лендинг «Самохода». Тёмная кинематографичная база (свет, стекло, сетка, зерно),
  * между тёмными главами — светлые «листы» с бенто и сравнением.
  * Смысл: автоматизируем работу с рекламой, делаем её простой, а бюджет — эффективным.
  */
@@ -61,11 +61,11 @@ function DarkShot() {
     <div className="rounded-[1.6rem] overflow-hidden bg-[#0d0f26] ring-1 ring-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] text-left">
       <div className="h-11 flex items-center gap-2 px-4 border-b border-white/[0.06]">
         <span className="w-2.5 h-2.5 rounded-full bg-white/15" /><span className="w-2.5 h-2.5 rounded-full bg-white/15" /><span className="w-2.5 h-2.5 rounded-full bg-white/15" />
-        <span className="mx-auto text-[11px] text-white/35 rounded-md bg-white/[0.04] px-3 py-1">polny-zal.ru/app</span>
+        <span className="mx-auto text-[11px] text-white/35 rounded-md bg-white/[0.04] px-3 py-1">Самоход · кабинет</span>
       </div>
       <div className="grid md:grid-cols-[13rem_minmax(0,1fr)]">
         <aside className="hidden md:flex flex-col gap-5 p-4 border-r border-white/[0.06]">
-          <span className="flex items-center gap-2 font-semibold"><LogoMark size={22} />Полный зал</span>
+          <span className="flex items-center gap-2 font-semibold"><LogoMark size={22} />Самоход</span>
           <span className="flex items-center gap-2 rounded-xl bg-white/[0.04] ring-1 ring-white/[0.06] px-2.5 py-2 text-sm"><span className="w-6 h-6 rounded-md bg-mark text-ink grid place-items-center text-xs font-bold">С</span>Студия Лак</span>
           <nav className="grid gap-0.5 text-[13.5px]">
             {["Главное", "Реклама", "Статистика", "История", "Настройки"].map((t, i) => <span key={t} className={`rounded-lg px-2.5 py-2 ${i === 0 ? "bg-white/[0.08] text-white" : "text-white/45"}`}>{t}</span>)}
@@ -136,7 +136,7 @@ export default async function Home() {
       {/* Плавающее меню */}
       <div className="sticky top-0 z-40 pt-4 px-4 flex justify-center">
         <nav className="flex items-center gap-1 rounded-full pl-4 pr-1.5 py-1.5 backdrop-blur-xl bg-[#0d0f26]/70 ring-1 ring-white/10 shadow-[0_20px_40px_-20px_rgba(0,0,0,0.6)]">
-          <Link href="/" className="flex items-center gap-2 pr-3 font-semibold tracking-tight"><LogoMark size={22} />Полный зал</Link>
+          <Link href="/" className="flex items-center gap-2 pr-3 font-semibold tracking-tight"><LogoMark size={22} />Самоход</Link>
           <span className="hidden md:flex items-center gap-0.5 text-[13.5px] text-white/60">
             {[["#how", "Как работает"], ["#features", "Возможности"], ["#levers", "Экономия"], ["#compare", "Сравнение"], ["#faq", "Вопросы"]].map(([h, t]) => <a key={h} href={h} className={`px-3 py-1.5 rounded-full hover:bg-white/10 hover:text-white transition-colors duration-300 ${EASE}`}>{t}</a>)}
           </span>
@@ -390,7 +390,7 @@ export default async function Home() {
             ))}
             <Bezel inner="p-7 bg-ink text-white relative overflow-hidden">
               <Glow className="-top-20 -right-20 w-60 h-60 bg-[radial-gradient(closest-side,rgba(255,216,74,0.35),transparent)]" />
-              <div className="relative flex items-center justify-between"><span className="text-lg font-semibold">Полный зал</span><span className="rounded-full bg-mark text-ink text-[11px] font-bold px-2.5 py-0.5">наш вариант</span></div>
+              <div className="relative flex items-center justify-between"><span className="text-lg font-semibold">Самоход</span><span className="rounded-full bg-mark text-ink text-[11px] font-bold px-2.5 py-0.5">наш вариант</span></div>
               <ul className="relative mt-6 grid gap-3.5 text-white/85">{["Запуск за 15 минут", "Оптимизация каждый день", "Бюджет не выходит за лимит", "Объяснение к каждому решению"].map((x) => <li key={x} className="flex gap-3"><Check size={18} strokeWidth={2} className="text-mark shrink-0 mt-0.5" />{x}</li>)}</ul>
             </Bezel>
           </div>
@@ -436,7 +436,7 @@ export default async function Home() {
         </div>
 
         <footer className="relative mx-auto max-w-[72rem] px-4 sm:px-6 py-10 border-t border-white/[0.06] flex flex-wrap gap-x-8 gap-y-4 justify-between items-center text-sm text-white/40">
-          <span className="flex items-center gap-2 text-white/70 font-semibold"><LogoMark size={20} />Полный зал</span>
+          <span className="flex items-center gap-2 text-white/70 font-semibold"><LogoMark size={20} />Самоход</span>
           <span className="max-w-xl">Работаем напрямую через API Яндекс Директа и VK Рекламы. Маркировку рекламы площадки делают автоматически.</span>
           <Link href="/privacy" className="hover:text-white/70 underline underline-offset-4 decoration-white/20">Политика конфиденциальности</Link>
         </footer>

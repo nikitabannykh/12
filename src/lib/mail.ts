@@ -8,7 +8,7 @@ import { appUrl } from "./util";
  *             (спецсимволы в пароле — через encodeURIComponent).
  *             Особое значение json:// — тестовый режим: письма не уходят, а печатаются в лог сервера одной строкой
  *             «[mail:json] {…}» (nodemailer jsonTransport). Удобно для проверки ссылок без почтового сервера.
- *  MAIL_FROM  — отправитель: «Полный зал <robot@домен>». У Яндекса и Mail.ru адрес должен совпадать с логином SMTP.
+ *  MAIL_FROM  — отправитель: «Самоход <robot@домен>». У Яндекса и Mail.ru адрес должен совпадать с логином SMTP.
  *             Пусто → логин из SMTP_URL.
  * Без SMTP_URL письма не отправляются: регистрация работает без подтверждения почты,
  * а восстановление пароля и вход по ссылке недоступны.
@@ -32,11 +32,11 @@ function fromAddress(): string {
   if (from) return from;
   try {
     const login = decodeURIComponent(new URL(process.env.SMTP_URL!.trim()).username);
-    if (login.includes("@")) return `"Полный зал" <${login}>`;
+    if (login.includes("@")) return `"Самоход" <${login}>`;
   } catch {
     /* json:// и прочее */
   }
-  return `"Полный зал" <no-reply@${new URL(appUrl()).hostname}>`;
+  return `"Самоход" <no-reply@${new URL(appUrl()).hostname}>`;
 }
 
 export type Mail = { to: string; subject: string; text: string; html: string };
@@ -59,7 +59,7 @@ function layout(title: string, paragraphs: string[], button?: { href: string; la
     : "";
   const html = `<!doctype html><html><body style="margin:0;background:#f5f4ef;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif">
 <div style="max-width:520px;margin:0 auto;padding:28px 20px">
-<div style="font-weight:800;font-size:18px;color:#1d2045;margin-bottom:18px">Полный зал</div>
+<div style="font-weight:800;font-size:18px;color:#1d2045;margin-bottom:18px">Самоход</div>
 <div style="background:#fff;border-radius:16px;padding:24px;border:1px solid #e7e5dc">
 <h1 style="margin:0 0 14px;font-size:20px;color:#1d2045">${esc(title)}</h1>
 ${paragraphs.map(p).join("\n")}${btn}${after.map(p).join("\n")}
@@ -71,10 +71,10 @@ ${paragraphs.map(p).join("\n")}${btn}${after.map(p).join("\n")}
 export function welcomeMail(to: string, verifyUrl: string): Mail {
   return {
     to,
-    subject: "Добро пожаловать в «Полный зал»",
+    subject: "Добро пожаловать в «Самоход»",
     ...layout(
       "Аккаунт создан",
-      ["Вы зарегистрировались в «Полном зале» с этой почтой. Подтвердите адрес — тогда через него можно будет восстановить пароль."],
+      ["Вы зарегистрировались в «Самоходе» с этой почтой. Подтвердите адрес — тогда через него можно будет восстановить пароль."],
       { href: verifyUrl, label: "Подтвердить почту" },
       ["Если вы не регистрировались, просто не обращайте внимания на это письмо."],
     ),
@@ -84,10 +84,10 @@ export function welcomeMail(to: string, verifyUrl: string): Mail {
 export function resetMail(to: string, url: string): Mail {
   return {
     to,
-    subject: "Восстановление пароля — «Полный зал»",
+    subject: "Восстановление пароля — «Самоход»",
     ...layout(
       "Новый пароль",
-      ["Кто-то (надеемся, вы) попросил сменить пароль для входа в «Полный зал». Ссылка действует 1 час и сработает один раз."],
+      ["Кто-то (надеемся, вы) попросил сменить пароль для входа в «Самоход». Ссылка действует 1 час и сработает один раз."],
       { href: url, label: "Задать новый пароль" },
       ["Если это были не вы — ничего не делайте, пароль останется прежним."],
     ),
@@ -97,10 +97,10 @@ export function resetMail(to: string, url: string): Mail {
 export function magicMail(to: string, url: string): Mail {
   return {
     to,
-    subject: "Ссылка для входа — «Полный зал»",
+    subject: "Ссылка для входа — «Самоход»",
     ...layout(
       "Вход по ссылке",
-      ["Нажмите кнопку, чтобы войти в «Полный зал». Ссылка действует 15 минут и сработает один раз."],
+      ["Нажмите кнопку, чтобы войти в «Самоход». Ссылка действует 15 минут и сработает один раз."],
       { href: url, label: "Войти" },
       ["Если вы не запрашивали вход, просто удалите это письмо."],
     ),
@@ -110,9 +110,9 @@ export function magicMail(to: string, url: string): Mail {
 export function passwordChangedMail(to: string): Mail {
   return {
     to,
-    subject: "Пароль изменён — «Полный зал»",
+    subject: "Пароль изменён — «Самоход»",
     ...layout("Пароль изменён", [
-      "Пароль для входа в «Полный зал» только что изменили. Все остальные устройства вышли из аккаунта.",
+      "Пароль для входа в «Самоход» только что изменили. Все остальные устройства вышли из аккаунта.",
       `Если это были не вы — восстановите пароль: ${appUrl()}/reset`,
     ]),
   };
