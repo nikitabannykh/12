@@ -335,7 +335,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
         <p className="text-sm text-muted mt-4 leading-relaxed">
           Как робот этим пользуется: новые объявления чаще пишет с удачными идеями, но иногда пробует новые — вдруг они ещё лучше.
           Если идея выиграла в одной группе, её проверяют и в других. Слабые объявления выключаются, когда разница уже точно не случайна
-          {weakCount ? ` — сейчас таких ${weakCount}` : ""}.
+          {weakCount ? ` — сейчас ${pl(weakCount, "такое объявление", "таких объявления", "таких объявлений")}` : ""}.
         </p>
       </section>
 

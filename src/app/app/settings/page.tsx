@@ -108,7 +108,7 @@ export default async function Settings() {
       <section id="show" className="card p-5 sm:p-7 scroll-mt-6">
         <h2 className="text-lg font-bold">Где, кому и когда показывать</h2>
         <p className="hint mt-1 mb-5">Регион, пол и возраст, дни и часы показа — для всех кампаний сразу. Что не задано, подбирает робот.</p>
-        <ShowSettingsEditor initial={(b.showSettings ?? {}) as ShowSettings} city={b.city} address={b.address} autoTime={timeTargeting({ ...b, showSettings: {} })?.note ?? null} autoRadiusKm={Math.round(vkRadiusFor(b.city) / 100) / 10} live={b.status === "active" || b.status === "paused"} />
+        <ShowSettingsEditor initial={(b.showSettings ?? {}) as ShowSettings} city={b.city} address={b.address} autoTime={timeTargeting({ ...b, showSettings: {} })?.note ?? null} autoRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null} live={b.status === "active" || b.status === "paused"} />
       </section>
 
       <section id="budget" className="card p-5 sm:p-7 scroll-mt-6">
@@ -124,7 +124,7 @@ export default async function Settings() {
             <li key={a.id} className="py-3 flex flex-wrap items-center gap-3">
               <div className="flex-1 min-w-[12rem]">
                 <div className="font-semibold">{PLATFORM_NAME[a.platform]}</div>
-                <div className="text-sm text-muted">{a.login}</div>
+                {a.login && a.login !== PLATFORM_NAME[a.platform] ? <div className="text-sm text-muted">{a.login}</div> : null}
               </div>
               {a.status === "ok" ? (
                 <span className="pill bg-good-soft text-good"><Check size={13} /> Доступ есть</span>

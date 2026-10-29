@@ -13,6 +13,18 @@ import type { TargetingUpdate } from "../platforms/types";
 type GroupTargeting = { ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; regionIds?: number[]; retargetingId?: string | null; base?: { ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any" } };
 
 /**
+ * Возраст: владелец задал хоть одну границу — вторую берём из ниши, только если она не противоречит первой
+ * («от 50» владельца + «до 45» ниши дали бы пустой диапазон), иначе оставляем открытой. И всегда ageTo ≥ ageFrom.
+ */
+function ownerAges(s: { ageFrom?: number | null; ageTo?: number | null }, base: { ageFrom?: number; ageTo?: number }): { ageFrom?: number; ageTo?: number } {
+  if (s.ageFrom == null && s.ageTo == null) return { ageFrom: base.ageFrom, ageTo: base.ageTo };
+  let ageFrom = s.ageFrom ?? (base.ageFrom != null && s.ageTo != null && base.ageFrom <= s.ageTo ? base.ageFrom : undefined);
+  let ageTo = s.ageTo ?? (base.ageTo != null && s.ageFrom != null && base.ageTo >= s.ageFrom ? base.ageTo : undefined);
+  if (ageFrom != null && ageTo != null && ageTo < ageFrom) [ageFrom, ageTo] = [ageTo, ageFrom];
+  return { ageFrom, ageTo };
+}
+
+/**
  * Применить «Настройки показа» к уже запущенным кампаниям: регион групп, возраст и пол, расписание.
  * Кампании не пересоздаются — статистика и обучение сохраняются. Возраст и пол из аудитории ниши запоминаем
  * в targeting.base, чтобы при возврате к «Подбирает робот» вернуть их.
@@ -44,7 +56,7 @@ export async function applyShowSettings(b: Business): Promise<{ updated: number;
       for (const g of groups) {
         const t = (g.targeting ?? {}) as GroupTargeting;
         const base = t.base ?? { ageFrom: t.ageFrom, ageTo: t.ageTo, sex: t.sex };
-        const eff = { ageFrom: s.ageFrom ?? base.ageFrom, ageTo: s.ageTo ?? base.ageTo, sex: s.sex ?? base.sex };
+        const eff = { ...ownerAges(s, base), sex: s.sex ?? base.sex };
         upd.groups.push({ groupExt: g.externalId!, regionIds, ...eff, retargetingId: t.retargetingId ?? null });
         save.push({ id: g.id, targeting: { ...t, base, ...eff, ...(regionIds.length ? { regionIds } : {}) } });
       }
@@ -54,7 +66,9 @@ export async function applyShowSettings(b: Business): Promise<{ updated: number;
       }
       const w = await client.updateTargeting(camp.externalId!, upd);
       warnings.push(...w.map((x) => `${name}: ${x}`));
-      for (const x of save) await db.update(schema.adGroups).set({ targeting: x.targeting }).where(eq(schema.adGroups.id, x.id));
+      // Группы, которые площадка пропустила («Группа <id>: …»), не отмечаем изменёнными — иначе база и площадка разойдутся
+      const skipped = new Set(groups.filter((g) => w.some((x) => x.startsWith(`Группа ${g.externalId}:`))).map((g) => g.id));
+      for (const x of save) if (!skipped.has(x.id)) await db.update(schema.adGroups).set({ targeting: x.targeting }).where(eq(schema.adGroups.id, x.id));
       updated++;
     } catch (e) {
       warnings.push(`${name}: ${(e as Error).message}`);

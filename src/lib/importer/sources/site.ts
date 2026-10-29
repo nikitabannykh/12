@@ -7,7 +7,7 @@ import type { Found, ImportService } from "../types";
 import { blocks, clean, decodeEntities, htmlToText, jsonLd, ldTypes, links, looseJson, metaTags, microdata, photoCandidates, photoKey, rankPhotos, titleOf } from "../html";
 import {
   addressKey, addressesFromBlocks, advantagesFromBlocks, categoryOf, cityFromAddress, cityFromText, cleanAddress, cleanDescription, isName, cleanName, cleanServiceName,
-  durationIn, finalizeCategories, formatPhone, isColumnHeader, formatPrice, hoursFromSchema, hoursFromSpec, hoursFromText, legalFromText, normalizePrice, offerFromText, phoneInText,
+  durationIn, finalizeCategories, formatPhone, isColumnHeader, formatPrice, hoursFromSchema, hoursFromSpec, hoursFromText, legalFromText, normalizePrice, offerFromText, priceNumber, phoneInText,
   priceOfText, pricesFromBlocks, servicesFromJson, shortNote, stripCity, stripTracking, telegramFrom, uniq, whatsappFrom, type AddressCand,
 } from "../normalize";
 
@@ -61,9 +61,9 @@ export function ldServices(o: Ld): ImportService[] {
     const max = x.highPrice ?? spec?.maxPrice;
     const cur = str(x.priceCurrency ?? spec?.priceCurrency).toUpperCase();
     if (name && min !== undefined && (!cur || cur === "RUB" || cur === "RUR")) {
-      const a = Number(String(min).replace(/[^\d.]/g, ""));
-      const b = max !== undefined ? Number(String(max).replace(/[^\d.]/g, "")) : null;
-      const price = a > 0 ? formatPrice(a, b && b > a ? b : null, Boolean(spec?.minPrice && !spec?.maxPrice)) : normalizePrice(min);
+      const a = priceNumber(min);
+      const b = max !== undefined ? priceNumber(max) : null;
+      const price = a >= 50 && a <= 500000 ? formatPrice(a, b && b > a ? b : null, Boolean(spec?.minPrice && !spec?.maxPrice)) : normalizePrice(min);
       if (price) out.push({ name, price, ...(cat ? { category: cat } : {}) });
     } else if (name && !x.itemListElement && item) {
       out.push({ name, ...(cat ? { category: cat } : {}) });

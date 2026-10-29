@@ -37,7 +37,7 @@ export default async function Landing({ params, searchParams }: { params: Promis
   // Одноразовый токен формы: время открытия страницы (слишком быстрые заявки отклоняются) + nonce, срок 2 часа
   const ts = formToken(b.publicKey);
   // Пришли по рекламе — подписываем utm-метки сразу на сервере (трекер сделает то же самое, но позже)
-  const ft = one(sp.utm_source) ? signFirstTouch(b.publicKey, { source: one(sp.utm_source), campaign: one(sp.utm_campaign), ad: one(sp.utm_content) }) : null;
+  const ft = one(sp.utm_source) ? await signFirstTouch(b, { source: one(sp.utm_source), campaign: one(sp.utm_campaign), ad: one(sp.utm_content) }) : null;
   const n = nicheById(b.niche);
   const photos = (await listPhotos(b.id)).slice(0, 6);
   const vkPixel = await vkPixelCounterId(b.id).catch(() => null);

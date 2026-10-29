@@ -23,6 +23,8 @@ function normalizePhone(v: string): string | null {
   let d = raw.replace(/\D/g, "");
   if (!plus && d.length === 11 && d.startsWith("8")) d = "7" + d.slice(1);
   else if (!plus && d.length === 10 && /^[3489]/.test(d)) d = "7" + d;
+  // «+9001234567» — российский мобильный без семёрки (кода страны «+9…» из 10 цифр с девяткой не бывает)
+  else if (plus && d.length === 10 && d.startsWith("9")) d = "7" + d;
   let national: string;
   if (d.startsWith("7")) {
     // Россия и Казахстан: ровно 11 цифр, код начинается с 3, 4, 6 (Казахстан), 7 (Казахстан), 8 или 9
@@ -87,7 +89,9 @@ export async function POST(req: Request) {
     .limit(1);
   const now = demoCamp ? await demoNow({ businessId: b.id }) : new Date();
 
-  // Тот же телефон за последние сутки — не дублируем заявку и не беспокоим владельца повторно
+  // Тот же телефон за последние сутки — не дублируем заявку и не беспокоим владельца повторно.
+  // Сначала атомарная «защёлка»: две одновременные заявки с одним номером не пройдут проверку ниже обе сразу
+  if (!(await hit(`lead-dup:${b.id}:${digits}`, 1, 120)).ok) return Response.json({ ok: true, duplicate: true });
   const [dup] = await db
     .select({ id: schema.leads.id })
     .from(schema.leads)

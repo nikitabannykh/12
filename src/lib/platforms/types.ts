@@ -128,7 +128,12 @@ export type LaunchResult = {
   complete?: boolean;
 };
 
-export type AdState = { status: "moderation" | "active" | "paused" | "rejected" | "archived"; note?: string };
+export type AdState = {
+  status: "moderation" | "active" | "paused" | "rejected" | "archived";
+  note?: string;
+  /** Директ: объявление — черновик (DRAFT), на модерацию не отправлено (status при этом "moderation") */
+  draft?: boolean;
+};
 
 export type StatRow = {
   campaignExt: string;
@@ -170,6 +175,8 @@ export interface PlatformClient {
   launchCampaign(spec: CampaignSpec, hooks?: LaunchHooks): Promise<LaunchResult>;
   /** Включить созданную launchCampaign кампанию: отправить объявления на модерацию / разблокировать план */
   activateCampaign(campaignExt: string, adExts: string[]): Promise<void>;
+  /** Отправить черновики объявлений на модерацию (Директ). Возвращает предупреждения по объявлениям, которые не ушли */
+  moderateAds?(adExts: string[]): Promise<string[]>;
   /** Создать (или найти созданную раньше) аудиторию ретаргетинга. Возвращает её ID на площадке */
   ensureAudience?(a: AudienceSpec): Promise<string>;
   /** Найти кампанию по имени на площадке (для уборки, когда ID не успели сохранить) */

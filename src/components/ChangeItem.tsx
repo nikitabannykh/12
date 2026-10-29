@@ -7,7 +7,9 @@ export function when(d: Date) {
   const diff = (now - d.getTime()) / 1000;
   if (diff < 60) return "только что";
   if (diff < 3600) return `${Math.floor(diff / 60)} мин назад`;
-  const sameDay = new Date().toDateString() === d.toDateString();
+  // «Сегодня» — по Москве, как и время ниже (сервер живёт в UTC)
+  const mskDay = (x: Date) => x.toLocaleDateString("ru-RU", { timeZone: "Europe/Moscow" });
+  const sameDay = mskDay(new Date()) === mskDay(d);
   const time = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow" });
   if (sameDay) return `сегодня в ${time}`;
   return `${d.toLocaleDateString("ru-RU", { day: "numeric", month: "long", timeZone: "Europe/Moscow" })}, ${time}`;

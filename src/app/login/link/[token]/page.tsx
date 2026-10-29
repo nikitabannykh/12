@@ -8,8 +8,13 @@ export const dynamic = "force-dynamic";
 /** Страница из письма «Вход по ссылке»: вход — по кнопке (POST), чтобы почтовые сканеры не тратили ссылку */
 export default async function MagicLink({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  const raw = decodeURIComponent(token);
-  const checked = await checkMagicToken(raw);
+  let raw = "";
+  try {
+    raw = decodeURIComponent(token);
+  } catch {
+    /* испорченная ссылка — покажем «Ссылка не работает» */
+  }
+  const checked = raw ? await checkMagicToken(raw) : null;
   if (!checked) {
     return (
       <AuthShell title="Ссылка не работает" lead={MSG.linkExpired}>

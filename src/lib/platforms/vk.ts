@@ -651,9 +651,11 @@ export class VkAds implements PlatformClient {
 
       let lastErr: unknown = null;
       const errs: string[] = [];
-      const badPackage = (e: unknown) => /invalid_package/.test(String((e as Error)?.message ?? e));
+      // Полный ответ VK, а не сообщение: в нём поля обрезаны до 400 символов
+      const fullText = (e: unknown) => `${String((e as Error)?.message ?? e)} ${e instanceof PlatformError && e.detail !== undefined ? JSON.stringify(e.detail) : ""}`;
+      const badPackage = (e: unknown) => /invalid_package/.test(fullText(e));
       const allowedObjective = (e: unknown) => {
-        const m = String((e as Error)?.message ?? e).match(/"allowed_values":\["([a-z_]+)"[^\]]*\],"objective"|"objective":\{[^}]*"allowed_values":\["([a-z_]+)"/);
+        const m = fullText(e).match(/"allowed_values":\["([a-z_]+)"[^\]]*\],"objective"|"objective":\{[^}]*"allowed_values":\["([a-z_]+)"/);
         return m ? m[1] || m[2] : null;
       };
       packages: for (const pkg of candidates) {
@@ -772,8 +774,30 @@ export class VkAds implements PlatformClient {
     for (const id of adExts) await this.req("POST", `v2/banners/${id}.json`, { body: { status: active ? "active" : "blocked" } });
   }
 
+  /**
+   * Дневной лимит плана и его групп: группы создаются со своим budget_limit_day, равным лимиту плана (см. launchCampaign),
+   * и без обновления так и оставались бы на старом лимите. Группы без своего лимита не трогаем.
+   * Порядок не знаем (лимит растёт или падает) — неудавшиеся группы пробуем ещё раз после плана.
+   */
   async setBudget(campaignExt: string, p: { channel: Channel; weeklyBudget: number; strategy: Strategy }) {
-    await this.req("POST", `v2/ad_plans/${campaignExt}.json`, { body: { budget_limit_day: vkDailyNet(p.weeklyBudget) } });
+    const daily = vkDailyNet(p.weeklyBudget);
+    const groups = (await this.listAll("v2/ad_groups.json", { _ad_plan_id: campaignExt, fields: "id,status,budget_limit_day" }))
+      .filter((g) => g.status !== "deleted" && Number(g.budget_limit_day) > 0 && Number(g.budget_limit_day) !== daily);
+    const setGroups = async (list: any[]) => {
+      const failed: { g: any; e: unknown }[] = [];
+      for (const g of list) {
+        try {
+          await this.req("POST", `v2/ad_groups/${g.id}.json`, { body: { budget_limit_day: daily } });
+        } catch (e) {
+          failed.push({ g, e });
+        }
+      }
+      return failed;
+    };
+    let failed = await setGroups(groups);
+    await this.req("POST", `v2/ad_plans/${campaignExt}.json`, { body: { budget_limit_day: daily } });
+    if (failed.length) failed = await setGroups(failed.map((f) => f.g));
+    if (failed.length) throw new PlatformError("vk", `Дневной лимит не обновился у ${failed.length} групп: ${(failed[0].e as Error).message}`);
   }
 
   /**
@@ -785,7 +809,13 @@ export class VkAds implements PlatformClient {
     const biz = this.biz;
     for (const g of t.groups) {
       try {
+        // Без текущих таргетингов не обновляем: POST заменил бы их целиком и стёр сегменты/интересы
+        // (группа ретаргетинга начала бы показываться всему городу)
         const cur = await this.req("GET", `v2/ad_groups/${g.groupExt}.json`, { query: { fields: "id,targetings" } }).catch(() => null);
+        if (!cur?.targetings) {
+          warnings.push(`Группа ${g.groupExt}: VK не отдал текущие настройки показа — группу не меняли, сохраните настройки ещё раз позже`);
+          continue;
+        }
         const targetings: Record<string, unknown> = { ...((cur?.targetings ?? {}) as Record<string, unknown>) };
         // Регион не определился — гео не трогаем (иначе [188] = вся Россия и сгоревший бюджет)
         if (!g.retargetingId && biz.localGeo?.locations.length) targetings.geo = { local_geo: biz.localGeo };
@@ -924,10 +954,11 @@ export class VkAds implements PlatformClient {
     // Объявления наших кампаний → статистика по дням
     const banners: { id: string; plan: string }[] = [];
     for (const plan of campaignExts) {
-      const groups = await this.req("GET", "v2/ad_groups.json", { query: { _ad_plan_id: plan, fields: "id", limit: VK_PAGE } });
-      for (const g of groups.items ?? []) {
-        const br = await this.req("GET", "v2/banners.json", { query: { _ad_group_id: g.id, fields: "id", limit: VK_PAGE } });
-        for (const b of br.items ?? []) banners.push({ id: String(b.id), plan });
+      // Все страницы: недосчитанные объявления = недосчитанный расход, и защита бюджета пропустила бы перерасход
+      const groups = await this.listAll("v2/ad_groups.json", { _ad_plan_id: plan, fields: "id" });
+      for (const g of groups) {
+        const br = await this.listAll("v2/banners.json", { _ad_group_id: g.id, fields: "id" });
+        for (const b of br) banners.push({ id: String(b.id), plan });
       }
     }
     if (!banners.length) return [];

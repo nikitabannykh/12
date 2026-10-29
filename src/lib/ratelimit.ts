@@ -96,10 +96,25 @@ const clean = (v: unknown, max = 40) => {
   return s && s.length <= max && /^[\w.\-]+$/.test(s) && !s.includes("{") ? s : null;
 };
 
-export function signFirstTouch(publicKey: string, p: { source?: unknown; campaign?: unknown; ad?: unknown }): string | null {
+/**
+ * Подписывает метки визита. Кампанию и объявление включаем в подпись, только если они есть у этого бизнеса:
+ * эндпоинт трекера открыт всем, и подпись на произвольные id превращалась бы в генератор «настоящих» касаний.
+ */
+export async function signFirstTouch(b: { id: string; publicKey: string }, p: { source?: unknown; campaign?: unknown; ad?: unknown }): Promise<string | null> {
   const s = clean(p.source, 30)?.toLowerCase() ?? null;
   if (!s) return null;
-  return sign({ k: publicKey, s, c: clean(p.campaign), a: clean(p.ad), t: Date.now(), exp: Date.now() + FT_TTL } satisfies FirstTouch);
+  let c = clean(p.campaign);
+  let a = clean(p.ad);
+  const db = await getDb();
+  if (a) {
+    const [ad] = await db.select({ id: schema.ads.id }).from(schema.ads).where(and(eq(schema.ads.businessId, b.id), eq(schema.ads.externalId, a))).limit(1);
+    if (!ad) a = null;
+  }
+  if (c) {
+    const [camp] = await db.select({ id: schema.campaigns.id }).from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), eq(schema.campaigns.externalId, c))).limit(1);
+    if (!camp) c = null;
+  }
+  return sign({ k: b.publicKey, s, c, a, t: Date.now(), exp: Date.now() + FT_TTL } satisfies FirstTouch);
 }
 
 const SOURCES = ["yandex", "vk", "demo"];

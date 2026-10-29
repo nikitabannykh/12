@@ -8,9 +8,14 @@ export const dynamic = "force-dynamic";
 
 export default async function ResetToken({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  const raw = decodeURIComponent(token);
+  let raw = "";
+  try {
+    raw = decodeURIComponent(token);
+  } catch {
+    /* испорченная ссылка — покажем «Ссылка не работает» */
+  }
   // Только проверяем ссылку — гасится она при сохранении пароля
-  const checked = await checkResetToken(raw);
+  const checked = raw ? await checkResetToken(raw) : null;
   if (!checked) {
     return (
       <AuthShell title="Ссылка не работает" lead={MSG.linkExpired}>

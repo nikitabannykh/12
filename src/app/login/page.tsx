@@ -18,7 +18,7 @@ const ERRORS: Record<string, string> = {
   link: "Ссылка устарела или уже использована. Запросите новую.",
 };
 
-export default async function Login({ searchParams }: { searchParams: Promise<{ error?: string; demo?: string; tab?: string }> }) {
+export default async function Login({ searchParams }: { searchParams: Promise<{ error?: string; demo?: string; tab?: string; verified?: string }> }) {
   const configError = secretError();
   if (!configError && (await getUser())) redirect("/app");
   const sp = await searchParams;
@@ -35,6 +35,7 @@ export default async function Login({ searchParams }: { searchParams: Promise<{ 
           <b>Вход временно недоступен.</b> {configError}
         </div>
       ) : null}
+      {sp.verified ? <div role="status" className="mb-5 rounded-xl bg-good-soft text-good px-4 py-3 text-sm leading-relaxed">Почта подтверждена. Войдите с паролем.</div> : null}
       <AuthPanel
         key={tab}
         initialTab={tab}

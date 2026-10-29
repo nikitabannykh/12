@@ -1,12 +1,13 @@
 import { isLaunched, uid } from "@/lib/util";
 import { route, json, fail, needBusiness } from "@/lib/api";
-import { DIRECT_ADS_PER_GROUP, isDirectChannel, savePlan, type LaunchPlan, type PlanAd } from "@/lib/engine/launch";
+import { DIRECT_ADS_PER_GROUP, isDirectChannel, updatePlan, type LaunchPlan, type PlanAd } from "@/lib/engine/launch";
 import { rewriteAd, tidyText, validateAdText } from "@/lib/ai/copy";
 import { formatOf } from "@/lib/channels";
 import { isMedical } from "@/lib/niches";
 
 export const maxDuration = 60;
 const MAX_ADS = 12;
+const bad = (message: string, status = 400) => Object.assign(new Error(message), { status });
 
 /**
  * Новое объявление в группе до запуска: своё (title/text) или вариант от робота с новым подходом.
@@ -46,12 +47,20 @@ export const POST = route(async ({ business, req }) => {
     draft = { angle: r.angle, title: r.title, title2: r.title2 ?? null, text: r.text };
   }
 
-  const pics = g.ads.filter((a) => a.imageId);
-  const pic = pics.length ? pics[g.ads.length % pics.length] : null;
-  const direct = isDirectChannel(ch.channel) && ch.platform !== "vk";
-  const on = g.ads.filter((a) => a.enabled).length;
-  const ad: PlanAd = { id: uid("a_"), ...draft, title2: draft.title2 ?? null, imageId: pic?.imageId ?? null, layout: pic?.layout ?? null, enabled: !direct || on < DIRECT_ADS_PER_GROUP };
-  g.ads.push(ad);
-  await savePlan(business.id, plan);
-  return json({ plan, ad });
+  // Модель могла думать долго — добавляем в свежий план (сохраняется, только если его никто не поменял за это время)
+  const ad: PlanAd = { id: uid("a_"), ...draft, title2: draft.title2 ?? null, imageId: null, layout: null, enabled: true };
+  const saved = await updatePlan(business.id, (fresh) => {
+    const fch = fresh.channels.find((c) => c.groups.some((x) => x.id === body.groupId));
+    const fg = fch?.groups.find((x) => x.id === body.groupId);
+    if (!fch || !fg) throw bad("Группа не найдена");
+    if (fg.ads.length >= MAX_ADS) throw bad(`В группе уже ${MAX_ADS} объявлений — выключите или поправьте лишние`);
+    if (fg.ads.some((a) => a.title === ad.title && a.text === ad.text)) throw bad("Такое объявление в группе уже есть");
+    const pics = fg.ads.filter((a) => a.imageId);
+    const pic = pics.length ? pics[fg.ads.length % pics.length] : null;
+    const direct = isDirectChannel(fch.channel) && fch.platform !== "vk";
+    const on = fg.ads.filter((a) => a.enabled).length;
+    Object.assign(ad, { imageId: pic?.imageId ?? null, layout: pic?.layout ?? null, enabled: !direct || on < DIRECT_ADS_PER_GROUP });
+    fg.ads.push({ ...ad });
+  });
+  return json({ plan: saved, ad });
 });

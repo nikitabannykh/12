@@ -259,4 +259,5 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS current_business_id text;
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS source_links jsonb NOT NULL DEFAULT '[]';
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS show_settings jsonb NOT NULL DEFAULT '{}';
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS landing jsonb NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS rate_limits_reset_at ON rate_limits(reset_at);
 `;

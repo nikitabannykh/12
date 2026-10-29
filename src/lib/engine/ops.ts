@@ -428,13 +428,50 @@ async function sideEffects(root: Change, action: "undo" | "redo", now: Date) {
   }
 }
 
+/** Робот сейчас меняет рекламу этого бизнеса — отмена подождёт (иначе проход со старым бюджетом перезапишет её) */
+export const ROBOT_BUSY = "Робот сейчас работает с рекламой, попробуйте через минуту";
+
 export async function revertChange(businessId: string, changeId: string, actor: Who = "owner") {
+  // Та же блокировка, что у прохода робота (run.ts; импорт динамический — run.ts сам зависит от ops через оптимизатор)
+  const { tryLock, releaseLock, ROBOT_LOCK } = await import("./run");
+  if (!(await tryLock(businessId, ROBOT_LOCK, 60_000))) throw userError(ROBOT_BUSY, 409);
+  try {
+    return await revertChangeLocked(businessId, changeId, actor);
+  } finally {
+    await releaseLock(businessId, ROBOT_LOCK);
+  }
+}
+
+/** Отмена включила бы кампанию или подняла лимит */
+async function raisesSpend(businessId: string, undo: UndoOp[]) {
+  const db = await getDb();
+  for (const op of undo) {
+    if (op.op === "monthlyBudget") {
+      const [b] = await db.select({ m: schema.businesses.monthlyBudget }).from(schema.businesses).where(eq(schema.businesses.id, businessId));
+      if (!b || op.monthlyBudget > b.m) return true;
+      continue;
+    }
+    if (op.op !== "campaignStatus" && op.op !== "campaignBudget") continue;
+    const [c] = await db.select({ status: schema.campaigns.status, weekly: schema.campaigns.weeklyBudget }).from(schema.campaigns).where(eq(schema.campaigns.id, op.campaignId));
+    if (!c) continue;
+    if (op.op === "campaignStatus" && op.status === "active" && c.status !== "active") return true;
+    if (op.op === "campaignBudget" && op.weeklyBudget > c.weekly) return true;
+  }
+  return false;
+}
+
+async function revertChangeLocked(businessId: string, changeId: string, actor: Who) {
   const db = await getDb();
   const all = await db.select().from(schema.changes).where(eq(schema.changes.businessId, businessId));
   const ch = all.find((x) => x.id === changeId);
   if (!ch) throw userError("Изменение не найдено", 404);
   if (ch.revertedAt) throw userError("Это изменение уже отменено", 409);
   if (!ch.undo?.length) throw userError("Это изменение нельзя отменить автоматически");
+  // Вся реклама на паузе: защита бюджета не работает, assertFitsBudget паузу пропускает — включать и поднимать лимиты нельзя
+  const [biz] = await db.select({ status: schema.businesses.status }).from(schema.businesses).where(eq(schema.businesses.id, businessId));
+  if (biz?.status === "paused" && (await raisesSpend(businessId, ch.undo))) {
+    throw userError("Реклама остановлена целиком. Сначала включите её, потом отменяйте решения.", 409);
+  }
 
   const monthly = ch.undo.find((o) => o.op === "monthlyBudget");
   // Смену месячного бюджета отменяем не «старыми лимитами», а пересчётом лимитов под прежний бюджет

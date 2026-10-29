@@ -23,6 +23,7 @@ import type { LaunchPlan, PlanAd, PublishStep } from "@/lib/engine/launch";
 import type { Channel } from "@/lib/platforms/types";
 import { CHANNEL_INFO, formatOf, isRetarget, RETARGET_MIN_AUDIENCE, type AdFormat } from "@/lib/channels";
 import { TypeBadge } from "./CampaignNav";
+import { LIMITS } from "@/lib/ai/limits";
 
 const CH: Record<Channel, { name: string; hint: string }> = {
   search: { name: "Поиск Яндекса", hint: "Тем, кто прямо сейчас ищет услугу" },
@@ -220,7 +221,11 @@ export function LaunchWizard(p: Props) {
         if (status === 200) {
           retries = 0;
           if (data.progress) setProgress(data.progress);
-          if (!data.done) continue;
+          if (!data.done) {
+            // Все каналы созданы, но кампания не включилась — площадке нужно время, повторяем не сразу
+            if (data.progress && data.progress.finished >= data.progress.total) await sleep(3000);
+            continue;
+          }
           const w = data.warnings ?? [];
           if (w.length) toast(`Запустили. Обратите внимание:\n${w.slice(0, 3).join("\n")}`);
           else toast("Реклама запущена и отправлена на модерацию");
@@ -290,7 +295,7 @@ export function LaunchWizard(p: Props) {
     ? { label: "Подготовить объявления", icon: <Sparkles size={18} />, run: prepare, disabled: true, cls: "btn-primary", note: "Сначала подключите рекламный кабинет — Яндекс Директ, VK или демо." }
     : !ready || preparing
       ? { label: phase === "copy" ? "Пишем тексты и подбираем запросы…" : phase === "images" ? "Готовим картинки…" : "Подготовить объявления", icon: preparing ? <Loader2 size={18} className="spin" /> : <Sparkles size={18} />, run: prepare, disabled: preparing, cls: "btn-primary", note: preparing ? "Обычно это занимает до минуты." : "Робот напишет объявления и подберёт запросы — до минуты. Перед запуском вы всё увидите и сможете поправить." }
-      : { label: phase === "publish" ? "Создаём кампании…" : resuming ? "Продолжить запуск" : "Запустить рекламу", icon: phase === "publish" ? <Loader2 size={18} className="spin" /> : <Rocket size={18} />, run: launch, disabled: phase === "publish" || !enabledAds, cls: "btn-mark", note: enabledAds ? `${enabledAds} ${plural(enabledAds, "объявление", "объявления", "объявлений")} в ${enabledChannels} ${plural(enabledChannels, "канале", "каналах", "каналах")} уйдут на модерацию.` : "Включите хотя бы одно объявление." };
+      : { label: phase === "publish" ? "Создаём кампании…" : resuming ? "Продолжить запуск" : "Запустить рекламу", icon: phase === "publish" ? <Loader2 size={18} className="spin" /> : <Rocket size={18} />, run: launch, disabled: phase === "publish" || !enabledAds, cls: "btn-mark", note: enabledAds ? `${enabledAds} ${plural(enabledAds, "объявление", "объявления", "объявлений")} в ${enabledChannels} ${plural(enabledChannels, "канале", "каналах", "каналах")} ${plural(enabledAds, "уйдёт", "уйдут", "уйдут")} на модерацию.` : "Включите хотя бы одно объявление." };
 
   const photoStrip = (
     <div className="grid gap-2">
@@ -489,7 +494,11 @@ export function LaunchWizard(p: Props) {
 
       <Section id="launch" title="Запуск" done={false} active={ready && !preparing} note={ready ? undefined : "После объявлений"}>
         <ul className="grid gap-2 text-[0.95rem]">
-          <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> {enabledAds} {plural(enabledAds, "объявление", "объявления", "объявлений")} в {enabledChannels} {plural(enabledChannels, "канале", "каналах", "каналах")} {enabledAds === 1 ? "уйдёт" : "уйдут"} на модерацию — обычно это занимает несколько часов.</li>
+          {enabledAds ? (
+            <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> {enabledAds} {plural(enabledAds, "объявление", "объявления", "объявлений")} в {enabledChannels} {plural(enabledChannels, "канале", "каналах", "каналах")} {plural(enabledAds, "уйдёт", "уйдут", "уйдут")} на модерацию — обычно это занимает несколько часов.</li>
+          ) : (
+            <li className="flex gap-2 text-muted"><span className="w-[18px] h-[18px] rounded-full border border-line-2 shrink-0 mt-0.5" /> Объявления уйдут на модерацию сразу после запуска — обычно это занимает несколько часов.</li>
+          )}
           {plan?.channels.some((c) => c.enabled && isRetarget(c.channel)) ? (
             <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> Ретаргетинг создадим сразу, но показы он начнёт сам — когда наберётся {RETARGET_MIN_AUDIENCE} человек, которые были на сайте и не записались. До этого деньги на него не тратятся.</li>
           ) : null}
@@ -554,7 +563,8 @@ export function LaunchWizard(p: Props) {
   );
 }
 
-const LIM: Record<AdFormat, { title: number; title2: number; text: number }> = { search: { title: 56, title2: 30, text: 81 }, network: { title: 40, title2: 30, text: 81 }, vk: { title: 40, title2: 30, text: 90 } };
+/** Те же лимиты, что проверяет сервер (validateAdText) */
+const LIM: Record<AdFormat, { title: number; title2: number; text: number }> = LIMITS;
 
 const WISHES = ["Живее и проще", "Понятнее, что за услуга", "Больше про результат для клиента", "Упор на цену", "Короче", "Без канцелярита"];
 

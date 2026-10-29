@@ -54,23 +54,35 @@ export function formatPrice(min: number | null | undefined, max?: number | null,
   return `${from ? "от " : ""}${group(min)} ₽`;
 }
 
-const num = (s: string) => Number(s.replace(/[\s  ]/g, "").replace(",", "."));
+/** Сумма из шаблона с разделителями тысяч («1 500», «1.500») — разделители, включая точку, убираем */
+const grp = (s: string) => Number(s.replace(/[\s  .]/g, ""));
+
+/**
+ * Число из поля цены (schema.org, JSON виджетов): 1500, "1500", "1500,00", "1 500.00", "2.500" → 1500 / 2500.
+ * Копейки отбрасываем; непонятное — NaN.
+ */
+export function priceNumber(raw: unknown): number {
+  if (typeof raw === "number") return raw;
+  const s = String(raw ?? "").replace(/[^\d.,\s  ]/g, "").trim();
+  const m = s.match(/^(\d{1,3}(?:[.,\s  ]\d{3})+|\d+)(?:[.,]\d{1,2})?$/);
+  return m ? Number(m[1].replace(/\D/g, "")) : NaN;
+}
 
 /** «от 1500 руб.», «1 297–2 100 ₽», «2000» → нормальная цена или "" */
 export function normalizePrice(raw: unknown): string {
   if (typeof raw === "number") return raw >= 50 && raw <= 500000 ? formatPrice(raw) : "";
   const s = String(raw ?? "").replace(/\s+/g, " ").trim();
   if (!s) return "";
-  const m = s.match(/(от|from)?\s*(\d{1,3}(?:[   ]\d{3})+|\d+)(?:[.,]\d{1,2})?(?:\s*(?:-|–|—|до)\s*(\d{1,3}(?:[   ]\d{3})+|\d+)(?:[.,]\d{1,2})?)?/i);
+  const m = s.match(/(от|from)?\s*(\d{1,3}(?:[.   ]\d{3})+|\d+)(?:[.,]\d{1,2})?(?:\s*(?:-|–|—|до)\s*(\d{1,3}(?:[.   ]\d{3})+|\d+)(?:[.,]\d{1,2})?)?/i);
   if (!m) return "";
-  const a = num(m[2]);
-  const b = m[3] ? num(m[3]) : null;
+  const a = grp(m[2]);
+  const b = m[3] ? grp(m[3]) : null;
   if (!(a >= 50 && a <= 500000)) return "";
   return formatPrice(a, b && b > a && b <= 1000000 ? b : null, Boolean(m[1]));
 }
 
 const CUR = String.raw`(?:₽|руб(?:\.|лей|ля|ль)?|р\.(?!\w)|rub\b|rur\b)`;
-const AMOUNT = String.raw`\d{1,3}(?:[   ]\d{3})+|\d{2,6}`;
+const AMOUNT = String.raw`\d{1,3}(?:[.   ]\d{3})+|\d{2,6}`;
 const PRICE_RE = new RegExp(String.raw`(?:(от|from)\s*)?(${AMOUNT})(?:[.,]\d{1,2})?(?:\s*(?:-|–|—|до)\s*(${AMOUNT})(?:[.,]\d{1,2})?)?\s*${CUR}`, "i");
 const PRICE_ONLY = new RegExp(String.raw`^(?:цена[:\s]*)?(?:(от|from)\s*)?(${AMOUNT})(?:[.,]\d{1,2})?(?:\s*(?:-|–|—|до)\s*(${AMOUNT}))?\s*${CUR}?\s*$`, "i");
 
@@ -162,8 +174,8 @@ export function servicesFromJson(root: unknown, limit = 15): ImportService[] {
     const min = o.price_min ?? o.priceMin ?? o.minPrice ?? o.min_price ?? o.price ?? o.cost ?? o.amount;
     const max = o.price_max ?? o.priceMax ?? o.maxPrice ?? o.max_price;
     if (nameKey && min !== undefined && min !== null && typeof min !== "object") {
-      const a = typeof min === "number" ? min : num(String(min).replace(/[^\d.,\s]/g, ""));
-      const b = max === undefined || max === null ? null : typeof max === "number" ? max : num(String(max).replace(/[^\d.,\s]/g, ""));
+      const a = priceNumber(min);
+      const b = max === undefined || max === null ? null : priceNumber(max);
       const from = o.floating === true || o.price_from === true || /^от/i.test(String(o.price ?? ""));
       const price = typeof min === "string" && /[–—-]|от/i.test(min) ? normalizePrice(min) : a >= 50 && a <= 500000 ? formatPrice(a, b && b > a ? b : null, from) : "";
       const name = cleanServiceName(String(o[nameKey]));
@@ -417,8 +429,8 @@ function pricesIn(raw: string): { index: number; end: number; min: number; max: 
   // «1400 | 1600 руб.», «+300 | +500 руб.» — валюта одна на несколько сумм (длина строки сохраняется для индексов)
   const line = new RegExp(CUR, "i").test(raw) ? raw.replace(/(\d{1,3}(?:[   ]\d{3})+|\d{2,6})(\s*)([|/])(?=\s*\+?\s*\d)/g, (m, a: string, sp: string, sep: string) => `${a}₽${sp.slice(1)}${sep}`.padEnd(m.length, " ")) : raw;
   for (const m of line.matchAll(PRICE_G)) {
-    const a = num(m[2]);
-    const b = m[3] ? num(m[3]) : null;
+    const a = grp(m[2]);
+    const b = m[3] ? grp(m[3]) : null;
     if (!(a >= 50 && a <= 500000)) continue;
     out.push({ index: m.index ?? 0, end: (m.index ?? 0) + m[0].length, min: a, max: b && b > a ? b : null, from: Boolean(m[1]) });
   }
@@ -448,8 +460,8 @@ function onlyPrices(line: string): ReturnType<typeof pricesIn> | null {
   }
   const only = PRICE_ONLY.exec(line);
   if (only && (only[1] || /\d\s?\d{3}/.test(line))) {
-    const a = num(only[2]);
-    const b = only[3] ? num(only[3]) : null;
+    const a = grp(only[2]);
+    const b = only[3] ? grp(only[3]) : null;
     return a >= 50 && a <= 500000 ? [{ index: 0, end: line.length, min: a, max: b && b > a ? b : null, from: Boolean(only[1]) }] : null;
   }
   return null;

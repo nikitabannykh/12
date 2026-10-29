@@ -37,18 +37,29 @@ export async function releaseLock(businessId: string, kind: string, result?: str
   await db.update(schema.jobs).set(set).where(and(eq(schema.jobs.businessId, businessId), eq(schema.jobs.kind, kind)));
 }
 
+/** Ошибки синхронизации, после которых расход всё равно известен (статистика забрана) */
+const SYNC_NOT_SPEND = ["Аукцион:", "Состояние показа:", "Статусы объявлений:", "Модерация:"];
+
 export const ROBOT_LOCK = "lock";
 const ROBOT_LOCK_MS = 4 * 60e3;
 
 export async function runBusiness(businessId: string, opts: { optimize?: boolean } = {}) {
   const db = await getDb();
-  const [b] = await db.select().from(schema.businesses).where(eq(schema.businesses.id, businessId));
-  if (!b) return { ok: false, log: ["нет бизнеса"] };
-  if (!(await tryLock(b.id, ROBOT_LOCK, ROBOT_LOCK_MS))) return { ok: false, busy: true, log: ["уже выполняется"] };
+  const [found] = await db.select().from(schema.businesses).where(eq(schema.businesses.id, businessId));
+  if (!found) return { ok: false, log: ["нет бизнеса"] };
+  if (!(await tryLock(found.id, ROBOT_LOCK, ROBOT_LOCK_MS))) return { ok: false, busy: true, log: ["уже выполняется"] };
+  // Перечитываем под блокировкой: владелец мог изменить бюджет или статус, пока мы ждали
+  const b = (await db.select().from(schema.businesses).where(eq(schema.businesses.id, businessId)))[0] ?? found;
   const log: string[] = [];
+  const failed: string[] = [];
   try {
     const s = await syncBusiness(b);
     log.push(...s.errors.map((e) => `синхронизация: ${e}`));
+    // Не обновилась статистика кабинета — расход за последние дни может быть не виден защите бюджета.
+    // Если sync отдаёт список упавших кабинетов — берём его; иначе считаем сбоем любую ошибку, кроме шагов, не связанных с расходом.
+    const failedAccounts = (s as { failedAccounts?: unknown[] }).failedAccounts;
+    const syncFailed = Array.isArray(failedAccounts) ? failedAccounts.length > 0 : s.errors.some((e) => !SYNC_NOT_SPEND.some((p) => e.startsWith(p)));
+    if (syncFailed) failed.push("синхронизация");
     // Баланс кабинетов и офлайн-конверсии «Записался» в Метрику — их ошибки не мешают роботу
     const bal = await checkBalances(b).catch((e) => ({ balances: [], errors: [errorText(e)] }));
     log.push(...bal.errors);
@@ -56,15 +67,19 @@ export async function runBusiness(businessId: string, opts: { optimize?: boolean
     if (off.error) log.push(`офлайн-конверсии: ${off.error}`);
     else if (off.uploaded) log.push(`офлайн-конверсии: загружено в Метрику ${off.uploaded}`);
     if (opts.optimize !== false && b.status === "active") {
-      const o = await optimizeBusiness(b);
+      // Осторожный режим: лимиты только снижаем и ничего не включаем, пока статистика не обновится по всем кабинетам
+      const o = await optimizeBusiness(b, { safe: syncFailed });
       log.push(...o.log);
+      failed.push(...o.failed);
     }
   } catch (e) {
+    failed.push("проход");
     log.push(errorText(e));
   } finally {
     await releaseLock(b.id, ROBOT_LOCK, log.join("\n") || "ok");
   }
-  return { ok: true, log };
+  // ok=false, если какой-то шаг не удался (в т. ч. «бюджет») — failed перечисляет какие
+  return { ok: failed.length === 0, failed, log };
 }
 
 /**

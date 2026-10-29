@@ -79,6 +79,11 @@ type Ctx = {
   won: Experiment[];
   /** Свои фото владельца (не ИИ), старые первыми — робот предпочитает их иллюстрациям */
   ownPhotos: string[];
+  /**
+   * Осторожный режим: статистику какого-то кабинета не удалось обновить (например, истёк токен VK), и расход за последние
+   * дни может быть не виден. Защита бюджета тогда только снижает лимиты и ставит на паузу — ничего не поднимает и не включает.
+   */
+  safe: boolean;
 };
 
 function sumAd(cx: Ctx, adId: string, since?: string): S {
@@ -145,7 +150,7 @@ async function load(b: Business): Promise<Ctx> {
   const images = new Map(imgRows.map((r) => [r.id, { layout: r.layout, photoId: r.prompt && r.prompt.startsWith("img_") ? r.prompt : null, width: r.width, height: r.height }]));
   const tvRows = stats.filter((r) => r.tvWeighted > 0).map((r) => ({ campaignId: r.campaignId, day: String(r.day), impressions: r.impressions, tvWeighted: r.tvWeighted }));
   const ownPhotos = await ownerPhotoIds(b.id);
-  return { b, now, campaigns, groups, ads, experiments, statByAd, tvRows, log: [], newAds: 0, protected: prot, ownerStatus, history, firstDay, images, won: [], ownPhotos };
+  return { b, now, campaigns, groups, ads, experiments, statByAd, tvRows, log: [], newAds: 0, protected: prot, ownerStatus, history, firstDay, images, won: [], ownPhotos, safe: false };
 }
 
 /** Объявление сейчас участвует в идущем тесте (поле experimentId после теста не учитываем) */
@@ -476,6 +481,12 @@ async function guardPause(cx: Ctx, list: Campaign[], st: BudgetState, reason: st
 }
 
 async function budgetGuard(cx: Ctx) {
+  // Бюджет перечитываем: владелец мог изменить его, пока шёл проход (cx.b загружен в начале)
+  {
+    const db = await getDb();
+    const [fresh] = await db.select().from(schema.businesses).where(eq(schema.businesses.id, cx.b.id));
+    if (fresh) cx.b = fresh;
+  }
   const budget = cx.b.monthlyBudget;
   const st = await budgetState(cx.b.id, budget, cx.now, cx.campaigns);
   const { newMonth, mark } = await monthTurn(cx, st.month);
@@ -493,7 +504,8 @@ async function budgetGuard(cx: Ctx) {
   const target = Math.min(cap, plannedCap, Math.floor(normalTotal * CATCH_UP));
   const active = cx.campaigns.filter((c) => c.status === "active");
   // Включаем обратно только то, что остановил сам робот из-за бюджета. Паузу владельца не трогаем никогда.
-  let resumable = cx.campaigns.filter((c) => pausedForBudget(c) && c.externalId && cx.ownerStatus.get(c.id) !== "paused");
+  // В осторожном режиме (статистика не обновилась) ничего не включаем
+  let resumable = cx.safe ? [] : cx.campaigns.filter((c) => pausedForBudget(c) && c.externalId && cx.ownerStatus.get(c.id) !== "paused");
   // «Обычные» лимиты. В новом месяце считаем их заново от месячного бюджета с долями каналов (с учётом переносов
   // между каналами), а не от прошлых лимитов — иначе любые поправки накапливались бы из месяца в месяц.
   // Лимит, который владелец недавно менял сам, не поднимаем и не перераспределяем.
@@ -545,6 +557,14 @@ async function budgetGuard(cx: Ctx) {
     } else {
       plan = planLimits(items, wantSum);
     }
+    if (cx.safe) {
+      // Расход мог быть больше, чем видно в статистике: лимиты только снижаем, поднимать будем после успешной синхронизации
+      for (const c of pool) {
+        const w = plan.weekly.get(c.id);
+        if (w !== undefined && w > c.weeklyBudget) plan.weekly.set(c.id, c.weeklyBudget);
+      }
+      cx.log.push("Бюджет: статистика обновилась не по всем кабинетам — лимиты не поднимаем и ничего не включаем");
+    }
     const keep = pool.filter((c) => !plan.dropped.includes(c.id));
     const reserve = reserveFor(sumWeekly(keep, plan), st.daysLeft, st.model);
 
@@ -561,8 +581,15 @@ async function budgetGuard(cx: Ctx) {
         cx.log.push("Бюджет месяца исчерпан — пауза");
       }
     } else {
-      await dropForBudget(cx, active.filter((c) => plan.dropped.includes(c.id)), keep, st, cap);
-      await fitLimits(cx, keep.filter((c) => c.status === "active" || resumable.includes(c)), plan, st, newMonth, normals);
+      try {
+        await dropForBudget(cx, active.filter((c) => plan.dropped.includes(c.id)), keep, st, cap);
+      } catch (e) {
+        // Не смогли отключить канал — всё равно снижаем лимиты остальных; ошибку покажем в итоге шага
+        cx.log.push(`Бюджет: не удалось отключить ${names(active.filter((c) => plan.dropped.includes(c.id)))}: ${errorText(e)}`);
+        await fitLimits(cx, keep.filter((c) => c.status === "active"), plan, st, newMonth, normals, cap);
+        throw e;
+      }
+      await fitLimits(cx, keep.filter((c) => c.status === "active" || resumable.includes(c)), plan, st, newMonth, normals, cap);
       await resumeForBudget(cx, resumable.filter((c) => keep.includes(c)), st);
       // В новом месяце запоминаем «обычные» лимиты и у кампаний, чей лимит не изменился
       if (newMonth) {
@@ -573,7 +600,8 @@ async function budgetGuard(cx: Ctx) {
       }
     }
   }
-  if (mark) await markJob(cx, "budget_month", st.month);
+  // В осторожном режиме новый месяц не отмечаем: обычную раскладку на месяц сделает первый проход со свежей статистикой
+  if (mark && !cx.safe) await markJob(cx, "budget_month", st.month);
 }
 
 /** Кабинеты активных кампаний, где деньги кончились или кончатся в ближайшие дни (по последней проверке баланса) */
@@ -621,7 +649,7 @@ async function dropForBudget(cx: Ctx, drop: Campaign[], keep: Campaign[], st: Bu
 }
 
 /** Поставить лимиты по плану: снизить, чтобы уложиться, поднять под остаток или вернуть обычные в начале месяца */
-async function fitLimits(cx: Ctx, list: Campaign[], plan: Plan, st: BudgetState, newMonth: boolean, normals: Map<string, number>) {
+async function fitLimits(cx: Ctx, list: Campaign[], plan: Plan, st: BudgetState, newMonth: boolean, normals: Map<string, number>, cap: number) {
   const moves = list.map((c) => ({ c, next: plan.weekly.get(c.id)! })).filter(({ c, next }) => next !== undefined && next !== c.weeklyBudget);
   if (!moves.length) return;
   const down = moves.filter((m) => m.next < m.c.weeklyBudget), up = moves.filter((m) => m.next > m.c.weeklyBudget);
@@ -657,10 +685,45 @@ async function fitLimits(cx: Ctx, list: Campaign[], plan: Plan, st: BudgetState,
       : catchUp
         ? `Площадки тратят меньше недельного лимита: с начала месяца потрачено ${rub(st.spent)} из ${rub(cx.b.monthlyBudget)}, осталось ${rub(st.remaining)} на ${days}. Чтобы остаток не пропал, подняли лимиты под него — больше бюджета месяца реклама всё равно не потратит.${after > normalSum ? " 1-го числа лимиты вернутся к обычным." : ""}`
         : `Бюджета снова хватает — вернули лимиты, которые робот снижал раньше.`;
-  await act(
-    { businessId: cx.b.id, actor: "robot", kind: "budget", title, reason: `${why} ${lines}.${learning}`, details: { guard: true, spent: Math.round(st.spent), projected: Math.round(projected) } },
-    moves.map((m) => ({ op: "campaignBudget" as const, campaignId: m.c.id, weeklyBudget: m.next })),
-  );
+  try {
+    await act(
+      { businessId: cx.b.id, actor: "robot", kind: "budget", title, reason: `${why} ${lines}.${learning}`, details: { guard: true, spent: Math.round(st.spent), projected: Math.round(projected) } },
+      moves.map((m) => ({ op: "campaignBudget" as const, campaignId: m.c.id, weeklyBudget: m.next })),
+    );
+  } catch (e) {
+    // Изменения применяются целиком: если не прошло повышение, откатилось и снижение. Сначала пробуем только снизить
+    if (down.length && up.length) {
+      try {
+        await act(
+          { businessId: cx.b.id, actor: "robot", kind: "budget", title: "Снизили недельные лимиты, чтобы уложиться в бюджет", reason: `${why} ${lines}.${learning}`, details: { guard: true, spent: Math.round(st.spent), projected: Math.round(projected) } },
+          down.map((m) => ({ op: "campaignBudget" as const, campaignId: m.c.id, weeklyBudget: m.next })),
+        );
+        for (const m of down) await syncCampaign(m.c, { weeklyBudget: m.next }, cutMeta(m.c, m.next, normals.get(m.c.id) ?? restoreTarget(m.c)));
+        cx.log.push("Снизили недельные лимиты, чтобы уложиться в бюджет");
+        cx.log.push(`Бюджет: поднять лимиты не получилось: ${errorText(e)}`);
+        return;
+      } catch {
+        /* снизить тоже не удалось — ниже остановим то, что не смогли урезать */
+      }
+    }
+    // Площадка не приняла снижение, а лимиты выше безопасной суммы — останавливаем кампании, которые не смогли урезать
+    const active = list.filter((c) => c.status === "active");
+    if (down.length && sumWeekly(active) > cap + 1) {
+      for (const m of down.filter((x) => x.c.status === "active")) {
+        try {
+          await guardPause(
+            cx, [m.c], st,
+            `Чтобы уложиться в бюджет месяца, робот снижал недельный лимит «${CHANNEL_NAME[m.c.channel]}» с ${rub(m.c.weeklyBudget)} до ${rub(m.next)}, но площадка не приняла изменение (${errorText(e)}). ` +
+              `С прежним лимитом реклама могла бы выйти за бюджет, поэтому канал поставили на паузу. Робот включит его сам, когда сможет поставить нужный лимит.`,
+            `Поставили на паузу ${names([m.c])}: не удалось снизить лимит`,
+          );
+        } catch (e2) {
+          cx.log.push(`Бюджет: не удалось ни снизить лимит, ни остановить ${m.c.id}: ${errorText(e2)}`);
+        }
+      }
+    }
+    throw e;
+  }
   for (const m of moves) await syncCampaign(m.c, { weeklyBudget: m.next }, cutMeta(m.c, m.next, normals.get(m.c.id) ?? restoreTarget(m.c)));
   cx.log.push(title);
 }
@@ -687,13 +750,22 @@ async function resumeForBudget(cx: Ctx, list: Campaign[], st: BudgetState) {
 
 async function handleRejected(cx: Ctx) {
   const db = await getDb();
-  for (const ad of cx.ads.filter((a) => a.status === "rejected")) {
+  const rejected = cx.ads.filter((a) => a.status === "rejected");
+  if (!rejected.length) return;
+  // Какие объявления уже заменяли: запись «ad_new» с details.oldAdId (её же использует отмена замены).
+  // По parentAdId проверять нельзя — его ставят и вариантам A/B-тестов, и копиям при переносе группы.
+  const replaced = new Set(
+    (await db.select({ details: schema.changes.details }).from(schema.changes).where(and(eq(schema.changes.businessId, cx.b.id), eq(schema.changes.kind, "ad_new"))))
+      .map((r) => (r.details as { oldAdId?: unknown } | null)?.oldAdId)
+      .filter((x): x is string => typeof x === "string"),
+  );
+  for (const ad of rejected) {
     if (cx.newAds >= MAX_NEW_ADS_PER_RUN) return;
     if (cx.protected.has(ad.id)) continue; // владелец сам правил или возвращал это объявление
     const camp = cx.campaigns.find((c) => c.id === ad.campaignId);
     if (!camp || camp.status !== "active") continue;
     if (cx.groups.find((g) => g.id === ad.adGroupId)?.status !== "active") continue; // аудиторию отключили — не пишем замену
-    if (cx.ads.some((a) => a.parentAdId === ad.id)) continue; // замену уже делали
+    if (replaced.has(ad.id)) continue; // замену уже делали
     try {
       const r = await createVariant(cx, ad, `Модерация отклонила объявление: ${ad.statusNote || "без пояснения"}. Нужно переписать, сохранив смысл.`, { replacing: true });
       if (!r) continue;
@@ -733,7 +805,13 @@ async function resolveExperiments(cx: Ctx) {
       cx.log.push(`Тест ${ex.id}: завершён без решения (решение владельца)`);
       continue;
     }
-    if (control.status !== "active" && control.status !== "moderation") continue;
+    if (control.status !== "active" && control.status !== "moderation") {
+      // Прежнее объявление отклонили, убрали в архив или остановили — сравнивать не с чем, тест не должен висеть вечно
+      const why = control.status === "rejected" ? "не прошло модерацию" : control.status === "archived" ? "убрано в архив" : "остановлено";
+      await endExperiment(cx, ex, "draw", `Прежнее объявление ${adLabel(control)} ${why} — сравнивать не с чем. Новый вариант работает дальше как обычное объявление.`);
+      cx.log.push(`Тест ${ex.id}: завершён — контрольное объявление не работает`);
+      continue;
+    }
     if (variant.status === "rejected" || variant.status === "archived") {
       await endExperiment(cx, ex, "draw", "Новый вариант не прошёл модерацию");
       continue;
@@ -751,6 +829,10 @@ async function resolveExperiments(cx: Ctx) {
     const ageDays = (cx.now.getTime() - new Date(since).getTime()) / 864e5;
     if (sc.impressions < min || sv.impressions < min) {
       if (ageDays < MAX_TEST_DAYS) continue;
+      // Срок вышел, а показов для вывода мало — ничья, ничего не отключаем: решение на таких данных было бы случайным
+      await endExperiment(cx, ex, "draw", `За ${pl(MAX_TEST_DAYS, "день", "дня", "дней")} показов набралось слишком мало, чтобы выбрать лучший вариант. Оба объявления работают дальше.`);
+      cx.log.push(`Тест ${ex.id}: ничья — мало показов`);
+      continue;
     }
     // Если заявок достаточно — сравниваем по заявкам на клик, иначе по CTR
     const byConv = sc.conversions + sv.conversions >= 10;
@@ -765,7 +847,8 @@ async function resolveExperiments(cx: Ctx) {
     else if (ageDays >= MAX_TEST_DAYS) status = "draw";
     if (!status) continue;
 
-    const loser = status === "won" ? control : status === "lost" ? variant : rate(sv) >= rate(sc) ? control : variant;
+    // При равенстве оставляем прежний вариант
+    const loser = status === "won" ? control : status === "lost" ? variant : rate(sv) > rate(sc) ? control : variant;
     const winner = loser.id === control.id ? variant : control;
     const result =
       status === "won"
@@ -1266,9 +1349,14 @@ async function positionGuard(cx: Ctx) {
   await markJob(cx, "positions", did ? "изменено" : "без изменений");
 }
 
-export async function optimizeBusiness(b: Business) {
+/**
+ * safe — статистику какого-то кабинета не удалось обновить: защита бюджета только снижает лимиты и останавливает,
+ * а шаги, которые включают кампании или перекладывают бюджет (ретаргетинг, бюджет каналов), пропускаем.
+ */
+export async function optimizeBusiness(b: Business, opts: { safe?: boolean } = {}) {
   const cx = await load(b);
-  if (!cx.campaigns.length) return { log: ["Нет кампаний"] };
+  cx.safe = !!opts.safe;
+  if (!cx.campaigns.length) return { log: ["Нет кампаний"], failed: [] as string[] };
   const steps: [string, (c: Ctx) => Promise<void>][] = [
     ["бюджет", budgetGuard],
     // После защиты бюджета: включаем ретаргетинг, только если он помещается в остаток месяца
@@ -1287,14 +1375,21 @@ export async function optimizeBusiness(b: Business) {
     ["стратегия", switchStrategy],
     ["бюджет каналов", rebalance],
   ];
+  const UNSAFE = new Set(["ретаргетинг", "бюджет каналов"]);
+  const failed: string[] = [];
   for (const [name, fn] of steps) {
+    if (cx.safe && UNSAFE.has(name)) {
+      cx.log.push(`Шаг «${name}» пропущен: статистика обновилась не по всем кабинетам`);
+      continue;
+    }
     try {
       await fn(cx);
     } catch (e) {
+      failed.push(name);
       cx.log.push(`Шаг «${name}»: ${errorText(e)}`);
     }
   }
-  return { log: cx.log };
+  return { log: cx.log, failed };
 }
 
 /**

@@ -59,15 +59,10 @@ export function sanitizeShow(raw: unknown): ShowSettings {
     const days = (Array.isArray(r.days) ? r.days : []).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6);
     out.days = [...new Set(days)].sort();
     if (!out.days.length) out.days = [0, 1, 2, 3, 4, 5, 6];
-    let from = int(r.hourFrom, 0, 23) ?? 9;
+    const from = int(r.hourFrom, 0, 23) ?? 9;
     let to = int(r.hourTo, 1, 24) ?? 21;
     if (to <= from) to = Math.min(24, from + 1);
-    // Директ требует хотя бы 40 часов показа в рабочие дни — раздвигаем окно, если оно слишком узкое
-    const weekdays = out.days.filter((d) => d < 5).length || 1;
-    while ((to - from) * weekdays < 40 && (from > 0 || to < 24)) {
-      if (to < 24) to++;
-      if ((to - from) * weekdays < 40 && from > 0) from--;
-    }
+    // Часы владельца храним как есть; требование Директа «от 40 часов в будни» учитывает customSchedule
     out.hourFrom = from;
     out.hourTo = to;
   }
@@ -88,14 +83,39 @@ export function sexText(sex?: string | null) {
   return sex === "female" ? "женщины" : sex === "male" ? "мужчины" : sex === "any" ? "мужчины и женщины" : null;
 }
 
-/** Расписание «своё»: строки TimeTargeting Директа и описание. Только 0/100 — почасовые корректировки автостратегия не учитывает */
+const daysTextOf = (days: number[]) =>
+  days.length === 7 ? "каждый день" : days.length === 5 && days.every((d) => d < 5) ? "по будням" : days.length === 2 && days.every((d) => d >= 5) ? "по выходным" : days.map((d) => DAY_SHORT[d]).join(", ");
+
+/**
+ * Расписание «своё»: days/from/to — как выбрал владелец (так идёт ВКонтакте), schedule — строки TimeTargeting Директа.
+ * Директ требует хотя бы 40 часов показа в будни: если выбранного мало (только выходные, один день, узкое окно),
+ * в Директе минимально раздвигаем часы в будни (а без будних дней — добавляем пн–пт) и объясняем это в warning.
+ * Только 0/100 — почасовые корректировки автостратегия не учитывает.
+ */
 export function customSchedule(s: ShowSettings) {
   const days = s.days?.length ? s.days : [0, 1, 2, 3, 4, 5, 6];
-  const from = s.hourFrom ?? 9, to = s.hourTo ?? 21;
-  const schedule = Array.from({ length: 7 }, (_, i) => `${i + 1},${Array.from({ length: 24 }, (_, h) => (days.includes(i) && h >= from && h < to ? 100 : 0)).join(",")}`);
-  const allDays = days.length === 7;
-  const daysText = allDays ? "каждый день" : days.length === 5 && days.every((d) => d < 5) ? "по будням" : days.map((d) => DAY_SHORT[d]).join(", ");
-  return { schedule, days, from, to, note: `Реклама показывается ${daysText} с ${hh(from)} до ${hh(to)}.` };
+  let from = s.hourFrom ?? 9, to = s.hourTo ?? 21;
+  if (to <= from) to = Math.min(24, from + 1);
+  const ownWeekdays = days.filter((d) => d < 5);
+  // Сначала сохраняем часы владельца и добавляем будние дни, потом — если и пн–пт мало — раздвигаем часы
+  const wd = [...ownWeekdays];
+  for (let d = 0; d < 5 && wd.length * (to - from) < 40; d++) if (!wd.includes(d)) wd.push(d);
+  wd.sort();
+  let wf = from, wt = to;
+  while ((wt - wf) * wd.length < 40 && (wf > 0 || wt < 24)) {
+    if (wt < 24) wt++;
+    if ((wt - wf) * wd.length < 40 && wf > 0) wf--;
+  }
+  const window = (i: number): [number, number] | null => (wd.includes(i) ? [wf, wt] : days.includes(i) ? [from, to] : null);
+  const schedule = Array.from({ length: 7 }, (_, i) => {
+    const w = window(i);
+    return `${i + 1},${Array.from({ length: 24 }, (_, h) => (w && h >= w[0] && h < w[1] ? 100 : 0)).join(",")}`;
+  });
+  const widened = wd.length !== ownWeekdays.length || wf !== from || wt !== to;
+  const warning = widened
+    ? `В Яндекс Директе реклама должна идти не меньше 40 часов в будни, поэтому там она будет показываться ${daysTextOf(wd)} с ${hh(wf)} до ${hh(wt)}${days.some((d) => d >= 5) ? ` (в выходные — как вы выбрали)` : ""}. Во ВКонтакте — как вы выбрали.`
+    : null;
+  return { schedule, days, from, to, note: `Реклама показывается ${daysTextOf(days)} с ${hh(from)} до ${hh(to)}.`, warning };
 }
 
 /** Расписание VK (targetings.fulltime): часы показа по дням */
@@ -131,15 +151,18 @@ export function directDemographics(s: ShowSettings): { Gender?: "GENDER_MALE" | 
 }
 
 /** Короткие строки «где / кому / когда» для интерфейса */
-export function showSummary(s: ShowSettings, b: { city: string; address?: string | null }, autoTime: string | null) {
+export function showSummary(s: ShowSettings, b: { city: string; address?: string | null; hasGeo?: boolean }, autoTime: string | null) {
   const extra = s.extraRegions?.length ? ` + ${s.extraRegions.join(", ")}` : "";
+  // Координаты адреса не определили — ВКонтакте показывает по всему городу, радиуса нет
   const where =
-    s.geoMode === "radius" ? `в ${String(s.radiusKm ?? 3).replace(".", ",")} км от ${b.address || "адреса"} (ВКонтакте), ${b.city} (Яндекс)${extra}`
+    b.hasGeo === false && s.geoMode !== "city" ? `${b.city} целиком${extra} (координаты адреса не определили — радиус во ВКонтакте недоступен)`
+    : s.geoMode === "radius" ? `в ${String(s.radiusKm ?? 3).replace(".", ",")} км от ${b.address || "адреса"} (ВКонтакте), ${b.city} (Яндекс)${extra}`
     : s.geoMode === "city" ? `${b.city} целиком${extra}`
     : `${b.city}${extra}; во ВКонтакте — рядом с ${b.address || "вами"}`;
   const age = ageText(s.ageFrom, s.ageTo);
   const sex = sexText(s.sex);
   const who = age || sex ? [sex ? sex[0].toUpperCase() + sex.slice(1) : "Мужчины и женщины", age ?? "любого возраста"].join(", ") : "Подбирает робот по аудиториям вашей ниши";
   const when = s.scheduleMode === "always" ? "Круглосуточно" : s.scheduleMode === "custom" ? customSchedule(s).note.replace(/^Реклама показывается /, "").replace(/\.$/, "") : autoTime ? autoTime.replace(/^Реклама показывается /, "").replace(/\.$/, "") : "Круглосуточно (часы работы не указаны)";
-  return { where, who, when, custom: Boolean(age || sex || s.geoMode !== "auto" && s.geoMode || s.extraRegions?.length || (s.scheduleMode && s.scheduleMode !== "hours")) };
+  const warning = s.scheduleMode === "custom" ? customSchedule(s).warning : null;
+  return { where, who, when, warning, custom: Boolean(age || sex || s.geoMode !== "auto" && s.geoMode || s.extraRegions?.length || (s.scheduleMode && s.scheduleMode !== "hours")) };
 }

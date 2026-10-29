@@ -4,7 +4,8 @@ import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { applyMonthlyBudget } from "@/lib/engine/optimizer";
 import { accountsFor, addableChannels, channelsFor } from "@/lib/engine/launch";
-import { act, applyBudgetTrims, assertFitsBudget } from "@/lib/engine/ops";
+import { act, applyBudgetTrims, assertFitsBudget, ROBOT_BUSY } from "@/lib/engine/ops";
+import { releaseLock, ROBOT_LOCK, tryLock } from "@/lib/engine/run";
 import { pausedForBudget } from "@/lib/engine/budget-guard";
 import { audienceMeta, isRetarget } from "@/lib/channels";
 import { firstChannel, MAX_MONTHLY, minMonthlyFor } from "@/lib/engine/budget";
@@ -38,6 +39,8 @@ export const PATCH = route(async ({ user, business, req }) => {
     return fail(`Минимальный бюджет — ${rub(min)} в месяц: меньше площадка «${CHANNEL_NAME[firstChannel(channels)]}» не принимает. На остальные каналы нужно больше — если не хватит, робот поставит их на паузу.`);
   }
   if (m === business.monthlyBudget) return json({ ok: true });
+  // Под той же блокировкой, что и проход робота: иначе проход со старым бюджетом снова поднимет лимиты
+  if (!(await tryLock(business.id, ROBOT_LOCK, 60_000))) return fail(ROBOT_BUSY, 409);
   try {
     if (!isLaunched(business.status)) {
       const db = await getDb();
@@ -70,6 +73,8 @@ export const PATCH = route(async ({ user, business, req }) => {
         }
         if (aud && aud.state !== "on") continue; // копит аудиторию — включится сам
         if (pausedForBudget(c) || !c.externalId || (c.meta as { pausedAll?: boolean } | null)?.pausedAll) continue;
+        // Канал владелец остановил сам — не включаем (в истории так и написано: «вы остановили сами — не включали»)
+        if ((c.meta as { pausedBy?: string } | null)?.pausedBy === "owner") continue;
         try {
           const trims = await assertFitsBudget(business.id, [{ campaignId: c.id, status: "active" }], "resume");
           await applyBudgetTrims(business.id, trims, "Вы увеличили бюджет");
@@ -88,5 +93,7 @@ export const PATCH = route(async ({ user, business, req }) => {
   } catch (e) {
     console.error(e);
     return fail(safeError(e), 500);
+  } finally {
+    await releaseLock(business.id, ROBOT_LOCK);
   }
 });

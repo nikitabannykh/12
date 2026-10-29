@@ -436,7 +436,7 @@ export function timeTargeting(b: Pick<ExtrasBiz, "hours" | "city"> & { showSetti
   if (s.scheduleMode === "always") return null;
   if (s.scheduleMode === "custom") {
     const c = customSchedule(s);
-    return { schedule: c.schedule, timeZone: timeZoneFor(b.city), considerWorkingWeekends: false, note: c.note };
+    return { schedule: c.schedule, timeZone: timeZoneFor(b.city), considerWorkingWeekends: false, note: c.warning ?? c.note };
   }
   const week = parseWeekHours(b.hours);
   if (!week) return null;

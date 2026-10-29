@@ -71,10 +71,14 @@ async function leadShiftMs(b: Business) {
   return Math.abs(shift) < 3600e3 ? 0 : Math.round(shift / 864e5) * 864e5;
 }
 
+const MSK_MS = 3 * 3600e3;
+
 /** Все расходы и обращения по дням с разбивкой «реклама / другие» и по каналам. Каждая заявка — один раз. */
 async function loadDays(b: Business, fromDay: string, toDay: string) {
   const db = await getDb();
-  const shift = await leadShiftMs(b);
+  // Дни — московские, как в статистике площадок и в sync (заявки подмешиваются в conversions по дню МСК):
+  // иначе заявка в 00:00–03:00 МСК попадала в другой день и считалась дважды
+  const shift = (await leadShiftMs(b)) + MSK_MS;
   const camps = await db.select().from(schema.campaigns).where(eq(schema.campaigns.businessId, b.id));
   const ads = await db.select({ id: schema.ads.id, campaignId: schema.ads.campaignId, externalId: schema.ads.externalId }).from(schema.ads).where(eq(schema.ads.businessId, b.id));
   const rows = await db.select().from(schema.statsDaily).where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, fromDay), lte(schema.statsDaily.day, toDay)));

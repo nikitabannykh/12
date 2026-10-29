@@ -3,8 +3,27 @@ import { and, eq, gte, inArray, isNull, or, sql, ne } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { Business, Campaign } from "../db/schema";
 import { clientFor } from "../platforms";
+import { PlatformError } from "../platforms/types";
 import { demoNow } from "../platforms/demo";
 import { addDays, errorText, isoDay, uid } from "../util";
+
+/**
+ * Доступ к кабинету потерян (токен отозван/истёк, нет прав), а не временный сбой: по кодам площадок, а не по тексту —
+ * иначе «сервер недоступен» превращал кабинет в «ошибку доступа».
+ * Директ: 53 — ошибка авторизации, 54 — нет прав, 58 — регистрация не закончена, 513 — логин не подключён к Директу
+ * (52 — сервер авторизации временно недоступен — не наш случай). VK: 401/403 после обновления токена.
+ */
+const YANDEX_AUTH_CODES = new Set([53, 54, 58, 513]);
+function isAuthError(e: unknown) {
+  if (e instanceof PlatformError) {
+    const code = Number((e.detail as { error_code?: unknown } | null | undefined)?.error_code);
+    if (e.platform === "yandex" && YANDEX_AUTH_CODES.has(code)) return true;
+    if (e.platform === "vk" && (e.httpStatus === 401 || e.httpStatus === 403)) return true;
+  }
+  const msg = errorText(e);
+  // Без «доступ»: оно совпадает с «недоступен»
+  return /invalid[_ ]token|не выдала доступ|доступ\S* к [^.]* истёк|подключите [^.]*заново|(^|[^а-яё])токен/i.test(msg);
+}
 
 /**
  * Забираем статистику и статусы модерации со всех площадок.
@@ -16,26 +35,49 @@ export async function syncBusiness(b: Business) {
   const db = await getDb();
   const camps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused", "error", "creating", "ready"])));
   const errors: string[] = [];
+  // Кабинеты, где расход мог идти, а статистику получить не удалось: робот не должен поднимать лимиты «вслепую»
+  const failedAccounts: string[] = [];
   const byAccount = new Map<string, Campaign[]>();
   for (const c of camps) if (c.externalId) byAccount.set(c.accountId, [...(byAccount.get(c.accountId) ?? []), c]);
 
   for (const [accountId, list] of byAccount) {
     const [acc] = await db.select().from(schema.adAccounts).where(eq(schema.adAccounts.id, accountId));
     if (!acc) continue;
+    let client: Awaited<ReturnType<typeof clientFor>>;
     try {
-      const client = await clientFor(acc);
-      const now = acc.platform === "demo" ? await demoNow({ accountId: acc.id }) : new Date();
-      // Площадки считают сутки по Москве: в 00:00–03:00 MSK UTC-дата ещё вчерашняя, и сегодняшний расход терялся
-      const to = acc.platform === "demo" ? isoDay(now) : isoDay(new Date(now.getTime() + 3 * 3600e3));
-      const from = isoDay(addDays(now, -29));
-      const ads = await db.select().from(schema.ads).where(inArray(schema.ads.campaignId, list.map((c) => c.id)));
-      const adByExt = new Map(ads.filter((a) => a.externalId).map((a) => [a.externalId!, a]));
-      const campByExt = new Map(list.map((c) => [c.externalId!, c]));
+      client = await clientFor(acc);
+    } catch (e) {
+      errors.push(errorText(e));
+      if (list.some((c) => c.status === "active")) failedAccounts.push(accountId);
+      if (isAuthError(e)) await db.update(schema.adAccounts).set({ status: "error", statusNote: errorText(e) }).where(eq(schema.adAccounts.id, accountId));
+      continue;
+    }
+    // Шаги независимы: сбой аукциона или доставки не должен оставлять без статистики и статусов модерации
+    let authErr: string | null = null;
+    let reached = false; // статистика с площадки пришла — доступ точно есть
+    const step = async (label: string, fn: () => Promise<void>) => {
+      try {
+        await fn();
+        if (label === "Статистика") reached = true;
+      } catch (e) {
+        if (label === "Статистика" && list.some((c) => c.status === "active")) failedAccounts.push(accountId);
+        const msg = errorText(e);
+        errors.push(`${label}: ${msg}`);
+        if (isAuthError(e)) authErr ??= msg;
+      }
+    };
+    const now = acc.platform === "demo" ? await demoNow({ accountId: acc.id }) : new Date();
+    // Площадки считают сутки по Москве: в 00:00–03:00 MSK UTC-дата ещё вчерашняя, и сегодняшний расход терялся
+    const to = acc.platform === "demo" ? isoDay(now) : isoDay(new Date(now.getTime() + 3 * 3600e3));
+    const from = isoDay(addDays(now, -29));
+    const ads = await db.select().from(schema.ads).where(inArray(schema.ads.campaignId, list.map((c) => c.id)));
+    const adByExt = new Map(ads.filter((a) => a.externalId).map((a) => [a.externalId!, a]));
+    const campByExt = new Map(list.map((c) => [c.externalId!, c]));
 
-      // Статистика
+    // Статистика
+    await step("Статистика", async () => {
       const goalIds = Object.values(b.goalIds ?? {}).length ? [b.goalIds.lead].filter(Boolean) as number[] : [];
       const rows = await client.getStats(list.map((c) => c.externalId!), from, to, goalIds);
-
       // Обращения с нашего счётчика по объявлениям (utm_content = ID объявления на площадке).
       // День — московский, как в статистике площадок
       const mskDay = sql<string>`to_char(${schema.leads.createdAt} AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD')`;
@@ -73,68 +115,79 @@ export async function syncBusiness(b: Business) {
             set: { impressions: v.impressions, clicks: v.clicks, cost: v.cost, conversions, tvWeighted: v.tvWeighted, posWeighted: v.posWeighted },
           });
       }
+    });
 
-      // Аукцион на поиске: сколько стоит каждое место в выдаче (раз в сутки)
-      if (client.getAuction) {
+    // Аукцион на поиске: сколько стоит каждое место в выдаче (раз в сутки)
+    if (client.getAuction) {
+      const getAuction = client.getAuction.bind(client);
+      await step("Аукцион", async () => {
         const groups = await db.select().from(schema.adGroups).where(inArray(schema.adGroups.campaignId, list.map((c) => c.id)));
         for (const camp of list.filter((c) => c.channel === "search" && c.status === "active")) {
           const prev = (camp.meta as any)?.auction?.at as string | undefined;
           if (prev && Date.now() - new Date(prev).getTime() < 20 * 3600_000 && acc.platform !== "demo") continue;
           try {
-            const rows = await client.getAuction(camp.externalId!);
+            const rows = await getAuction(camp.externalId!);
             const mapped = rows
               .map((r) => ({ groupId: groups.find((g) => g.externalId === r.groupExt)?.id ?? null, keywords: r.keywords, tiers: r.tiers }))
               .filter((r) => r.groupId);
             await db.update(schema.campaigns).set({ meta: { ...(camp.meta ?? {}), auction: { at: new Date().toISOString(), groups: mapped } } }).where(eq(schema.campaigns.id, camp.id));
           } catch (e) {
             errors.push(`Аукцион: ${errorText(e)}`);
+            if (isAuthError(e)) authErr ??= errorText(e);
           }
         }
-      }
-
-      // Идёт ли показ на самом деле: включённая кампания может стоять (нет денег, модерация, лимит)
-      if (client.getCampaignDelivery) {
-        const active = list.filter((c) => c.status === "active" && c.externalId);
-        if (active.length) {
-          const d = await client.getCampaignDelivery(active.map((c) => c.externalId!)).catch(() => ({} as Record<string, { ok: boolean; code?: string; note?: string }>));
-          for (const c of active) {
-            const x = d[c.externalId!];
-            if (!x) continue;
-            const prev = (c.meta as { delivery?: { ok: boolean; note?: string } } | null)?.delivery;
-            if (prev?.ok === x.ok && prev?.note === x.note) continue;
-            const [fresh] = await db.select({ meta: schema.campaigns.meta }).from(schema.campaigns).where(eq(schema.campaigns.id, c.id));
-            await db.update(schema.campaigns).set({ meta: { ...(fresh?.meta ?? {}), delivery: { ...x, at: new Date().toISOString() } } }).where(eq(schema.campaigns.id, c.id));
-          }
-        }
-      }
-
-      // Статусы модерации
-      const live = ads.filter((a) => a.externalId && !["archived", "error"].includes(a.status));
-      if (live.length) {
-        const states = await client.getAdStates(live.map((a) => a.externalId!));
-        for (const a of live) {
-          const s = states[a.externalId!];
-          if (!s) continue;
-          // Площадка — источник правды: «paused» она отдаёт только для объявлений, остановленных вручную или роботом
-          // (Директ: State SUSPENDED, VK: blocked). Если остановленное у нас объявление площадка показывает как активное,
-          // значит его включили в кабинете — переводим в active, иначе оно навсегда выпадает из оптимизации.
-          let next = s.status as string;
-          if (s.status === "moderation" && a.status === "paused") next = "paused";
-          if (next !== a.status || (s.note ?? null) !== a.statusNote) {
-            await db.update(schema.ads).set({ status: next, statusNote: s.note ?? null }).where(eq(schema.ads.id, a.id));
-          }
-        }
-      }
-      if (acc.status !== "ok") await db.update(schema.adAccounts).set({ status: "ok", statusNote: null }).where(eq(schema.adAccounts.id, acc.id));
-    } catch (e) {
-      const msg = errorText(e);
-      errors.push(msg);
-      if (/токен|token|доступ|401|авториз/i.test(msg)) {
-        await db.update(schema.adAccounts).set({ status: "error", statusNote: msg }).where(eq(schema.adAccounts.id, accountId));
-      }
+      });
     }
+
+    // Идёт ли показ на самом деле: включённая кампания может стоять (нет денег, модерация, лимит)
+    if (client.getCampaignDelivery) {
+      const getDelivery = client.getCampaignDelivery.bind(client);
+      await step("Состояние показа", async () => {
+        const active = list.filter((c) => c.status === "active" && c.externalId);
+        if (!active.length) return;
+        const d = await getDelivery(active.map((c) => c.externalId!));
+        for (const c of active) {
+          const x = d[c.externalId!];
+          if (!x) continue;
+          const prev = (c.meta as { delivery?: { ok: boolean; note?: string } } | null)?.delivery;
+          if (prev?.ok === x.ok && prev?.note === x.note) continue;
+          const [fresh] = await db.select({ meta: schema.campaigns.meta }).from(schema.campaigns).where(eq(schema.campaigns.id, c.id));
+          await db.update(schema.campaigns).set({ meta: { ...(fresh?.meta ?? {}), delivery: { ...x, at: new Date().toISOString() } } }).where(eq(schema.campaigns.id, c.id));
+        }
+      });
+    }
+
+    // Статусы модерации
+    await step("Статусы объявлений", async () => {
+      const live = ads.filter((a) => a.externalId && !["archived", "error"].includes(a.status));
+      if (!live.length) return;
+      const states = await client.getAdStates(live.map((a) => a.externalId!));
+      const drafts: string[] = [];
+      for (const a of live) {
+        const s = states[a.externalId!];
+        if (!s) continue;
+        // Черновик (Директ) в работающей кампании: отправка на модерацию не прошла — отправляем снова.
+        // В создающихся кампаниях черновики — норма: их отправит activateCampaign в конце запуска
+        const camp = list.find((c) => c.id === a.campaignId);
+        if (s.draft && camp?.status === "active" && a.status !== "paused") drafts.push(a.externalId!);
+        // Площадка — источник правды: «paused» она отдаёт только для объявлений, остановленных вручную или роботом
+        // (Директ: State SUSPENDED, VK: blocked). Если остановленное у нас объявление площадка показывает как активное,
+        // значит его включили в кабинете — переводим в active, иначе оно навсегда выпадает из оптимизации.
+        let next = s.status as string;
+        if (s.status === "moderation" && a.status === "paused") next = "paused";
+        if (next !== a.status || (s.note ?? null) !== a.statusNote) {
+          await db.update(schema.ads).set({ status: next, statusNote: s.note ?? null }).where(eq(schema.ads.id, a.id));
+        }
+      }
+      if (drafts.length && client.moderateAds) {
+        for (const w of await client.moderateAds(drafts)) errors.push(`Модерация: ${w}`);
+      }
+    });
+
+    if (authErr) await db.update(schema.adAccounts).set({ status: "error", statusNote: authErr }).where(eq(schema.adAccounts.id, accountId));
+    else if (reached && acc.status !== "ok") await db.update(schema.adAccounts).set({ status: "ok", statusNote: null }).where(eq(schema.adAccounts.id, acc.id));
   }
-  return { errors };
+  return { errors, failedAccounts };
 }
 
 /**

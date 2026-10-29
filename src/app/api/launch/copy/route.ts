@@ -1,19 +1,22 @@
 import { isLaunched } from "@/lib/util";
 import { route, json, fail, needBusiness } from "@/lib/api";
 import { collectGarbageImages } from "@/lib/engine/images";
-import { accountsFor, prepareCopy, savePlan, type LaunchPlan } from "@/lib/engine/launch";
+import { accountsFor, prepareCopy, replacePlan, type LaunchPlan } from "@/lib/engine/launch";
 
 export const maxDuration = 60;
 
 export const POST = route(async ({ user, business }) => {
+  const started = Date.now();
   needBusiness(business);
   if (isLaunched(business.status)) return fail("Реклама уже запущена");
   if ((business.launchPlan as LaunchPlan | null)?.launch) return fail("Запуск уже начат — дождитесь окончания или продолжите его", 409);
-  // Старый черновик сейчас заменим — его картинки больше не нужны
+  const accounts = await accountsFor(user.id);
+  // Модели — не дольше, чем позволяет лимит функции (60 с): не успела — шаблонные объявления
+  const plan = await prepareCopy(business, accounts, { deadline: started + 45_000 });
+  // Сохраняем, только если запуск за это время не начался (иначе он потерял бы свой ход)
+  await replacePlan(business.id, plan);
+  // Старый черновик заменён — его картинки больше не нужны. Чистим после сохранения: упади оно — старые картинки целы
   const gc = await collectGarbageImages({ ignorePlanOf: business.id, minAgeMin: 15 }).catch((e) => String(e));
   console.log("image gc", JSON.stringify(gc));
-  const accounts = await accountsFor(user.id);
-  const plan = await prepareCopy(business, accounts);
-  await savePlan(business.id, plan);
   return json({ plan });
 });

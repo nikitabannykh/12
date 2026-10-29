@@ -26,7 +26,8 @@ const API = () => process.env.YANDEX_DIRECT_API_URL || `${host()}/json/v501`;
 const REPORTS = () => process.env.YANDEX_DIRECT_REPORTS_URL || `${host()}/json/v5/reports`;
 
 const MICRO = 1_000_000;
-const micros = (rub: number) => Math.round(rub) * MICRO;
+// Деньги в API — микроединицы, кратные копейке (10 000): 0,4 ₽ → 400 000, а не 0
+const micros = (rub: number) => Math.round(rub * 100) * (MICRO / 100);
 // Минимальный недельный бюджет автостратегии в Директе — 300 ₽
 export const DIRECT_MIN_WEEKLY = 300;
 
@@ -142,6 +143,16 @@ function withAdUtm(href: string, adHref: string) {
 }
 
 type DirectItemResult = { Id?: number; AdImageHash?: string; Errors?: { Code: number; Message: string; Details?: string }[]; Warnings?: { Code: number; Message: string; Details?: string }[] };
+
+/**
+ * ads.moderate: объявление уже не черновик (отправлено раньше, идёт или прошло модерацию) — не ошибка.
+ * Директ отвечает кодом 8300 «Неверный статус объекта»; текст проверяем строго, без любого упоминания «статуса».
+ */
+const notDraft = (e: { Code: number; Message: string; Details?: string }) =>
+  e.Code === 8300 || /DRAFT|черновик|(неверн|недопустим)\S*\s+статус|invalid\s+(object\s+)?status/i.test(`${e.Message} ${e.Details ?? ""}`);
+
+/** Ошибка API Директа (json.error) — запрос отклонён целиком; иначе транспорт (сеть, таймаут, не-JSON) и исход неизвестен */
+const isApiError = (e: unknown) => e instanceof PlatformError && !!e.detail && typeof e.detail === "object" && "error_code" in (e.detail as object);
 
 export class YandexDirect implements PlatformClient {
   platform = "yandex" as const;
@@ -265,8 +276,11 @@ export class YandexDirect implements PlatformClient {
               Ads: built.map(({ b }) => ({ AdGroupId: Number(groupExt), ResponsiveAd: { ...b.ad, ...Object.fromEntries(b.optional.map(([k, , v]) => [k, v])) } })),
             });
             batch = (res.AddResults ?? []) as DirectItemResult[];
-          } catch {
-            batch = null; // запрос отклонён целиком — пробуем по одному
+          } catch (e) {
+            // Директ отклонил запрос целиком — пробуем по одному. Сбой транспорта: пачка могла создаться —
+            // сверяемся с ads.get по группе, иначе повтор создал бы дубли
+            if (isApiError(e)) batch = null;
+            else batch = await this.findCreated(groupExt, built.map(({ ad }) => ad), new Set(Object.values(known))).catch(() => { throw e; });
           }
         }
         for (const [i, { ad, b }] of built.entries()) {
@@ -295,16 +309,49 @@ export class YandexDirect implements PlatformClient {
     return out;
   }
 
-  /** Включение после запуска: черновики объявлений — на модерацию (до 10 000 ID в вызове ads.moderate) */
-  async activateCampaign(_campaignExt: string, adExts: string[]) {
-    for (let i = 0; i < adExts.length; i += 10_000) {
-      const res = await this.call("ads", "moderate", { SelectionCriteria: { Ids: adExts.slice(i, i + 10_000).map(Number) } });
-      // Объявление уже не черновик (отправлено прошлой попыткой) — не ошибка
-      const bad = ((res?.ModerateResults ?? []) as DirectItemResult[]).filter((r) => r.Errors?.length && !/статус|status|DRAFT|черновик/i.test(r.Errors[0].Message + (r.Errors[0].Details ?? "")));
-      if (bad.length && bad.length === Math.min(10_000, adExts.length - i)) {
-        throw new PlatformError("yandex", `Отправка на модерацию: ${bad[0].Errors![0].Message}`, bad[0].Errors);
-      }
+  /**
+   * Сбой транспорта при пачке ads.add: какие из объявлений всё-таки создались. Сопоставляем по основному заголовку
+   * среди объявлений группы, которых мы ещё не знаем. Результат — в формате AddResults (нет совпадения — пустой элемент).
+   */
+  private async findCreated(groupExt: string, ads: AdSpec[], knownIds: Set<string>): Promise<DirectItemResult[]> {
+    const res = await this.call("ads", "get", { SelectionCriteria: { AdGroupIds: [Number(groupExt)] }, FieldNames: ["Id"], ResponsiveAdFieldNames: ["Titles"] });
+    const pool = ((res?.Ads ?? []) as any[])
+      .filter((a) => !knownIds.has(String(a.Id)))
+      .map((a) => ({ id: Number(a.Id), title: String((a.ResponsiveAd?.Titles?.Items ?? a.ResponsiveAd?.Titles ?? [])[0] ?? "") }));
+    return ads.map((ad) => {
+      const i = pool.findIndex((x) => x.title === ad.title.trim());
+      return i < 0 ? {} : { Id: pool.splice(i, 1)[0].id };
+    });
+  }
+
+  /** ads.moderate (до 10 000 ID в вызове): результаты по объявлениям; «уже не черновик» — не ошибка */
+  private async moderate(ids: number[]): Promise<{ bad: DirectItemResult[]; warnings: string[] }> {
+    const bad: DirectItemResult[] = [];
+    for (let i = 0; i < ids.length; i += 10_000) {
+      const chunk = ids.slice(i, i + 10_000);
+      const res = await this.call("ads", "moderate", { SelectionCriteria: { Ids: chunk } });
+      ((res?.ModerateResults ?? []) as DirectItemResult[]).forEach((r, k) => {
+        if (r.Errors?.length && !notDraft(r.Errors[0])) bad.push({ ...r, Id: r.Id ?? chunk[k] });
+      });
     }
+    const warnings = bad.map((r) => `Объявление ${r.Id} не ушло на модерацию: ${r.Errors![0].Message}${r.Errors![0].Details ? ` — ${r.Errors![0].Details}` : ""}`);
+    return { bad, warnings };
+  }
+
+  /** Черновики — на модерацию (sync: объявление осталось DRAFT, например прошлая отправка не прошла) */
+  async moderateAds(adExts: string[]): Promise<string[]> {
+    if (!adExts.length) return [];
+    return (await this.moderate(adExts.map(Number))).warnings;
+  }
+
+  /** Включение после запуска: черновики объявлений — на модерацию */
+  async activateCampaign(_campaignExt: string, adExts: string[]) {
+    const { bad, warnings } = await this.moderate(adExts.map(Number));
+    if (bad.length && bad.length === adExts.length) {
+      throw new PlatformError("yandex", `Отправка на модерацию: ${bad[0].Errors![0].Message}`, bad[0].Errors);
+    }
+    // Часть не ушла — оставшиеся черновиками sync отправит повторно
+    for (const w of warnings) console.warn(`[yandex] ${w}`);
   }
 
   /** Удаляем недосозданную кампанию; если Директ не даёт (уже были показы) — останавливаем */
@@ -715,7 +762,7 @@ export class YandexDirect implements PlatformClient {
     const businessId = await this.linkableBusiness(ctx.orgId, warnings);
     const b = await this.buildResponsiveAd(ad, warnings, businessId);
     const adExt = await this.addBuilt(groupExt, ad, b, warnings);
-    if (moderate) await this.call("ads", "moderate", { SelectionCriteria: { Ids: [Number(adExt)] } });
+    if (moderate) warnings.push(...(await this.moderate([Number(adExt)])).warnings);
     return { adExt, imageRef: b.imageRef };
   }
 
@@ -796,7 +843,7 @@ export class YandexDirect implements PlatformClient {
         const local: string[] = [];
         try { this.items(res.UpdateResults, "Ссылка объявления", local); } catch (e) { warnings.push((e as Error).message); }
         warnings.push(...local);
-        await this.call("ads", "moderate", { SelectionCriteria: { Ids: ids } }).catch(() => null);
+        warnings.push(...(await this.moderate(ids).catch((e) => ({ warnings: [`Модерация: ${(e as Error).message}`] }))).warnings);
       } catch (e) {
         warnings.push((e as Error).message);
       }
@@ -818,7 +865,8 @@ export class YandexDirect implements PlatformClient {
     const r = responsiveTexts({ title: t.title, title2: t.title2, text: t.text, titles, texts });
     const res = await this.call("ads", "update", { Ads: [{ Id: Number(adExt), ResponsiveAd: { Titles: r.titles, Texts: r.texts } }] });
     this.items(res.UpdateResults, "Текст объявления");
-    await this.call("ads", "moderate", { SelectionCriteria: { Ids: [Number(adExt)] } });
+    // Текст уже изменён — ошибку отправки не бросаем (черновик sync отправит повторно), но и не глотаем молча
+    for (const w of (await this.moderate([Number(adExt)])).warnings) console.warn(`[yandex] ${w}`);
   }
 
   /** Реальное состояние кампаний: State ON — показывается; иначе причина из StatusClarification (деньги, модерация) */
@@ -853,7 +901,13 @@ export class YandexDirect implements PlatformClient {
         if (a.State === "ARCHIVED") status = "archived";
         else if (a.Status === "REJECTED") status = "rejected";
         else if (a.State === "SUSPENDED") status = "paused";
-        else if (a.Status === "DRAFT" || a.Status === "MODERATION") status = "moderation";
+        else if (a.Status === "DRAFT") {
+          // Черновик сам на модерацию не уйдёт: помечаем, sync отправит его (у работающих кампаний)
+          status = "moderation";
+          note = "Черновик: ещё не отправлено на модерацию";
+          out[String(a.Id)] = { status, note, draft: true };
+          continue;
+        } else if (a.Status === "MODERATION") status = "moderation";
         else if (a.State === "ON") status = "active";
         else if (a.Status === "ACCEPTED" || a.Status === "PREACCEPTED") {
           status = "active";
@@ -930,14 +984,21 @@ export class YandexDirect implements PlatformClient {
 
   /** Аукцион на поиске по каждой фразе → медиана по группе для каждого объёма трафика */
   async getAuction(campaignExt: string): Promise<AuctionRow[]> {
-    const res = await this.call("keywordbids", "get", {
-      SelectionCriteria: { CampaignIds: [Number(campaignExt)] },
-      FieldNames: ["KeywordId", "AdGroupId", "ServingStatus"],
-      SearchFieldNames: ["Bid", "AuctionBids"],
-      Page: { Limit: 2000 },
-    });
+    // Постранично: LimitedBy в ответе — есть следующая страница (Page.Offset); не больше 10 страниц
+    const all: any[] = [];
+    for (let offset = 0, p = 0; p < 10; p++) {
+      const res = await this.call("keywordbids", "get", {
+        SelectionCriteria: { CampaignIds: [Number(campaignExt)] },
+        FieldNames: ["KeywordId", "AdGroupId", "ServingStatus"],
+        SearchFieldNames: ["Bid", "AuctionBids"],
+        Page: { Limit: 2000, Offset: offset },
+      });
+      all.push(...((res?.KeywordBids ?? []) as any[]));
+      if (!res?.LimitedBy) break;
+      offset = Number(res.LimitedBy);
+    }
     const byGroup = new Map<string, { keywords: number; tiers: Map<number, { bids: number[]; prices: number[] }> }>();
-    for (const k of (res.KeywordBids ?? []) as any[]) {
+    for (const k of all) {
       const items: any[] = k.Search?.AuctionBids?.AuctionBidItems ?? [];
       if (!items.length) continue;
       const g = byGroup.get(String(k.AdGroupId)) ?? { keywords: 0, tiers: new Map() };

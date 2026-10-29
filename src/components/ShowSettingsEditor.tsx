@@ -9,11 +9,11 @@ import { Clock, Loader2, MapPin, Plus, Users, X } from "lucide-react";
 import { api, useToast } from "./client";
 import { AGE_MAX, AGE_MIN, DAY_SHORT, RADIUS_STEPS, sanitizeShow, showSummary, type ShowSettings } from "@/lib/engine/show";
 
-const Seg = <T extends string>({ value, options, onChange, label }: { value: T; options: { v: T; label: string }[]; onChange: (v: T) => void; label: string }) => (
+const Seg = <T extends string>({ value, options, onChange, label }: { value: T; options: { v: T; label: string; disabled?: boolean; title?: string }[]; onChange: (v: T) => void; label: string }) => (
   <div role="radiogroup" aria-label={label} className="inline-flex w-fit max-w-full flex-wrap rounded-lg border border-line overflow-hidden text-sm">
     {options.map((o) => (
-      <button key={o.v} type="button" role="radio" aria-checked={value === o.v} onClick={() => onChange(o.v)}
-        className={`px-3 h-9 border-r border-line last:border-r-0 ${value === o.v ? "bg-ink text-white" : "bg-white hover:bg-paper"}`}>{o.label}</button>
+      <button key={o.v} type="button" role="radio" aria-checked={value === o.v} onClick={() => onChange(o.v)} disabled={o.disabled} title={o.title}
+        className={`px-3 h-9 border-r border-line last:border-r-0 ${value === o.v ? "bg-ink text-white" : "bg-white hover:bg-paper"} disabled:text-faint disabled:bg-white disabled:cursor-not-allowed`}>{o.label}</button>
     ))}
   </div>
 );
@@ -28,8 +28,10 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
   autoTime: string | null;
   /** Реклама уже идёт — изменения сразу уходят в кабинеты */
   live: boolean;
+  /** Радиус ВКонтакте вокруг адреса; null — координаты адреса не определили, ВКонтакте показывает по всему городу */
   autoRadiusKm: number | null;
 }) {
+  const hasGeo = autoRadiusKm != null;
   const [s, setS] = useState<ShowSettings>(() => sanitizeShow(initial));
   const [saved, setSaved] = useState(() => JSON.stringify(sanitizeShow(initial)));
   const [region, setRegion] = useState("");
@@ -39,7 +41,7 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
   const dirty = JSON.stringify(sanitizeShow(s)) !== saved;
   const set = (patch: Partial<ShowSettings>) => setS((x) => ({ ...x, ...patch }));
   const ageAuto = s.ageFrom == null && s.ageTo == null;
-  const sum = showSummary(sanitizeShow(s), { city, address }, autoTime);
+  const sum = showSummary(sanitizeShow(s), { city, address, hasGeo }, autoTime);
 
   function addRegion() {
     const v = region.trim();
@@ -71,14 +73,16 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
       <div className="grid gap-2.5">
         <div className="font-semibold flex items-center gap-2"><MapPin size={16} /> Где показывать</div>
         <Seg label="Регион" value={s.geoMode ?? "auto"} onChange={(v) => set({ geoMode: v, radiusKm: v === "radius" ? s.radiusKm ?? autoRadiusKm ?? 3 : s.radiusKm })}
-          options={[{ v: "auto", label: "Как советует робот" }, { v: "city", label: "Весь город" }, { v: "radius", label: "Рядом с адресом" }]} />
+          options={[{ v: "auto", label: "Как советует робот" }, { v: "city", label: "Весь город" }, { v: "radius", label: "Рядом с адресом", disabled: !hasGeo, title: hasGeo ? undefined : "Не определили координаты адреса" }]} />
         <p className="text-sm text-muted leading-relaxed max-w-2xl">
-          {(s.geoMode ?? "auto") === "auto"
-            ? <>Яндекс — весь город ({city}). ВКонтакте — люди, которые живут или работают {autoRadiusKm ? `в ${String(autoRadiusKm).replace(".", ",")} км` : "рядом"} от {address || "вашего адреса"}.</>
+          {!hasGeo && s.geoMode !== "city"
+            ? <>И в Яндексе, и во ВКонтакте — весь город ({city}): координаты {address ? `адреса «${address}»` : "адреса"} не определили, поэтому показ «рядом с адресом» недоступен. Уточните адрес в «Данных о бизнесе».</>
+            : (s.geoMode ?? "auto") === "auto"
+            ? <>Яндекс — весь город ({city}). ВКонтакте — люди, которые живут или работают в {String(autoRadiusKm).replace(".", ",")} км от {address || "вашего адреса"}.</>
             : s.geoMode === "city" ? <>И в Яндексе, и во ВКонтакте — весь город ({city}).</>
             : <>ВКонтакте — в радиусе от {address || "адреса"}. Яндекс Директ не умеет показывать в радиусе через API, там — весь город ({city}).</>}
         </p>
-        {s.geoMode === "radius" ? (
+        {s.geoMode === "radius" && hasGeo ? (
           <label className="flex items-center gap-2 text-sm">Радиус
             <select className="field h-9 w-28" value={s.radiusKm ?? 3} onChange={(e) => set({ radiusKm: Number(e.target.value) })}>
               {RADIUS_STEPS.map((k) => <option key={k} value={k}>{String(k).replace(".", ",")} км</option>)}
@@ -162,7 +166,7 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
         ) : null}
         <p className="text-sm text-muted leading-relaxed max-w-2xl">
           {s.scheduleMode === "always" ? "Реклама идёт круглые сутки. Ночные обращения дешевле, но на звонок никто не ответит — запись только через форму."
-            : s.scheduleMode === "custom" ? "Директ требует не меньше 40 часов показа в будни — слишком узкое окно расширим автоматически."
+            : s.scheduleMode === "custom" ? (sum.warning ? <span className="text-warn">{sum.warning}</span> : "Директ требует не меньше 40 часов показа в будни — если выбрать меньше, в Директе часы в будни расширим, а ВКонтакте покажет как выбрано.")
             : autoTime ?? "Часы работы не указаны — реклама идёт круглосуточно. Укажите часы в «Данных о бизнесе» или задайте своё расписание."}
         </p>
       </div>

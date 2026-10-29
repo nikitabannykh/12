@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import { z } from "zod";
 import { route, json, fail } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
@@ -43,7 +43,12 @@ export const POST = route(async ({ user, req }) => {
     status: "ok",
     statusNote: null,
   };
-  const [existing] = await db.select().from(schema.adAccounts).where(and(eq(schema.adAccounts.userId, user.id), eq(schema.adAccounts.platform, "vk")));
+  // Тот же кабинет — те же ключи (client_id) или то же имя кабинета, как при OAuth. Другой кабинет — новая строка,
+  // иначе кампании прежнего кабинета управлялись бы токеном нового
+  const [existing] = await db
+    .select()
+    .from(schema.adAccounts)
+    .where(and(eq(schema.adAccounts.userId, user.id), eq(schema.adAccounts.platform, "vk"), or(eq(schema.adAccounts.clientId, clientId), eq(schema.adAccounts.login, login))));
   if (existing) await db.update(schema.adAccounts).set({ ...values, login }).where(eq(schema.adAccounts.id, existing.id));
   else await db.insert(schema.adAccounts).values({ id: uid("acc_"), userId: user.id, platform: "vk", login, ...values });
   return json({ ok: true, login });

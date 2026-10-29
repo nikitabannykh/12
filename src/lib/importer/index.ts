@@ -225,11 +225,24 @@ async function aiCategorize(draft: Draft): Promise<boolean> {
   return draft.services.some((s) => s.category);
 }
 
+/** Общий бюджет импорта: маршрут живёт не дольше 60 с (maxDuration), оставляем запас на ответ */
+const BUDGET_MS = 52000;
+/** Меньше стольких секунд до конца бюджета — шаги YandexGPT не начинаем */
+const AI_MIN_LEFT_MS = 15000;
+
+/** Ждём промис не дольше ms; не успел — fallback (сам промис дорабатывает в фоне, результат игнорируем) */
+function capped<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  if (ms <= 0) return Promise.resolve(fallback);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<T>((r) => (timer = setTimeout(() => r(fallback), ms)))]).finally(() => clearTimeout(timer));
+}
+
 /**
  * Главная функция: ссылки → черновик анкеты. onEvent получает прогресс для живой строки статуса.
  */
 export async function importFromUrls(rawUrls: string[], onEvent: (e: ImportEvent) => void = () => {}): Promise<Draft> {
   const started = Date.now();
+  const left = () => started + BUDGET_MS - Date.now();
   const urls = uniq(rawUrls.map(normalizeInput).filter((u): u is string => Boolean(u)), sourceKey).slice(0, MAX_URLS);
   const seen = new Set(urls.map(sourceKey));
   const found: Found[] = [];
@@ -243,7 +256,8 @@ export async function importFromUrls(rawUrls: string[], onEvent: (e: ImportEvent
     return f;
   };
 
-  const first = await Promise.all(urls.map((u) => run(u)));
+  // Медленный источник не должен съесть весь бюджет: что не успело — считаем недоступным
+  const first = await capped(Promise.all(urls.map((u) => run(u))), left() - AI_MIN_LEFT_MS, [] as Found[]).then((r) => (r.length ? r : [...found]));
 
   // Сайт и онлайн-запись, найденные в карточках и на сайте, — если владелец их не прислал
   const extra = uniq(first.flatMap((f) => (f.status === "ok" ? (f.links ?? []) : [])), sourceKey)
@@ -251,18 +265,29 @@ export async function importFromUrls(rawUrls: string[], onEvent: (e: ImportEvent
     .slice(0, 3);
   if (extra.length && Date.now() - started < 20000) {
     for (const u of extra) seen.add(sourceKey(u));
-    await Promise.all(extra.map((u) => run(u, { maxNext: 1 })));
+    // Дополнительные ссылки — только пока остаётся время на сборку и YandexGPT
+    await capped(Promise.all(extra.map((u) => run(u, { maxNext: 1 }))), left() - AI_MIN_LEFT_MS - 5000, null);
   }
 
   onEvent({ type: "progress", text: "Собираем анкету…" });
-  const usable = found.filter((f) => f.status !== "error" || f.orgUrl || f.siteUrl);
-  const draft = mergeFound(usable.length ? usable : found);
-  draft.reports = found.map(report);
+  const got = [...found]; // снимок: опоздавшие источники дописываются в found уже после сборки
+  const usable = got.filter((f) => f.status !== "error" || f.orgUrl || f.siteUrl);
+  const draft = mergeFound(usable.length ? usable : got);
+  draft.reports = got.map(report);
 
-  if (aiConfigured() && Date.now() - started < 35000) {
+  if (aiConfigured() && left() > AI_MIN_LEFT_MS) {
     onEvent({ type: "progress", text: "Уточняем услуги и преимущества…" });
-    draft.ai = await aiFill(draft, found).catch(() => false);
-    if (await aiCategorize(draft).catch(() => false)) draft.ai = true;
+    // aiFill правит draft на месте — работаем с копией и забираем её, только если шаг уложился в бюджет
+    const work: Draft = structuredClone(draft);
+    const filled = await capped(aiFill(work, got).then((ok) => ({ ok })).catch(() => ({ ok: false })), left() - 3000, null);
+    if (filled) {
+      Object.assign(draft, work);
+      draft.ai = filled.ok;
+      if (left() > AI_MIN_LEFT_MS) {
+        const cat = structuredClone(draft);
+        if (await capped(aiCategorize(cat).catch(() => false), left() - 3000, false)) Object.assign(draft, cat, { ai: true });
+      }
+    }
     draft.missing = missingOf(draft);
   }
 

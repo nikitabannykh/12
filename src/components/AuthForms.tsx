@@ -159,6 +159,12 @@ export function AuthPanel({
                 {google ? <a href="/api/auth/google/start" className="underline underline-offset-2">Войти через Google</a> : null}
                 <Link href={resetHref} className="underline underline-offset-2">Задать пароль</Link>
               </span>
+            ) : error.code === "bad_login" ? (
+              <span className="flex flex-wrap gap-x-4 gap-y-1 mt-2 font-semibold">
+                {google ? <a href="/api/auth/google/start" className="underline underline-offset-2">Войти через Google</a> : null}
+                {mail ? <button type="button" onClick={magic} className="underline underline-offset-2">Войти по ссылке</button> : null}
+                <Link href={resetHref} className="underline underline-offset-2">Восстановить пароль</Link>
+              </span>
             ) : error.code === "exists" ? (
               <span className="flex flex-wrap gap-x-4 gap-y-1 mt-2 font-semibold">
                 <button type="button" onClick={() => switchTab("login")} className="underline underline-offset-2">Войти</button>

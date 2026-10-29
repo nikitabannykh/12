@@ -63,7 +63,7 @@ function DarkShot() {
         <span className="w-2.5 h-2.5 rounded-full bg-white/15" /><span className="w-2.5 h-2.5 rounded-full bg-white/15" /><span className="w-2.5 h-2.5 rounded-full bg-white/15" />
         <span className="mx-auto text-[11px] text-white/35 rounded-md bg-white/[0.04] px-3 py-1">Самоход · кабинет</span>
       </div>
-      <div className="grid md:grid-cols-[13rem_minmax(0,1fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] md:grid-cols-[13rem_minmax(0,1fr)]">
         <aside className="hidden md:flex flex-col gap-5 p-4 border-r border-white/[0.06]">
           <span className="flex items-center gap-2 font-semibold"><LogoMark size={22} />Самоход</span>
           <span className="flex items-center gap-2 rounded-xl bg-white/[0.04] ring-1 ring-white/[0.06] px-2.5 py-2 text-sm"><span className="w-6 h-6 rounded-md bg-mark text-ink grid place-items-center text-xs font-bold">С</span>Студия Лак</span>
@@ -75,7 +75,7 @@ function DarkShot() {
             Следующая проверка завтра в 09:00
           </div>
         </aside>
-        <div className="p-5 sm:p-7 grid gap-5 min-w-0">
+        <div className="p-5 sm:p-7 grid grid-cols-[minmax(0,1fr)] gap-5 min-w-0">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <div className="text-[13px] text-white/40">Последние 7 дней</div>
@@ -83,16 +83,16 @@ function DarkShot() {
             </div>
             <span className="rounded-full bg-[#3ddc97]/10 text-[#3ddc97] ring-1 ring-[#3ddc97]/20 px-3 py-1 text-[12px] font-semibold">Здоровье рекламы 86</span>
           </div>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-px rounded-2xl overflow-hidden bg-white/[0.06]">
+          <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] lg:grid-cols-[repeat(4,minmax(0,1fr))] gap-px rounded-2xl overflow-hidden bg-white/[0.06]">
             {[["Потрачено", "13 660 ₽", "из 18 000 ₽ лимита"], ["Обращения", "33", "+50% к прошлой неделе"], ["Цена обращения", "414 ₽", "−28% со старта"], ["Сэкономлено", "3 140 ₽", "на мусорных кликах"]].map(([k, v, s], i) => (
-              <div key={k} className="bg-[#0d0f26] p-4">
+              <div key={k} className="bg-[#0d0f26] p-4 min-w-0">
                 <div className="text-[12px] text-white/40">{k}</div>
                 <div className={`mt-1 text-xl sm:text-2xl font-semibold tracking-tight tabular-nums ${i === 3 ? "text-mark" : ""}`}>{v}</div>
                 <div className={`text-[11.5px] ${i === 1 || i === 2 ? "text-[#3ddc97]" : "text-white/35"}`}>{s}</div>
               </div>
             ))}
           </div>
-          <div className="grid lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] gap-4">
+          <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] gap-4">
             <div className="rounded-2xl bg-white/[0.03] ring-1 ring-white/[0.06] p-4">
               <div className="flex justify-between text-[12px] text-white/40"><span>Расход и обращения</span><span className="flex gap-3"><span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-white/20" />расход</span><span className="flex items-center gap-1.5"><span className="w-2 h-[3px] rounded bg-mark" />обращение</span></span></div>
               <div className="mt-4 flex items-end justify-between h-44 px-1">
@@ -107,11 +107,11 @@ function DarkShot() {
             </div>
             <div className="rounded-2xl bg-white/[0.03] ring-1 ring-white/[0.06] p-4">
               <div className="text-[12px] text-white/40">Сегодня робот</div>
-              <ul className="mt-3 grid gap-3 text-[13.5px]">
+              <ul className="mt-3 grid grid-cols-[minmax(0,1fr)] gap-3 text-[13.5px]">
                 {[["09:04", "Минус-слово «обучение»", "−460 ₽ в неделю"], ["09:07", "Выключил слабое объявление", "кликали в 3 раза реже"], ["09:11", "+15% бюджета во ВКонтакте", "обращение там дешевле"], ["09:15", "Тест заголовка с ценой", "неделя на проверку"]].map(([t, a, b], i) => (
-                  <li key={t} className="flex gap-3 lp-pop" style={{ animationDelay: `${900 + i * 220}ms` }}>
+                  <li key={t} className="flex gap-3 min-w-0 lp-pop" style={{ animationDelay: `${900 + i * 220}ms` }}>
                     <span className="text-[11px] text-white/30 tabular-nums pt-0.5">{t}</span>
-                    <div className="min-w-0 flex-1"><div className="text-white/90 truncate">{a}</div><div className="text-[11.5px] text-white/40">{b}</div></div>
+                    <div className="min-w-0 flex-1"><div className="text-white/90 sm:truncate">{a}</div><div className="text-[11.5px] text-white/40">{b}</div></div>
                     <span className="text-[11px] text-white/30 pt-0.5">отменить</span>
                   </li>
                 ))}

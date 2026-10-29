@@ -3,7 +3,7 @@ import { randomBytes } from "crypto";
 export const uid = (prefix = "") => prefix + randomBytes(9).toString("base64url");
 
 export const rub = (n: number, digits = 0) =>
-  new Intl.NumberFormat("ru-RU", { maximumFractionDigits: digits, minimumFractionDigits: 0 }).format(Math.round(n * 10 ** digits) / 10 ** digits) + " ₽";
+  new Intl.NumberFormat("ru-RU", { maximumFractionDigits: digits, minimumFractionDigits: 0 }).format(Math.round(n * 10 ** digits) / 10 ** digits) + "\u00a0₽";
 
 export const num = (n: number) => new Intl.NumberFormat("ru-RU").format(Math.round(n));
 

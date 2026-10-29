@@ -6,6 +6,7 @@ import { badChars, claimProblems, cleanText, factCallouts, hasClaims, hasSuperla
 import { plural } from "../util";
 import { addPhrases, buildSemanticCore, displayKeyword, finalizeCore, networkInterests, conflicts, type SemanticCore, type SemanticGroup } from "../engine/semantics";
 import { aiConfigured, gptJson } from "./yandex";
+import { LIMITS } from "./limits";
 
 /**
  * Лимиты площадок. Директ (ЕПК, поиск и РСЯ): заголовок 56, второй заголовок 30, текст 81, слово до 22 символов.
@@ -19,11 +20,7 @@ import { aiConfigured, gptJson } from "./yandex";
  * отдельным заголовком «Услуга: факт».
  */
 export { responsiveAssets as adAssets } from "../engine/extras";
-export const LIMITS = {
-  search: { title: 56, title2: 30, text: 81 },
-  network: { title: 56, title2: 30, text: 81 },
-  vk: { title: 40, title2: 30, text: 90 },
-} as const;
+export { LIMITS };
 export const MAX_WORD = 22;
 /** Ключевая фраза Директа: до 7 слов, слово до 35 символов */
 export const KEYWORD_LIMITS = { words: 7, wordLength: 35 } as const;
@@ -280,7 +277,8 @@ const MEDICAL_RULES = `Это медицинские услуги. Дополн�
 /** Сколько групп отдаём модели: остальным — шаблонные объявления (ответ модели ограничен по длине) */
 const AI_GROUPS = 8;
 
-export async function generateCopyPlan(b: Business, channels: { search: boolean; network: boolean; vk: boolean }, core: SemanticCore = buildSemanticCore(b)): Promise<CopyPlan> {
+/** deadline — к какому моменту нужен ответ (лимит времени функции): не успела модель — шаблонные объявления */
+export async function generateCopyPlan(b: Business, channels: { search: boolean; network: boolean; vk: boolean }, core: SemanticCore = buildSemanticCore(b), opts: { deadline?: number } = {}): Promise<CopyPlan> {
   const n = nicheById(b.niche);
   const fallback = templatePlan(b, core);
   if (!aiConfigured()) return fallback;
@@ -315,7 +313,7 @@ ${list(fallback.network)}
 
   try {
     type Raw = { search?: { group?: number; ads?: AdDraft[] }[]; network?: { group?: number; ads?: AdDraft[] }[]; vk?: GroupDraft[]; negatives?: string[]; callouts?: string[]; imageIdeas?: string[] };
-    const raw = await gptJson<Raw>(SYSTEM, user, { temperature: 0.55, maxTokens: 8000 });
+    const raw = await gptJson<Raw>(SYSTEM, user, { temperature: 0.55, maxTokens: 8000, timeoutMs: 45_000, until: opts.deadline });
     const facts = ownerFacts(b);
     // Объявления модели — в группы семантики по номеру; выдуманный факт — шаблонное объявление того же места
     const fill = (items: Raw["search"], ch: keyof typeof LIMITS, fb: GroupDraft[]): GroupDraft[] =>
@@ -441,6 +439,7 @@ export async function rewriteAdsBatch(
   ch: keyof typeof LIMITS,
   items: { key: string; group: string; service?: string; ad: AdDraft }[],
   wish: string,
+  opts: { until?: number } = {},
 ): Promise<Record<string, AdDraft | null>> {
   const out: Record<string, AdDraft | null> = {};
   if (!items.length) return out;
@@ -471,7 +470,7 @@ ${items.map((x, i) => `${i + 1}. Группа «${x.group}», подход ${x.a
 Текст: ${x.ad.text}`).join("\n\n")}
 
 JSON: {"ads":[{"n":1,"title":"...",${ch === "vk" ? "" : `"title2":"...",`}"text":"..."}]} — по одному на каждое объявление.`,
-    { temperature: 0.7, maxTokens: Math.min(8000, 300 + items.length * 220) },
+    { temperature: 0.7, maxTokens: Math.min(8000, 300 + items.length * 220), until: opts.until },
   );
   for (const a of r.ads ?? []) {
     const it = items[Number(a.n) - 1];

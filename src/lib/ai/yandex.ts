@@ -16,7 +16,10 @@ const headers = () => ({
   "Content-Type": "application/json",
 });
 
-export async function gpt(system: string, user: string, opts: { temperature?: number; maxTokens?: number; json?: boolean } = {}): Promise<string> {
+/** Сколько ждём ответа модели по умолчанию: функции живут до 60 с, зависший запрос не должен съесть всё время */
+export const GPT_TIMEOUT_MS = 25_000;
+
+export async function gpt(system: string, user: string, opts: { temperature?: number; maxTokens?: number; json?: boolean; timeoutMs?: number } = {}): Promise<string> {
   const model = process.env.YANDEX_GPT_MODEL || "yandexgpt/latest";
   const body: Record<string, unknown> = {
     modelUri: `gpt://${process.env.YANDEX_CLOUD_FOLDER_ID}/${model}`,
@@ -27,7 +30,14 @@ export async function gpt(system: string, user: string, opts: { temperature?: nu
     ],
   };
   if (opts.json) body.jsonObject = true;
-  const res = await fetch(`${LLM}/completion`, { method: "POST", headers: headers(), body: JSON.stringify(body) });
+  const timeoutMs = Math.max(1_000, opts.timeoutMs ?? GPT_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${LLM}/completion`, { method: "POST", headers: headers(), body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e) {
+    if ((e as Error)?.name === "TimeoutError" || (e as Error)?.name === "AbortError") throw new Error(`YandexGPT: нет ответа за ${Math.round(timeoutMs / 1000)} с`);
+    throw e;
+  }
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`YandexGPT: ${j?.error?.message || j?.message || res.status}`);
   return String(j?.result?.alternatives?.[0]?.message?.text ?? "");
@@ -46,11 +56,21 @@ export function parseJson<T>(text: string): T {
   }
 }
 
-export async function gptJson<T>(system: string, user: string, opts: { temperature?: number; maxTokens?: number } = {}): Promise<T> {
+/**
+ * JSON от модели, до двух попыток. until — к какому моменту (Date.now()) ответ нужен обязательно:
+ * ожидание каждой попытки урезаем до оставшегося времени, на новую попытку без запаса времени не идём.
+ */
+export async function gptJson<T>(system: string, user: string, opts: { temperature?: number; maxTokens?: number; timeoutMs?: number; until?: number } = {}): Promise<T> {
   let lastErr: unknown;
+  const { until, ...rest } = opts;
   for (let i = 0; i < 2; i++) {
+    const left = until ? until - Date.now() : Infinity;
+    if (left < 3_000) {
+      lastErr ??= new Error("YandexGPT: не хватило времени на ответ");
+      break;
+    }
     try {
-      const text = await gpt(system, user, { ...opts, json: true });
+      const text = await gpt(system, user, { ...rest, timeoutMs: Math.min(rest.timeoutMs ?? GPT_TIMEOUT_MS, left), json: true });
       return parseJson<T>(text);
     } catch (e) {
       lastErr = e;

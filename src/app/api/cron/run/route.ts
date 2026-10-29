@@ -4,7 +4,6 @@ import { runAll } from "@/lib/engine/run";
 import { pollUpdates, sendDigests } from "@/lib/notify";
 import { getDb, schema } from "@/lib/db";
 import { macEqual } from "@/lib/crypto";
-import { hit } from "@/lib/ratelimit";
 import { errorText } from "@/lib/util";
 import { collectGarbageImages } from "@/lib/engine/images";
 
@@ -32,15 +31,14 @@ async function cleanup() {
  */
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
-  const url = new URL(req.url);
-  const auth = req.headers.get("authorization") || "";
-  void url;
-  let allowed = Boolean(secret) && macEqual(auth, `Bearer ${secret}`);
-  if (!secret && process.env.VERCEL && (req.headers.get("user-agent") || "").startsWith("vercel-cron")) {
-    // Без CRON_SECRET заголовок User-Agent легко подделать — поэтому не чаще раза в 30 минут
-    allowed = (await hit("cron:ua", 1, 1800)).ok;
+  if (!secret) {
+    // Без CRON_SECRET вызов не отличить от чужого (User-Agent подделывается) — в проде робот не запускается
+    if (process.env.VERCEL || process.env.NODE_ENV === "production") {
+      return NextResponse.json({ error: "CRON_SECRET не задан: добавьте переменную окружения CRON_SECRET (Vercel Cron пришлёт её сам), иначе робот по расписанию не запускается" }, { status: 503 });
+    }
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  if (!allowed) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!macEqual(req.headers.get("authorization") || "", `Bearer ${secret}`)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const started = Date.now();
   await pollUpdates().catch(() => {});
@@ -52,7 +50,5 @@ export async function GET(req: Request) {
     digests = { error: errorText(e) };
   }
   await cleanup().catch((e) => console.error("cleanup", e));
-  // Без CRON_SECRET (вызов по User-Agent) не отдаём логи бизнесов — только счётчики
-  if (!secret) return NextResponse.json({ ok: true, businesses: Array.isArray((r as { done?: unknown[] }).done) ? (r as { done: unknown[] }).done.length : undefined });
   return NextResponse.json({ ...r, digests });
 }
