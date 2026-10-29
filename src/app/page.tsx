@@ -155,7 +155,7 @@ export default async function Home() {
             <span className="relative flex w-1.5 h-1.5"><span className="absolute inset-0 rounded-full bg-mark animate-ping opacity-70" /><span className="relative w-1.5 h-1.5 rounded-full bg-mark" /></span>
             Автопилот для Яндекс Директа и VK Рекламы
           </span>
-          <h1 className="mt-8 text-[2.9rem] sm:text-[5.6rem] font-semibold tracking-[-0.055em] leading-[0.92] bg-[linear-gradient(180deg,#fff_30%,rgba(255,255,255,0.55))] bg-clip-text text-transparent">Ваш рекламный отдел.<br />Без отдела.</h1>
+          <h1 className="mt-8 text-[2.9rem] sm:text-[5.6rem] font-semibold tracking-[-0.055em] leading-[0.92] bg-[linear-gradient(180deg,#fff_30%,rgba(255,255,255,0.55))] bg-clip-text text-transparent">Вы ведёте бизнес.<br />Робот ведёт рекламу.</h1>
           <p className="mt-8 mx-auto max-w-[36rem] text-[1.1rem] sm:text-xl text-white/60 leading-relaxed font-light">Робот настраивает рекламу в Яндексе и VK, каждый день убирает лишние траты и переносит бюджет туда, где он приносит заявки.</p>
           <div className="mt-10 flex flex-wrap justify-center items-center gap-4">
             <Cta href={cta.href}>{cta.text}</Cta>
