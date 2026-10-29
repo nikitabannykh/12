@@ -238,3 +238,18 @@
   background-image: radial-gradient(var(--color-line-2) 1px, transparent 1px);
   background-size: 18px 18px;
 }
+@keyframes lp-progress {
+  from { width: 0; }
+  to { width: 100%; }
+}
+.lp-progress {
+  width: 0;
+  animation: lp-progress linear forwards;
+}
+@keyframes lp-fade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.lp-fade {
+  animation: lp-fade 0.35s ease-out both;
+}
