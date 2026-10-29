@@ -49,6 +49,10 @@ export async function GET(req: NextRequest) {
     };
     if (existing) await db.update(schema.adAccounts).set(values).where(eq(schema.adAccounts.id, existing.id));
     else await db.insert(schema.adAccounts).values({ id: uid("acc_"), userId: user.id, platform: "yandex", login: who.login, ...values });
+    if (note && /код 58|незавершенн|заявк/i.test(note)) {
+      // Приложению сервиса ещё не выдан доступ к API Директа — это делает владелец приложения один раз
+      return go(`error=${encodeURIComponent(`Аккаунт ${who.login} подключён, но у приложения ещё нет доступа к API Директа. Владельцу сервиса нужно один раз подать заявку: Директ → Инструменты → API → «Мои заявки» → новая заявка с ClientID приложения, и дождаться одобрения. После этого подключите Яндекс ещё раз.`)}`);
+    }
     if (note) return go(`error=${encodeURIComponent(`Аккаунт ${who.login} подключён, но Директ не отвечает: ${note}. Проверьте, что в аккаунте создан рекламный кабинет Директа и принята оферта.`)}`);
     return go(`connected=yandex`);
   } catch (e) {

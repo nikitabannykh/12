@@ -11,6 +11,10 @@
 @import "@fontsource/onest/latin-800.css";
 @import "@fontsource/onest/latin-ext-400.css";
 @import "@fontsource/onest/latin-ext-700.css";
+@import "@fontsource/caveat/cyrillic-500.css";
+@import "@fontsource/caveat/cyrillic-700.css";
+@import "@fontsource/caveat/latin-500.css";
+@import "@fontsource/caveat/latin-700.css";
 
 /*
   «Полный зал» — визуальный язык журнала записи.
@@ -216,4 +220,62 @@
   &::-webkit-scrollbar {
     display: none;
   }
+}
+
+/* ─── Лендинг: тетрадь в клетку и журнал записи ─────────────────── */
+.lp {
+  --sq: 22px;
+  --rule: #d9e1ef;
+  --margin: #e0564b;
+  --sheet: #f7f9fd;
+  background-color: var(--sheet);
+  background-image:
+    linear-gradient(var(--rule) 1px, transparent 1px),
+    linear-gradient(90deg, var(--rule) 1px, transparent 1px);
+  background-size: var(--sq) var(--sq);
+}
+.lp .hand {
+  font-family: "Caveat", "Segoe Print", cursive;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+/* Красные поля тетради */
+.lp-margin {
+  position: relative;
+}
+.lp-margin::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--margin-x, 0);
+  width: 2px;
+  background: var(--margin);
+  opacity: 0.55;
+}
+/* Мазок маркера — неровный, как от руки */
+.lp .stroke {
+  background: var(--color-mark);
+  border-radius: 5px 14px 6px 12px / 12px 5px 14px 6px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0 0.18em;
+}
+/* Зачёркнуто от руки */
+.lp .scratch {
+  background-image: linear-gradient(transparent 52%, var(--margin) 52%, var(--margin) 60%, transparent 60%);
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+}
+.lp .sheet {
+  background: #fff;
+  box-shadow: 0 1px 0 var(--rule), 0 30px 60px -40px rgba(29, 32, 69, 0.45);
+}
+@keyframes pen {
+  from { stroke-dashoffset: var(--len, 300); }
+  to { stroke-dashoffset: 0; }
+}
+.lp .pen {
+  stroke-dasharray: var(--len, 300);
+  animation: pen 0.9s ease-out both;
 }
