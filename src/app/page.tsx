@@ -493,11 +493,11 @@ export default async function Home() {
 
       {/* Финал — во всю ширину */}
       <section className="relative overflow-hidden bg-ink text-white">
-        <div className="absolute right-0 bottom-0 flex items-end gap-2 h-56 w-[55%] opacity-25 pr-6 sm:pr-16" aria-hidden>
-          {BARS.map((h, i) => <span key={i} className={`flex-1 rounded-t ${i >= 9 ? "bg-mark" : "bg-white/50"}`} style={{ height: `${h}%` }} />)}
+        <div className="absolute right-0 bottom-0 flex items-end gap-2 h-56 w-[55%] pr-6 sm:pr-16" aria-hidden>
+          {BARS.map((h, i) => <span key={i} className={`flex-1 rounded-t ${i >= 9 ? "bg-mark/90" : "bg-white/10"}`} style={{ height: `${h}%` }} />)}
         </div>
         <div className="relative mx-auto max-w-6xl px-4 sm:px-6 py-20 sm:py-28">
-          <div className="max-w-xl">
+          <div className="max-w-2xl">
             <h2 className="text-4xl sm:text-6xl font-extrabold tracking-[-0.035em] leading-[1.02]">Отдайте рутину роботу</h2>
             <p className="mt-5 text-lg sm:text-xl text-white/75 leading-relaxed">Запуск — 15 минут. Дальше сервис сам ведёт рекламу и бережёт ваш бюджет.</p>
             <Link href={cta.href} className="mt-9 btn h-12 px-7 text-base bg-mark text-ink hover:bg-mark/90">{cta.text}</Link>
