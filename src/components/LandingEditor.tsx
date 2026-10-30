@@ -2,7 +2,7 @@
 /** «Куда ведёт реклама»: страница записи, сайт или любая ссылка — для всех каналов и отдельно для каждого */
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ExternalLink, Link2, Loader2 } from "lucide-react";
+import { CheckCircle2, CircleAlert, ExternalLink, Link2, Loader2 } from "lucide-react";
 import { api, useToast } from "./client";
 import { isMessenger, linkLabel, normalizeUrl, type LandingMode, type LandingSettings, type LandingTarget } from "@/lib/engine/landing";
 
@@ -10,13 +10,30 @@ const CH_NAME: Record<string, string> = {
   search: "Поиск Яндекса", network: "Сайты и приложения (РСЯ)", vk: "ВКонтакте", retarget_yandex: "Ретаргетинг в Яндексе", retarget_vk: "Ретаргетинг ВКонтакте",
 };
 
-function TargetPicker({ value, onChange, siteUrl, pageUrl, allowAuto, autoLabel, yandex }: {
-  value: LandingTarget; onChange: (t: LandingTarget) => void; siteUrl: string | null; pageUrl: string; allowAuto?: boolean; autoLabel?: string; yandex?: boolean;
+type SiteCode = "ok" | "missing" | "unknown" | null;
+
+/** Явно: стоит ли наш код на сайте — без него заявки с сайта не считаются */
+function SiteCodeNote({ code }: { code: SiteCode }) {
+  if (!code) return null;
+  return code === "ok" ? (
+    <span className="mt-1.5 inline-flex items-center gap-1.5 text-sm font-semibold text-good"><CheckCircle2 size={15} /> Код на сайте стоит — заявки с сайта считаются</span>
+  ) : (
+    <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-bad-soft text-bad px-2.5 py-1.5 text-sm">
+      <CircleAlert size={15} className="shrink-0" />
+      <b className="font-semibold">{code === "missing" ? "Код на сайте не найден" : "Код на сайт ещё не установлен"}</b>
+      <span className="text-ink-2">— заявки с сайта не считаются.</span>
+      <a href="/app/settings#site" className="font-semibold underline underline-offset-2" onClick={(e) => e.stopPropagation()}>Поставить код →</a>
+    </span>
+  );
+}
+
+function TargetPicker({ value, onChange, siteUrl, pageUrl, allowAuto, autoLabel, yandex, siteCode = null }: {
+  value: LandingTarget; onChange: (t: LandingTarget) => void; siteUrl: string | null; pageUrl: string; allowAuto?: boolean; autoLabel?: string; yandex?: boolean; siteCode?: SiteCode;
 }) {
   const opts: { v: LandingMode; label: string; hint: string; disabled?: boolean }[] = [
     ...(allowAuto ? [{ v: "auto" as const, label: autoLabel ?? "Как для всех", hint: "" }] : []),
     { v: "page", label: "Страница записи", hint: "Наша страница с формой записи и кнопками связи. Заявки считаются сами." },
-    { v: "site", label: siteUrl ? `Сайт — ${siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}` : "Сайт (не указан)", hint: "Заявки считаются, если на сайте стоит наш код — статус и инструкция ниже, в «Подключение сайта».", disabled: !siteUrl },
+    { v: "site", label: siteUrl ? `Сайт — ${siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}` : "Сайт (не указан)", hint: "", disabled: !siteUrl },
     { v: "link", label: "Другая ссылка", hint: "Онлайн-запись (YCLIENTS, DIKIDI), Taplink, нужная страница сайта, WhatsApp или Telegram. Заявки там мы не видим — считаем переходы; записи отмечайте в «Статистике»." },
   ];
   const url = value.mode === "link" ? value.url ?? "" : "";
@@ -30,6 +47,7 @@ function TargetPicker({ value, onChange, siteUrl, pageUrl, allowAuto, autoLabel,
             <span className="font-medium">{o.label}</span>
             {o.v === "page" ? <a href={pageUrl} target="_blank" rel="noreferrer" className="ml-2 text-sm text-ink-2 underline inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>открыть <ExternalLink size={12} /></a> : null}
             {o.hint && value.mode === o.v ? <span className="block text-sm text-muted mt-0.5">{o.hint}</span> : null}
+            {o.v === "site" && value.mode === "site" ? <SiteCodeNote code={siteCode} /> : null}
           </span>
         </label>
       ))}
@@ -45,8 +63,8 @@ function TargetPicker({ value, onChange, siteUrl, pageUrl, allowAuto, autoLabel,
   );
 }
 
-export function LandingEditor({ initial, siteUrl, pageUrl, channels, live, hasYandex }: {
-  initial: LandingSettings; siteUrl: string | null; pageUrl: string; channels: string[]; live: boolean; hasYandex: boolean;
+export function LandingEditor({ initial, siteUrl, pageUrl, channels, live, hasYandex, siteCode = null }: {
+  initial: LandingSettings; siteUrl: string | null; pageUrl: string; channels: string[]; live: boolean; hasYandex: boolean; siteCode?: SiteCode;
 }) {
   const start: LandingSettings = initial?.mode ? initial : { mode: "auto" };
   const [s, setS] = useState<LandingSettings>(start);
@@ -78,7 +96,7 @@ export function LandingEditor({ initial, siteUrl, pageUrl, channels, live, hasYa
     <div className="grid gap-5">
       <div className="grid gap-2">
         <div className="font-semibold flex items-center gap-2"><Link2 size={16} /> Для всех каналов</div>
-        <TargetPicker value={main} onChange={(t) => setS({ ...s, ...t })} siteUrl={siteUrl} pageUrl={pageUrl} yandex={hasYandex} />
+        <TargetPicker siteCode={siteCode} value={main} onChange={(t) => setS({ ...s, ...t })} siteUrl={siteUrl} pageUrl={pageUrl} yandex={hasYandex} />
       </div>
       {channels.length > 1 ? (
         <details className="rounded-xl border border-line" open={perCount > 0}>
@@ -88,7 +106,7 @@ export function LandingEditor({ initial, siteUrl, pageUrl, channels, live, hasYa
             {channels.map((ch) => (
               <div key={ch} className="grid gap-1.5">
                 <div className="text-sm font-semibold">{CH_NAME[ch] ?? ch}</div>
-                <TargetPicker allowAuto autoLabel="Как для всех каналов" value={s.channels?.[ch] ?? { mode: "auto" }} siteUrl={siteUrl} pageUrl={pageUrl} yandex={!/vk/.test(ch)}
+                <TargetPicker siteCode={siteCode} allowAuto autoLabel="Как для всех каналов" value={s.channels?.[ch] ?? { mode: "auto" }} siteUrl={siteUrl} pageUrl={pageUrl} yandex={!/vk/.test(ch)}
                   onChange={(t) => {
                     const next = { ...(s.channels ?? {}) };
                     if (t.mode === "auto") delete next[ch];
