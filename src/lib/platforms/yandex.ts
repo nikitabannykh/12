@@ -714,7 +714,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     const res = await this.call("keywordsresearch", "deduplicate", { Keywords: items.map((x) => ({ Id: x.id, Keyword: x.keyword })), Operation: ["MERGE_DUPLICATES"] });
     return {
       update: ((res?.Update ?? []) as { Id: number; Keyword: string }[]).map((u) => ({ id: did(u.Id), keyword: u.Keyword })),
-      remove: ((res?.Delete?.Ids ?? []) as number[]).map(Number),
+      remove: ((res?.Delete?.Ids ?? []) as number[]).map(did),
     };
   }
 
@@ -1017,7 +1017,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   async updateAdsHref(adExts: string[], href: string): Promise<string[]> {
     const warnings: string[] = [];
     for (let i = 0; i < adExts.length; i += 1000) {
-      const ids = adExts.slice(i, i + 1000).map(Number);
+      const ids = adExts.slice(i, i + 1000).map(did);
       try {
         const res = await this.call("ads", "update", { Ads: ids.map((Id) => ({ Id, ResponsiveAd: { Href: href } })) });
         const local: string[] = [];
@@ -1053,7 +1053,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   async getCampaignDelivery(campaignExts: string[]): Promise<Record<string, CampaignDelivery>> {
     const out: Record<string, CampaignDelivery> = {};
     for (let i = 0; i < campaignExts.length; i += 1000) {
-      const res = await this.call("campaigns", "get", { SelectionCriteria: { Ids: campaignExts.slice(i, i + 1000).map(Number) }, FieldNames: ["Id", "State", "Status", "StatusPayment", "StatusClarification"] }).catch(() => null);
+      const res = await this.call("campaigns", "get", { SelectionCriteria: { Ids: campaignExts.slice(i, i + 1000).map(did) }, FieldNames: ["Id", "State", "Status", "StatusPayment", "StatusClarification"] }).catch(() => null);
       for (const c of res?.Campaigns ?? []) {
         if (c.State === "ON" || c.State === "SUSPENDED" || c.State === "ARCHIVED") { out[String(c.Id)] = { ok: true }; continue; }
         const why = String(c.StatusClarification ?? "");
@@ -1069,7 +1069,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   async getAdStates(adExts: string[]): Promise<Record<string, AdState>> {
     const out: Record<string, AdState> = {};
     for (let i = 0; i < adExts.length; i += 1000) {
-      const chunk = adExts.slice(i, i + 1000).map(Number);
+      const chunk = adExts.slice(i, i + 1000).map(did);
       const res = await this.call("ads", "get", { SelectionCriteria: { Ids: chunk }, FieldNames: ["Id", "State", "Status", "StatusClarification"] });
       for (const a of res.Ads ?? []) {
         // State: ON — показывается; SUSPENDED — остановлено владельцем (suspend); OFF — не показывается по другой причине
