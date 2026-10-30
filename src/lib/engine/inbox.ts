@@ -87,20 +87,23 @@ export async function inboxFor(b: Business): Promise<{ items: InboxItem[]; unrea
     items.push({ id: "rejected", at: now, group: "now", unread: false, tone: "warn", title: `${pl(rejected, "объявление отклонено", "объявления отклонены", "объявлений отклонены")}`, text: "Робот перепишет их при следующей проверке — или поправьте сами. Причины — у каждого объявления.", href: "/app/ads" });
   const moderation = ads.filter((a) => a.status === "moderation" && live.has(a.campaignId)).length;
   if (moderation)
-    items.push({ id: "moderation", at: now, group: "now", unread: false, tone: "info", title: `${pl(moderation, "объявление", "объявления", "объявлений")} на модерации`, text: "Обычно проверка занимает до суток. Статусы обновляются, когда вы открываете кабинет.", href: "/app/ads" });
+    items.push({ id: "moderation", at: now, group: "now", unread: false, tone: "info", title: `${pl(moderation, "объявление", "объявления", "объявлений")} на модерации`, text: "Обычно проверка занимает до суток. Проверяем статусы сами — как только Директ ответит, здесь появится уведомление.", href: "/app/ads" });
   for (const x of (await getBalances(b)).filter((x) => !x.demo && x.daysLeft !== null && x.daysLeft > 0 && x.daysLeft <= LOW_DAYS))
     items.push({ id: `bal-${x.accountId}`, at: now, group: "now", unread: false, tone: "warn", title: "Скоро кончатся деньги в кабинете", text: `Хватит примерно на ${pl(x.daysLeft!, "день", "дня", "дней")}.`, href: "/app" });
 
   // ─── События ───
   const since = new Date(Date.now() - 30 * 86400_000);
   // «Показы идут», а объявления кампании ждут лицензию — так не пишем (старые записи тоже поправляем на лету)
+  const servingCamps = new Set(ads.filter((a) => a.status === "active" && !/^Не показывается/.test(a.note ?? "")).map((a) => a.campaignId));
   const docsCamps = new Set(ads.filter((a) => a.status === "active" && /документ|лиценз/i.test(a.note ?? "")).map((a) => a.campaignId));
-  const events: InboxItem[] = ((await kvGet<InboxEvent[]>(key(b.id))) ?? []).map((e) => {
+  const events: InboxItem[] = ((await kvGet<InboxEvent[]>(key(b.id))) ?? []).map((e): InboxItem | null => {
     const camp = /#c-(.+)$/.exec(e.href ?? "")?.[1];
+    // Старые записи «показы идут», а одобренных объявлений нет (все на модерации) — это была неправда, не показываем
+    if (camp && /: показы идут$/.test(e.title) && !servingCamps.has(camp) && !docsCamps.has(camp)) return null;
     if (camp && docsCamps.has(camp) && /: показы идут$/.test(e.title))
       return { ...e, tone: "warn" as const, title: e.title.replace(/: показы идут$/, ": Директ включил кампанию, но показов ещё нет"), text: "Объявления ждут проверки лицензии — показы начнутся после неё.", group: "event" as const, unread: e.at > seen };
     return { ...e, group: "event" as const, unread: e.at > seen };
-  });
+  }).filter((x): x is InboxItem => x !== null);
   const changes = await db.select().from(schema.changes).where(and(eq(schema.changes.businessId, b.id), gte(schema.changes.at, since))).orderBy(desc(schema.changes.at)).limit(15);
   for (const c of changes) {
     const at = c.at.toISOString();

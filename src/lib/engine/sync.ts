@@ -207,17 +207,33 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
     if (authErr) await db.update(schema.adAccounts).set({ status: "error", statusNote: authErr }).where(eq(schema.adAccounts.id, accountId));
     else if (reached && acc.status !== "ok") await db.update(schema.adAccounts).set({ status: "ok", statusNote: null }).where(eq(schema.adAccounts.id, acc.id));
   }
-  if (deliveryMoves.length) {
-    const docsAds = await db.select({ campaignId: schema.ads.campaignId, note: schema.ads.statusNote }).from(schema.ads)
-      .where(and(eq(schema.ads.businessId, b.id), eq(schema.ads.status, "active")));
-    for (const m of deliveryMoves) {
-      const name = CHANNEL_NAME[m.c.channel] ?? m.c.channel;
-      const href = `/app/ads#c-${m.c.id}`;
-      if (!m.ok) { inbox.push({ tone: "bad", title: `${name}: реклама не показывается`, text: m.note, href }); continue; }
-      const waitingDocs = docsAds.some((a) => a.campaignId === m.c.id && /документ|лиценз/i.test(a.note ?? ""));
-      inbox.push(waitingDocs
-        ? { tone: "warn", title: `${name}: ${m.wasMoney ? "деньги поступили" : "Директ включил кампанию"}, но показов ещё нет`, text: "Объявления ждут проверки лицензии — показы начнутся после неё.", href }
-        : { tone: "good", title: `${name}: показы идут`, href });
+  // «Показы идут» — только когда это правда: площадка кампанию показывает И в ней есть одобренные объявления без
+  // ограничений (не на модерации, не ждут лицензию). Пишем при смене состояния (meta.serving), а не при каждой проверке
+  {
+    for (const m of deliveryMoves.filter((x) => !x.ok))
+      inbox.push({ tone: "bad", title: `${CHANNEL_NAME[m.c.channel] ?? m.c.channel}: реклама не показывается`, text: m.note, href: `/app/ads#c-${m.c.id}` });
+    const camps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), eq(schema.campaigns.status, "active")));
+    const liveAds = camps.length ? await db.select({ campaignId: schema.ads.campaignId, status: schema.ads.status, note: schema.ads.statusNote }).from(schema.ads)
+      .where(and(eq(schema.ads.businessId, b.id), inArray(schema.ads.status, ["active", "moderation"]))) : [];
+    for (const c of camps) {
+      const meta = (c.meta ?? {}) as { delivery?: { ok?: boolean }; serving?: boolean };
+      if (!meta.delivery) continue; // площадка не отдаёт состояние показа (VK, демо) — не выдумываем
+      const mine = liveAds.filter((a) => a.campaignId === c.id);
+      const okAds = mine.filter((a) => a.status === "active" && !/^Не показывается/.test(a.note ?? "")).length;
+      const serving = meta.delivery.ok === true && okAds > 0;
+      if (serving === Boolean(meta.serving)) continue;
+      await db.update(schema.campaigns).set({ meta: { ...meta, serving } }).where(eq(schema.campaigns.id, c.id));
+      const name = CHANNEL_NAME[c.channel] ?? c.channel;
+      const href = `/app/ads#c-${c.id}`;
+      if (serving) inbox.push({ tone: "good", title: `${name}: показы начались`, text: `Директ показывает ${okAds} ${okAds === 1 ? "объявление" : "объявлений"}.`, href });
+      else if (meta.serving) inbox.push({ tone: "warn", title: `${name}: показы остановились`, href });
+    }
+    // Пополнили счёт, но показов ещё нет (модерация, лицензия) — говорим как есть
+    for (const m of deliveryMoves.filter((x) => x.ok && x.wasMoney)) {
+      const mine = liveAds.filter((a) => a.campaignId === m.c.id);
+      if (mine.some((a) => a.status === "active" && !/^Не показывается/.test(a.note ?? ""))) continue;
+      const docs = mine.some((a) => /документ|лиценз/i.test(a.note ?? ""));
+      inbox.push({ tone: "info", title: `${CHANNEL_NAME[m.c.channel] ?? m.c.channel}: деньги поступили`, text: docs ? "Показы начнутся после проверки лицензии." : "Показы начнутся, когда объявления пройдут модерацию.", href: `/app/ads#c-${m.c.id}` });
     }
   }
   await pushInbox(b.id, inbox);

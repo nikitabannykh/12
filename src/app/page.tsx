@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Reveal } from "@/components/Reveal";
-import { ArrowUpRight, Check, CircleCheck, Clock, Dumbbell, FlaskConical, Flower2, Hand, Music, PauseCircle, Scale, Scissors, Search, Sparkles, Stethoscope, Undo2, X } from "lucide-react";
+import { ArrowLeftRight, ArrowUpRight, Ban, Check, Rocket, ShieldCheck, CircleCheck, Clock, Dumbbell, FlaskConical, Flower2, Hand, Music, PauseCircle, Scale, Scissors, Search, Sparkles, Stethoscope, Undo2, X } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import { HeroBg } from "@/components/HeroBg";
 import { getUser } from "@/lib/auth";
@@ -235,8 +235,8 @@ export default async function Home() {
             {/* Мусорные запросы */}
             <Bezel className="md:col-span-5" inner="p-6 flex flex-col gap-4 bg-mark">
               <div>
-                <div className="text-[1.25rem] font-semibold tracking-tight leading-snug">Не платит за тех, кто не станет клиентом</div>
-                <p className="mt-1.5 text-[14.5px] text-ink/70 leading-relaxed">Люди ищут «маникюр обучение» или «вакансии мастера» — им не нужна запись. Робот убирает такие запросы.</p>
+                <span className="w-10 h-10 rounded-xl grid place-items-center mb-3 bg-ink/10 text-ink"><Ban size={20} strokeWidth={1.9} /></span><div className="text-[1.25rem] font-semibold tracking-tight leading-snug">Не платит за случайных людей</div>
+                <p className="mt-1.5 text-[14.5px] text-ink/70 leading-relaxed">«Маникюр обучение» или «вакансии мастера» — не клиенты. Робот убирает такие запросы.</p>
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {["маникюр обучение", "вакансии мастера", "своими руками", "гель-лак купить"].map((q) => <span key={q} className="rounded-full bg-ink/[0.08] px-2.5 py-1 text-[12.5px] line-through decoration-ink/50">{q}</span>)}
@@ -247,8 +247,8 @@ export default async function Home() {
             {/* A/B */}
             <Bezel className="md:col-span-5" inner="p-6 flex flex-col gap-4">
               <div>
-                <div className="text-[1.25rem] font-semibold tracking-tight leading-snug">Проверяет, какой текст работает лучше</div>
-                <p className="mt-1.5 text-[14.5px] text-muted leading-relaxed">Показывает два варианта объявления и оставляет тот, после которого чаще записываются.</p>
+                <span className="w-10 h-10 rounded-xl grid place-items-center mb-3 bg-paper text-ink"><FlaskConical size={20} strokeWidth={1.9} /></span><div className="text-[1.25rem] font-semibold tracking-tight leading-snug">Проверяет, какой текст работает лучше</div>
+                <p className="mt-1.5 text-[14.5px] text-muted leading-relaxed">Два варианта объявления — остаётся тот, после которого чаще записываются.</p>
               </div>
               <div className="grid gap-2">
                 {[["Маникюр с покрытием — 1 900 ₽", "13 заявок", true], ["Маникюр, который держится 3 недели", "9 заявок", false]].map(([t, r, win]) => (
@@ -263,8 +263,8 @@ export default async function Home() {
             {/* Перенос бюджета */}
             <Bezel className="md:col-span-4" inner="p-6 flex flex-col gap-4">
               <div>
-                <div className="text-[1.15rem] font-semibold tracking-tight leading-snug">Переводит деньги туда, где клиенты дешевле</div>
-                <p className="mt-1.5 text-[14px] text-muted leading-relaxed">Если во ВКонтакте заявка обходится дешевле, чем в Яндексе, — часть бюджета уходит туда.</p>
+                <span className="w-10 h-10 rounded-xl grid place-items-center mb-3 bg-paper text-ink"><ArrowLeftRight size={20} strokeWidth={1.9} /></span><div className="text-[1.15rem] font-semibold tracking-tight leading-snug">Переводит деньги туда, где клиенты дешевле</div>
+                <p className="mt-1.5 text-[14px] text-muted leading-relaxed">Заявка во ВКонтакте дешевле — часть бюджета уходит туда.</p>
               </div>
               <div className="mt-auto grid gap-2 text-[13.5px]">
                 {[["Яндекс", "450 ₽ за заявку", "−3 000 ₽", false], ["ВКонтакте", "280 ₽ за заявку", "+3 000 ₽", true]].map(([k, c, d, up]) => (
@@ -279,8 +279,8 @@ export default async function Home() {
             {/* Запуск */}
             <Bezel className="md:col-span-4" inner="p-6 flex flex-col gap-4">
               <div>
-                <div className="text-[1.15rem] font-semibold tracking-tight leading-snug">Запускает рекламу за 15 минут</div>
-                <p className="mt-1.5 text-[14px] text-muted leading-relaxed">Вы указываете сайт и бюджет — робот сам пишет объявления, подбирает запросы и настраивает кабинеты.</p>
+                <span className="w-10 h-10 rounded-xl grid place-items-center mb-3 bg-paper text-ink"><Rocket size={20} strokeWidth={1.9} /></span><div className="text-[1.15rem] font-semibold tracking-tight leading-snug">Запускает рекламу за 15 минут</div>
+                <p className="mt-1.5 text-[14px] text-muted leading-relaxed">Вы даёте сайт и бюджет — объявления, запросы и кабинеты робот делает сам.</p>
               </div>
               <div className="mt-auto grid grid-cols-2 gap-2 text-center">
                 <div className="rounded-xl bg-paper px-3 py-3"><div className="text-[12px] text-muted">Специалист</div><div className="text-lg font-semibold text-muted line-through decoration-1">5–7 дней</div></div>
@@ -291,8 +291,8 @@ export default async function Home() {
             {/* Лимит */}
             <Bezel className="md:col-span-4" inner="p-6 flex flex-col gap-4 bg-ink text-white">
               <div>
-                <div className="text-[1.15rem] font-semibold tracking-tight leading-snug">Не потратит больше, чем вы решили</div>
-                <p className="mt-1.5 text-[14px] text-white/60 leading-relaxed">Сказали 15 000 ₽ в месяц — значит, 15 000 ₽. Робот распределяет их по дням и не выходит за лимит.</p>
+                <span className="w-10 h-10 rounded-xl grid place-items-center mb-3 bg-white/10 text-mark"><ShieldCheck size={20} strokeWidth={1.9} /></span><div className="text-[1.15rem] font-semibold tracking-tight leading-snug">Не потратит больше, чем вы решили</div>
+                <p className="mt-1.5 text-[14px] text-white/60 leading-relaxed">Сказали 15 000 ₽ в месяц — значит, 15 000 ₽. Ни рубля сверх лимита.</p>
               </div>
               <div className="mt-auto">
                 <div className="flex justify-between text-[12.5px] text-white/60"><span>Потрачено 13 660 ₽</span><span>лимит 15 000 ₽</span></div>
