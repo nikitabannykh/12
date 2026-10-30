@@ -174,7 +174,8 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
   const allCamps = await db.select({ channel: schema.campaigns.channel, status: schema.campaigns.status }).from(schema.campaigns).where(eq(schema.campaigns.businessId, b.id));
   const launched = [...new Set(allCamps.filter((c) => ["active", "paused", "creating"].includes(c.status)).map((c) => c.channel as Channel))];
   const fits = (monthly: number, chs: Channel[]) => allocate(monthly, chs).dropped.length === 0;
-  const addable = channelsFor(await accountsFor(user.id))
+  const myAccounts = await accountsFor(user.id);
+  const addable = channelsFor(myAccounts)
     .map((x) => x.channel)
     .filter((ch) => !launched.includes(ch))
     .map((ch) => {
@@ -287,10 +288,28 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
             <p className="hint mt-3">Нажмите на кампанию, чтобы перейти к её объявлениям. «Клиент» — сколько стоил один клиент{chRows.some((r) => r.estimated) ? " (≈ — оценка, пока вы не отметили клиентов за неделю в «Статистике»)" : ""}. Раз в неделю робот переносит до четверти бюджета туда, где обращение дешевле.</p>
           </>
         ) : (
-          <p className="text-muted mt-3">
-            {fp && !famCount[fp] ? <>Кабинет {FAMILY_NAME[fp]} не подключён или кампаний в нём пока нет. </> : <>Таких кампаний пока нет. </>}
-            <Link href="/app/ads" scroll={false} className="font-semibold underline">Показать все</Link>
-          </p>
+          fp && !famCount[fp] ? (() => {
+            const connected = myAccounts.some((a) => a.platform === fp && a.status === "ok");
+            const canAdd = addable.filter((x) => familyOf(x.ch) === fp);
+            return !connected ? (
+              <div className="mt-4 rounded-2xl bg-paper p-5 flex flex-wrap items-center gap-4">
+                <div className="flex-1 min-w-[14rem]">
+                  <div className="font-semibold">Подключите кабинет {FAMILY_NAME[fp]} — робот сам создаст объявления</div>
+                  <p className="text-sm text-muted mt-1">{fp === "vk" ? "ВКонтакте, Одноклассники и Дзен: тексты и картинки возьмём из уже готовой рекламы, бюджет поделим в пределах месячного." : "Поиск и сайты Яндекса: тексты и картинки возьмём из уже готовой рекламы, бюджет поделим в пределах месячного."}</p>
+                </div>
+                <Link href={fp === "vk" ? "/app/settings#vk" : "/app/settings"} className="btn btn-primary btn-sm">Подключить {FAMILY_NAME[fp]}</Link>
+              </div>
+            ) : canAdd.length ? (
+              <div className="mt-4 rounded-2xl bg-paper p-5">
+                <div className="font-semibold">Кабинет {FAMILY_NAME[fp]} подключён — запустите рекламу в нём</div>
+                <div className="mt-3 flex flex-wrap gap-2">{canAdd.map((x) => <AddChannelButton key={x.ch} channel={x.ch} name={SHORT[x.ch]} weekly={x.weekly} />)}</div>
+              </div>
+            ) : (
+              <p className="text-muted mt-3">В кабинете {FAMILY_NAME[fp]} кампаний пока нет. <Link href="/app/ads" scroll={false} className="font-semibold underline">Показать все</Link></p>
+            );
+          })() : (
+            <p className="text-muted mt-3">Таких кампаний пока нет. <Link href="/app/ads" scroll={false} className="font-semibold underline">Показать все</Link></p>
+          )
         )}
       </section>
 
