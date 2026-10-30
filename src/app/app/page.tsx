@@ -376,12 +376,13 @@ export default async function Dashboard() {
                           </span>
                         ) : blockedAds.some((a) => a.campaignId === x.id && /документ/i.test(a.statusNote ?? "")) ? (
                           <span className="pill bg-bad-soft text-bad">не показывается: нужна лицензия</span>
-                        ) : s && s.learningLeft > 0 ? (
-                          <span className="pill bg-info-soft text-ink-2" title={`Площадка подбирает аудиторию: после запуска до ${pl(LEARNING_DAYS[x.channel] ?? 14, "дня", "дней", "дней")}, после изменения бюджета — до 7. Робот в это время не трогает настройки`}>
-                            <GraduationCap size={13} /> обучается — {pl(s.learningLeft, "день", "дня", "дней")}
-                          </span>
+                        ) : ads.some((a) => a.campaignId === x.id && a.status === "moderation") && !ads.some((a) => a.campaignId === x.id && a.status === "active") ? (
+                          <span className="pill bg-info-soft text-ink-2">на модерации</span>
                         ) : (
-                          <span className="pill bg-good-soft text-good">идёт</span>
+                          <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                            <span className="pill bg-good-soft text-good">идёт</span>
+                            {s && s.learningLeft > 0 ? <span className="text-[11px] text-faint inline-flex items-center gap-1" title="Площадка подбирает аудиторию; робот в это время не меняет ставки и лимит"><GraduationCap size={11} /> обучение ещё {pl(s.learningLeft, "день", "дня", "дней")}</span> : null}
+                          </span>
                         )}
                       </span>
                     </Link>

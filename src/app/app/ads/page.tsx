@@ -189,6 +189,11 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
     });
 
   const anchorOf = (key: string) => (key === "maps" ? "maps" : `c-${key}`);
+  const modOf = (campaignId: string): ModCount => {
+    const list = ads.filter((x) => x.campaignId === campaignId);
+    const docs = list.filter((x) => x.status === "active" && /документ|лиценз/i.test(x.statusNote ?? "")).length;
+    return { active: list.filter((x) => x.status === "active" && !/^Не показывается/.test(x.statusNote ?? "")).length, moderation: list.filter((x) => x.status === "moderation").length, rejected: list.filter((x) => x.status === "rejected").length, docs };
+  };
   const filterName = [fp ? FAMILY_NAME[fp] : null, ft ? TYPE_INFO[ft].label.toLowerCase() : null].filter(Boolean).join(" · ");
 
   return (
@@ -500,7 +505,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                 <h2 className="text-xl font-bold">{CHANNEL_NAME[ch]}</h2>
                 {waiting ? (
                   aud!.state === "off" ? <span className="pill bg-paper text-muted">автозапуск выключен</span> : <span className="pill bg-good-soft text-good"><Users size={13} /> копим аудиторию</span>
-                ) : ads.some((x) => x.campaignId === camp.id && x.status === "active" && /документ|лиценз/i.test(x.statusNote ?? "")) && !states.get(camp.id)?.stopped ? <span className="pill bg-bad-soft text-bad">Не показывается — ждёт лицензию</span> : <CampaignPill s={states.get(camp.id)} ch={ch} />}
+                ) : <CampaignPill s={states.get(camp.id)} ch={ch} mod={modOf(camp.id)} />}
               </div>
               <p className="text-sm text-muted mt-0.5"><Purpose type={typeOf(ch)} /></p>
 
@@ -893,12 +898,12 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
     if (isRetarget(c.channel) && c.status === "paused" && a && a.state !== "on") {
       return a.state === "off" ? <span className="pill bg-paper text-muted">автозапуск выключен</span> : <AudienceBar size={a.size} need={a.need} compact />;
     }
-    // Не показывается (нет денег, ждёт лицензию…) — один статус; подробности и что делать — в карточке кампании
+    // Статус по делу; при проблеме — ссылка к карточке кампании, где расписано, что делать
     const st = states.get(c.id);
-    const docs = ads.some((x) => x.campaignId === c.id && x.status === "active" && /документ/i.test(x.statusNote ?? ""));
-    if (st?.stopped === "platform" || (docs && !st?.stopped))
-      return <a href={`#${anchorOf(it.key)}`} className="pill bg-bad-soft text-bad hover:underline" title="Подробнее — в карточке кампании">Не показывается</a>;
-    return <CampaignPill s={st} ch={c.channel} short />;
+    const mod = modOf(c.id);
+    const problem = st?.stopped === "platform" || (mod.docs > 0 && !st?.stopped);
+    const pillEl = <CampaignPill s={st} ch={c.channel} short mod={mod} />;
+    return problem ? <a href={`#${anchorOf(it.key)}`} className="hover:underline" title="Подробнее — в карточке кампании">{pillEl}</a> : pillEl;
   }
 }
 
@@ -928,20 +933,41 @@ function Duel({ label, title, note, s, ahead }: { label: string; title?: string;
   );
 }
 
-function CampaignPill({ s, ch, short = false }: { s?: { stopped: string | null; learningLeft: number; note?: string | null }; ch: string; short?: boolean }) {
-  if (s?.stopped === "guard") return <span className="pill bg-bad-soft text-bad">{short ? "Стоит: бюджет" : "Стоит: кончился бюджет месяца"}</span>;
-  if (s?.stopped === "error") return <span className="pill bg-bad-soft text-bad">Ошибка площадки</span>;
-  if (s?.stopped === "platform") return <span className="pill bg-bad-soft text-bad" title={s.note ?? undefined}>{/средств|пополн/i.test(s.note ?? "") ? (short ? "Нет денег" : "Не показывается") : /модерац/i.test(s.note ?? "") ? "На модерации" : "Не показывается"}</span>;
-  if (s?.stopped === "audience") return <span className="pill bg-good-soft text-good">Копим аудиторию</span>;
-  if (s?.stopped === "robot") return <span className="pill bg-paper text-muted">{short ? "Пауза — робот" : "На паузе — остановил робот"}</span>;
-  if (s?.stopped) return <span className="pill bg-paper text-muted">{short ? "Пауза — вы" : "На паузе — вы остановили"}</span>;
-  if (s && s.learningLeft > 0)
-    return (
-      <span className="pill bg-info-soft text-ink-2" title={`Обучение после запуска длится до ${pl(LEARNING_DAYS[ch] ?? 14, "дня", "дней", "дней")}, после изменения бюджета — до 7. В это время робот не меняет стратегию, ставки и лимит кампании; объявления и аудитории проверяет как обычно`}>
-        <GraduationCap size={13} /> {short ? `обучается, ${pl(s.learningLeft, "день", "дня", "дней")}` : `обучается ещё ${pl(s.learningLeft, "день", "дня", "дней")}`}
-      </span>
-    );
-  return <span className="pill bg-good-soft text-good">Идёт</span>;
+type ModCount = { active: number; moderation: number; rejected: number; docs: number };
+
+/**
+ * Статус кампании — одним словом и по делу: идёт / на модерации / не показывается (почему) / на паузе.
+ * Обучение — не статус, а пометка мелко рядом: при «Идёт» оно лишь значит, что робот пока не трогает ставки.
+ */
+function CampaignPill({ s, ch, short = false, mod }: { s?: { stopped: string | null; learningLeft: number; note?: string | null }; ch: string; short?: boolean; mod?: ModCount }) {
+  const pill = (() => {
+    if (s?.stopped === "guard") return <span className="pill bg-bad-soft text-bad">{short ? "Стоит: бюджет" : "Стоит: кончился бюджет месяца"}</span>;
+    if (s?.stopped === "error") return <span className="pill bg-bad-soft text-bad">Ошибка площадки</span>;
+    if (s?.stopped === "platform") {
+      const money = /средств|пополн/i.test(s.note ?? "");
+      if (/модерац/i.test(s.note ?? "") && !money) return <span className="pill bg-info-soft text-ink-2">На модерации</span>;
+      return <span className="pill bg-bad-soft text-bad" title={s.note ?? undefined}>{money ? (mod?.docs ? "Не показывается: деньги, лицензия" : "Не показывается: нет денег") : mod?.docs ? "Не показывается: лицензия" : "Не показывается"}</span>;
+    }
+    if (s?.stopped === "audience") return <span className="pill bg-good-soft text-good">Копим аудиторию</span>;
+    if (s?.stopped === "robot") return <span className="pill bg-paper text-muted">{short ? "Пауза — робот" : "На паузе — остановил робот"}</span>;
+    if (s?.stopped) return <span className="pill bg-paper text-muted">{short ? "Пауза — вы" : "На паузе — вы остановили"}</span>;
+    if (mod?.docs) return <span className="pill bg-bad-soft text-bad">Не показывается: лицензия</span>;
+    if (mod && !mod.active && mod.moderation) return <span className="pill bg-info-soft text-ink-2">На модерации</span>;
+    if (mod && !mod.active && !mod.moderation && mod.rejected) return <span className="pill bg-bad-soft text-bad">Отклонена модерацией</span>;
+    if (mod && mod.moderation) return <span className="pill bg-good-soft text-good">Идёт{short ? "" : ` · ${mod.moderation} на модерации`}</span>;
+    return <span className="pill bg-good-soft text-good">Идёт</span>;
+  })();
+  const learning = !s?.stopped && s && s.learningLeft > 0 && !mod?.docs;
+  return (
+    <span className="inline-flex flex-col items-start gap-0.5">
+      {pill}
+      {learning ? (
+        <span className="text-[11px] text-faint inline-flex items-center gap-1" title={`Первые ${pl(LEARNING_DAYS[ch] ?? 14, "день", "дня", "дней")} после запуска площадка подбирает аудиторию. Робот в это время не меняет ставки и лимит; объявления проверяет как обычно`}>
+          <GraduationCap size={11} /> обучение ещё {pl(s.learningLeft, "день", "дня", "дней")}
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 /** Причина отклонения без мусора вроде «[object Object]» */
