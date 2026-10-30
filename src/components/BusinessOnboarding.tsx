@@ -323,7 +323,7 @@ export function BusinessOnboarding({
       setRestored(true);
     }
     const h = window.location.hash.slice(1);
-    if (editing && ["org", "dgis", "legal", "hours"].includes(h)) setTimeout(() => jumpTo(h), 300);
+    if (editing && ["org", "dgis", "legal", "hours", "f-adv"].includes(h)) setTimeout(() => jumpTo(h), 300);
     // «Настройки → Ссылки на бизнес → Изменить» — сразу раскрытый блок ссылок
     if (h === "links") {
       setLinkOpen(true);

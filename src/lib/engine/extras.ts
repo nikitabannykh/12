@@ -6,7 +6,7 @@
  */
 import { customSchedule, showOf } from "./show";
 import type { Business } from "../db/schema";
-import { isMedical, nicheById } from "../niches";
+import { isMedical, KIDS_RE, nicheById } from "../niches";
 
 export type ExtrasBiz = { showSettings?: unknown } & Pick<Business, "name" | "niche" | "city" | "address" | "phone" | "whatsapp" | "telegram" | "hours" | "services" | "advantages" | "offer" | "review" | "description"> & {
   /** ID организации в Яндекс Бизнесе (permalink): адрес, телефон, часы и рейтинг Директ берёт из профиля */
@@ -130,7 +130,7 @@ export function parsePrice(s?: string | null): PriceExt | null {
  * Ничего не придумываем: «Без очереди», «Удобно добраться», «Стерильные инструменты» — только если это написал владелец.
  * Короткие факты не длиннее 25 символов: длинные преимущества сокращаем по смыслу, а не обрезаем на полуслове.
  */
-export function factCallouts(b: Pick<ExtrasBiz, "advantages" | "offer" | "whatsapp" | "telegram">, medical = false) {
+export function factCallouts(b: Pick<ExtrasBiz, "advantages" | "offer" | "whatsapp" | "telegram"> & Partial<Pick<ExtrasBiz, "services" | "hours">>, medical = false) {
   const out: string[] = [];
   const add = (s?: string | null) => {
     if (!s || hasClaims(s, medical)) return;
@@ -148,6 +148,11 @@ export function factCallouts(b: Pick<ExtrasBiz, "advantages" | "offer" | "whatsa
   add("Онлайн-запись");
   if (b.whatsapp && b.telegram) add("Запись в WhatsApp и Telegram");
   else if (b.whatsapp || b.telegram) add(`Запись в ${b.whatsapp ? "WhatsApp" : "Telegram"}`);
+  // Факты из прайса и часов работы: есть и детская, и взрослая услуга; часы — если короткие
+  const svc = (b.services ?? []).map((s) => `${s.name ?? ""} ${s.category ?? ""}`.toLowerCase().replace(/ё/g, "е"));
+  if (svc.some((x) => KIDS_RE.test(x)) && svc.some((x) => !KIDS_RE.test(x))) add(medical ? "Приём взрослых и детей" : "Для взрослых и детей");
+  const h = clean(b.hours ?? "");
+  if (h) add(h.length <= 25 ? h : clean(h.split(/[,;]/)[0]));
   return out.slice(0, 8);
 }
 
@@ -209,11 +214,13 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
   const price = svc ? parsePrice(svc.price) : priced.sort((a, c) => a.p!.price - c.p!.price)[0]?.p ?? null;
   const priceLabel = price && !svc && price.qualifier === "NONE" ? { ...price, qualifier: "FROM" as const, label: `от ${price.label}` } : price;
 
-  const priceList = services
-    .filter((s) => s.price)
-    .map((s) => `${s.name.toLowerCase()} ${s.price}`)
-    .slice(0, 3)
-    .join(", ");
+  // Цены целиком, без обрыва на полуслове: добавляем услуги, пока описание помещается
+  let priceList = "";
+  for (const s of services.filter((x) => x.price)) {
+    const next = `${priceList ? `${priceList}, ` : ""}${clean(s.name).toLowerCase()} ${clean(s.price ?? "")}`;
+    if (next.length > SITELINK_LIMITS.description) break;
+    priceList = next;
+  }
   const { street, house } = splitAddress(b.address);
   const hours = parseHours(b.hours);
   const hasPrices = services.some((s) => s.price);

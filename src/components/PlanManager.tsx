@@ -8,6 +8,7 @@
  */
 import { useMemo, useState } from "react";
 import { ChevronDown, Clock, LayoutGrid, List, Loader2, MapPin, Pencil, Plus, RotateCcw, Search, Sparkles, Users, X } from "lucide-react";
+import type { AdExtras } from "@/lib/engine/extras";
 import { Toggle } from "./client";
 import { SearchAdPreview, ImageAdPreview, ResponsiveAssets } from "./AdPreview";
 import { TypeBadge } from "./CampaignNav";
@@ -245,7 +246,7 @@ export function PlanManager(p: {
                       <Toggle checked={on > 0} label={`Группа ${g.name}`} onChange={(v) => p.onPatch({ groupId: g.id, groupEnabled: v })} />
                     </div>
                     {isOpen ? (
-                      <div className="border-t border-line px-3 py-3 grid gap-3">
+                      <div className="border-t border-line px-3 py-3 grid grid-cols-[minmax(0,1fr)] gap-3">
                         <div className="grid sm:grid-cols-2 gap-x-4 gap-y-1 text-sm">
                           {ch.channel === "search" ? (
                             <>
@@ -263,8 +264,9 @@ export function PlanManager(p: {
                           )}
                           {direct && on > 3 ? <div className="sm:col-span-2 text-warn">В группе Директа работает не больше 3 объявлений — оставьте включёнными три.</div> : null}
                         </div>
+                        <GroupExtras g={g} ch={ch.channel} biz={p.biz} host={p.host} href={p.href} logo={p.logo} businessName={p.businessName} planCallouts={plan.callouts} preview={view === "list"} />
                         {view === "list" ? (
-                          <ul className="grid divide-y divide-line rounded-lg border border-line">
+                          <ul className="grid grid-cols-[minmax(0,1fr)] divide-y divide-line rounded-lg border border-line">
                             {ads.map((ad) => (
                               <li key={ad.id} className={`flex items-center gap-3 px-2.5 py-2 ${ad.enabled ? "" : "opacity-50"}`}>
                                 {ad.imageId ? <img src={`/api/images/${ad.imageId}`} alt="" className="w-12 h-12 rounded-md object-cover bg-paper shrink-0" loading="lazy" /> : ch.channel === "search" ? null : <span className="w-12 h-12 rounded-md bg-paper shrink-0" />}
@@ -321,5 +323,102 @@ export function PlanManager(p: {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Что прикрепится к объявлениям группы и как они будут выглядеть: быстрые ссылки с описаниями, уточнения, цена,
+ * адрес и часы (из профиля организации), картинка; для VK — длинный текст и «о компании». Те же данные, что уходят
+ * на площадку при запуске (adExtras + уточнения плана), поэтому владелец видит, какие факты анкеты робот использует.
+ */
+function GroupExtras({ g, ch, biz, host, href, logo, businessName, planCallouts, preview }: {
+  g: PlanGroup; ch: Channel; biz: ExtrasBiz; host: string; href: string; logo?: string | null; businessName: string; planCallouts: string[]; preview: boolean;
+}) {
+  const fmt = formatOf(ch);
+  const search = ch === "search";
+  const vk = fmt === "vk";
+  const ad = g.ads.find((a) => a.enabled) ?? g.ads[0];
+  const ex: AdExtras = withPlanCallouts(adExtras(biz, { channel: fmt, href, service: search ? g.service ?? g.name : null, text: ad?.text }), planCallouts);
+  if (!ad) return null;
+  const image = g.ads.find((a) => a.enabled && a.imageId)?.imageId ?? null;
+  const noAdv = !(biz.advantages ?? []).some((x) => x.trim());
+  const contacts = [biz.address, biz.hours, biz.phone].map((x) => (x ?? "").trim()).filter(Boolean);
+  const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div className="grid gap-1 sm:grid-cols-[9.5rem_minmax(0,1fr)] sm:gap-3">
+      <div className="text-faint">{label}</div>
+      <div className="min-w-0 text-ink-2">{children}</div>
+    </div>
+  );
+  const sum = vk
+    ? "длинный текст и «о компании»"
+    : [`${ex.sitelinks.length} ${plural(ex.sitelinks.length, "быстрая ссылка", "быстрые ссылки", "быстрых ссылок")}`, `${ex.callouts.length} ${plural(ex.callouts.length, "уточнение", "уточнения", "уточнений")}`, ex.price ? "цена" : null, ex.org ? "адрес и часы" : null].filter(Boolean).join(", ");
+  return (
+    <details className="group/ex min-w-0 rounded-lg border border-line bg-paper/40" open={preview}>
+      <summary className="cursor-pointer list-none px-3 py-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+        <ChevronDown size={14} className="shrink-0 text-muted transition-transform -rotate-90 group-open/ex:rotate-0" />
+        <span className="font-semibold">Как объявление выглядит {vk ? "в VK" : "в Яндексе"}</span>
+        <span className="text-muted min-w-0 truncate">· {sum}</span>
+      </summary>
+      <div className="px-3 pb-3 grid gap-3 text-[13px]">
+        {preview ? (
+          <div className="min-w-0 max-w-xl">
+            {search ? (
+              <SearchAdPreview title={ad.title} title2={ad.title2} text={ad.text} host={host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={ex} />
+            ) : (
+              <ImageAdPreview channel={vk ? "vk" : "network"} title={ad.title} text={ad.text} host={vk ? businessName : host} image={image ? `/api/images/${image}` : null} extras={ex} logo={logo} />
+            )}
+            <div className="mt-1 text-xs text-faint">Первое включённое объявление группы. Площадка сама решает, сколько расширений показать.</div>
+          </div>
+        ) : null}
+        <div className="grid gap-2.5">
+          {vk ? (
+            <>
+              <Row label="Длинный текст">{ex.longText || "—"}</Row>
+              <Row label="О компании">{ex.about || "—"}</Row>
+            </>
+          ) : (
+            <>
+              <Row label="Быстрые ссылки">
+                {ex.sitelinks.length ? (
+                  <ul className="grid gap-1.5 sm:grid-cols-2 sm:gap-x-4">
+                    {ex.sitelinks.map((x) => (
+                      <li key={x.title} className="min-w-0">
+                        <span className="font-medium text-[#2a3eb1]">{x.title}</span>
+                        {x.description ? <span className="block text-muted [overflow-wrap:anywhere]">{x.description}</span> : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : "—"}
+              </Row>
+              <Row label="Уточнения">
+                <span className="flex flex-wrap gap-1.5">{ex.callouts.length ? ex.callouts.map((c) => <span key={c} className="pill bg-white border border-line px-2 py-0.5 text-ink-2">{c}</span>) : "—"}</span>
+              </Row>
+              {ex.price ? <Row label="Цена">{ex.price.label}{search && g.service ? ` — ${g.service}` : " — минимальная по прайсу"}</Row> : null}
+              <Row label="Адрес и часы">
+                {ex.org ? (
+                  <>Из профиля в Яндекс Бизнесе{contacts.length ? <span className="text-muted">: {contacts.join(" · ")}</span> : null}</>
+                ) : (
+                  <span>
+                    Не покажем: Директ берёт адрес, телефон и часы только из профиля организации.{" "}
+                    <a href="/app/start#org" className="font-medium text-ink underline underline-offset-2">Привяжите Яндекс Карты</a>
+                    {contacts.length ? <span className="block text-muted">В анкете: {contacts.join(" · ")}</span> : null}
+                  </span>
+                )}
+              </Row>
+            </>
+          )}
+          {!search ? (
+            <Row label="Картинка">
+              {image ? <img src={`/api/images/${image}`} alt="" className="w-20 h-12 rounded object-cover bg-paper" loading="lazy" /> : "робот подберёт или сгенерирует на следующем шаге"}
+            </Row>
+          ) : null}
+        </div>
+        {noAdv && !vk ? (
+          <p className="rounded-md bg-white border border-line px-2.5 py-2 text-ink-2">
+            Добавьте преимущества в <a href="/app/start#f-adv" className="font-medium text-ink underline underline-offset-2">«Данные о бизнесе»</a>, чтобы робот показал их в уточнениях и быстрой ссылке «Почему мы» — сейчас под объявлением только факты из прайса и часов работы.
+          </p>
+        ) : null}
+      </div>
+    </details>
   );
 }

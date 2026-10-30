@@ -1,8 +1,8 @@
 import "server-only";
 import type { Business, Service } from "../db/schema";
 import { groupServices, hasCategories } from "../services";
-import { ANGLES, isMedical, LAYER_LABEL, nicheById, type Layer } from "../niches";
-import { badChars, claimProblems, cleanText, factCallouts, hasClaims, hasSuperlative, SUPERLATIVE as SUPERLATIVE_ONE, withoutSuperlatives } from "../engine/extras";
+import { ANGLES, isMedical, KIDS_RE, LAYER_LABEL, nicheById, type Layer } from "../niches";
+import { adExtras, badChars, claimProblems, cleanText, factCallouts, hasClaims, hasSuperlative, parsePrice, parseWeekHours, SUPERLATIVE as SUPERLATIVE_ONE, withoutSuperlatives } from "../engine/extras";
 import { plural } from "../util";
 import { addPhrases, buildSemanticCore, displayKeyword, finalizeCore, networkInterests, conflicts, type SemanticCore, type SemanticGroup } from "../engine/semantics";
 import { aiConfigured, gptJson } from "./yandex";
@@ -185,7 +185,7 @@ function keywordBase(name: string) {
 /** Факты владельца одной строкой (без подсказок по нише) — с ними сверяем ответ модели */
 function ownerFacts(b: Business) {
   const parts = [
-    b.name, b.city, b.address, b.hours, b.description, b.offer, b.review, b.audience,
+    b.name, b.city, b.address, b.hours, b.description, b.offer, b.review, b.audience, ...derivedFacts(b),
     ...(b.advantages ?? []),
     ...(b.services ?? []).flatMap((s) => [s.name, s.price, s.note]),
     b.whatsapp ? "whatsapp ватсап" : null,
@@ -226,11 +226,15 @@ function factCheckAd(a: AdDraft, facts: string, medical = false): AdDraft | null
     .join(" ")
     .trim();
   if (text.length < 25) return null;
+  // От текста остался один призыв («Запишитесь онлайн!») — фактов в нём нет, лучше шаблонное объявление
+  if (text.split(/(?<=[.!?])\s+/).every((x) => /запис|запиш/i.test(x) && x.length < 45)) return null;
   return { ...a, title2, text };
 }
 
 function bizBrief(b: Business) {
   const n = nicheById(b.niche);
+  const derived = derivedFacts(b);
+  const ext = { callouts: factCallouts(b, isMedical(b)), sitelinks: adExtras(b, { channel: "search", href: "https://example.ru/" }).sitelinks };
   const line = (s: Service) => `- ${s.name}${humanService(b, s.name) !== cleanText(s.name) ? ` (в рекламе называть: «${humanService(b, s.name)}»)` : ""}${s.price ? ` — ${priceText(s.price)}` : ""}${s.note ? ` (${s.note})` : ""}`;
   // Разделы прайса — заголовками: модели проще сделать по группе на раздел («Маникюр», «Педикюр»)
   const services = hasCategories(b.services ?? [])
@@ -247,8 +251,17 @@ function bizBrief(b: Business) {
     b.audience ? `Кто клиенты: ${b.audience}` : `Типичные клиенты (для выбора слов, не для обещаний): ${n.audience.text}`,
     b.hours ? `Часы работы: ${b.hours}` : "",
     b.whatsapp || b.telegram ? `Запись в мессенджерах: ${[b.whatsapp && "WhatsApp", b.telegram && "Telegram"].filter(Boolean).join(", ")}` : "",
+    b.phone ? "Есть телефон для записи." : "",
     `На странице записи есть онлайн-форма — «онлайн-запись» писать можно.`,
+    derived.length ? `Что ещё следует из прайса и часов (тоже факты, можно писать): ${derived.join("; ")}.` : "",
+    `Под объявлением сами покажем уточнения (${ext.callouts.join(", ")}) и быстрые ссылки (${ext.sitelinks.map((x) => x.title).join(", ")}) — в тексте лучше другие факты.`,
   ].filter(Boolean).join("\n");
+}
+
+/** Факты, которые следуют из анкеты: «Принимаем взрослых и детей» (по прайсу), «Принимаем и в субботу», «Цены от 4 500 ₽» */
+function derivedFacts(b: Business) {
+  const f = factsOf(b);
+  return [f.who, ...f.hoursFacts, f.from && `Цены ${f.from}`, f.addr && f.addr !== f.street ? `Адрес: ${f.addr}` : null].filter((x): x is string => !!x);
 }
 
 const SYSTEM = `Ты — сильный директолог и копирайтер для малого бизнеса в России. Пишешь объявления для Яндекс Директа и VK Рекламы.
@@ -296,6 +309,10 @@ ${list(fallback.search)}
 Группы РСЯ:
 ${list(fallback.network)}
 
+Три объявления группы должны отличаться не только заголовком: у каждого свой первый факт в тексте и свой второй заголовок.
+Например: 1) цена услуги и другие цены прайса; 2) для кого приём, описание или преимущество; 3) адрес, часы и запись. Не повторяй один и тот же текст в разных объявлениях и группах.
+Используй преимущества, описание, заметки к услугам и факты из прайса и часов — объявление из одной цены и призыва проигрывает.
+
 Подготовь рекламу. Верни JSON:
 {
  "search": [ // по элементу на каждую группу поиска из списка, в том же порядке
@@ -328,9 +345,20 @@ ${list(fallback.network)}
           const checked = nz.title && nz.text ? factCheckAd(nz, facts, medical) : null;
           return checked ?? g.ads[i % Math.max(1, g.ads.length)] ?? null;
         });
-        const merged = uniqueAds(ads.filter((a): a is AdDraft => !!a && !!a.title && !!a.text));
+        // После проверки фактов тексты могут сжаться до одинаковых — повтор заменяем шаблонным объявлением этой группы
+        const sameText = (x: AdDraft, y: AdDraft) => titleKey(x.text) === titleKey(y.text) || titleKey(firstSentence(x.text)) === titleKey(firstSentence(y.text));
+        const kept: AdDraft[] = [];
+        for (const a of ads) {
+          if (!a || !a.title || !a.text) continue;
+          if (!kept.some((k) => sameText(k, a))) kept.push(a);
+          else {
+            const t = g.ads.find((x) => !kept.some((k) => sameText(k, x) || titleKey(k.title) === titleKey(x.title)));
+            if (t) kept.push(t);
+          }
+        }
+        const merged = uniqueAds(kept);
         // Меньше трёх после проверки — добираем шаблонными с другими подходами
-        for (const t of g.ads) if (merged.length < 3 && !merged.some((m) => m.angle === t.angle || titleKey(m.title) === titleKey(t.title))) merged.push(t);
+        for (const t of g.ads) if (merged.length < 3 && !merged.some((m) => m.angle === t.angle || titleKey(m.title) === titleKey(t.title) || sameText(m, t))) merged.push(t);
         return { ...g, ads: merged.length ? merged : g.ads };
       });
     const vk = (raw.vk ?? [])
@@ -447,10 +475,14 @@ export async function rewriteAdsBatch(
   if (!items.length) return out;
   if (!aiConfigured()) {
     // Без модели — другой проверенный шаблон с тем же подходом (пожелание учесть не можем)
+    // Варианты в пачке не повторяют ни старые тексты, ни друг друга
+    const taken = new Set(items.flatMap((it) => [titleKey(it.ad.title), titleKey(it.ad.text)]));
     for (const it of items) {
       const svc = it.service ? b.services?.find((s) => s.name === it.service) : undefined;
-      const pool = [0, 1, 2].flatMap((set) => templateAds(b, ch, svc?.name ?? it.service, svc?.price, set));
-      const alt = pool.find((a) => a.angle === it.ad.angle && a.title !== it.ad.title && a.text !== it.ad.text) ?? pool.find((a) => a.title !== it.ad.title && a.text !== it.ad.text);
+      const pool = [0, 1, 2].flatMap((set) => adPool(b, ch, svc?.name ?? it.service, svc?.price, set));
+      const free = (a: AdDraft) => !taken.has(titleKey(a.title)) && !taken.has(titleKey(a.text));
+      const alt = pool.find((a) => a.angle === it.ad.angle && free(a)) ?? pool.find(free);
+      if (alt) taken.add(titleKey(alt.title)).add(titleKey(alt.text));
       out[it.key] = alt ?? null;
     }
     return out;
@@ -642,6 +674,10 @@ function joinSentences(parts: (string | null | undefined | false)[], max: number
     if (/онлайн/i.test(t) && /онлайн/i.test(out)) continue; // один призыв на текст
     const s = /[.!?»"]$/.test(t) ? t : `${t}.`;
     if (out.toLowerCase().includes(s.toLowerCase())) continue; // без повторов
+    // Почти то же другими словами («Центр для взрослых и детей» → «Принимаем взрослых и детей») — пропускаем
+    const words = t.toLowerCase().replace(/ё/g, "е").match(/\p{L}{4,}/gu) ?? [];
+    const have = out.toLowerCase().replace(/ё/g, "е");
+    if (words.length && words.filter((w) => have.includes(w)).length / words.length >= 0.6) continue;
     const next = out ? `${out} ${s}` : s;
     if (next.length <= max) out = next;
   }
@@ -672,161 +708,339 @@ function uniqueAds(ads: AdDraft[]): AdDraft[] {
   });
 }
 
-function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string, price?: string, set = 0): AdDraft[] {
-  const L = LIMITS[ch];
-  const rawSvc = cleanText(serviceName);
-  const svc = humanService(b, rawSvc) || mainService(b);
-  const owned = b.services?.find((s) => cleanText(s.name) === rawSvc);
-  const p = priceText(cleanText(price || owned?.price || (serviceName ? null : b.services?.[0]?.price))) || null;
-  const street = b.address ? cleanText(b.address.split(/[,—–]/)[0]) : null;
-  const where = street ? `${b.city}, ${street}` : b.city;
-  const name = cleanText(b.name);
-  // Медуслуги: без отзывов пациентов и обещаний (закон «О рекламе», ст. 24)
-  const medical = isMedical(b);
-  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter((x) => x && !hasClaims(x, medical));
-  const offer = b.offer && !hasClaims(b.offer, medical) ? withoutSuperlatives(b.offer.replace(/\s*(на|за)\s+первый\s+визит\s*$/i, "")) : null;
-  const firstVisit = b.offer && /первый\s+визит/i.test(b.offer);
-  // Отзыв укорачиваем так, чтобы в тексте осталось место для адреса или призыва
-  const rmax = Math.max(30, L.text - 38);
-  const rv = medical ? null : withoutSuperlatives(b.review) || null;
-  const review = rv ? (rv.length > rmax ? rv.slice(0, rmax).replace(/\s+\S*$/, "").replace(/[,—–-]$/, "").trim() + "..." : rv) : null;
-
-  const brand = `${name} — ${b.city}`;
-  // Заголовки не повторяются между объявлениями группы: занятый вариант пропускаем и берём следующий
-  const used = new Set<string>();
-  // Услуга совпадает с названием («Студия Лак»): варианты вида «Студия Лак в Студия Лак» пропускаем
-  const nk = titleKey(name);
-  const twice = (x: string | null | undefined | false) => !!x && nk.length > 2 && titleKey(x).split(nk).length > 2;
-  const pick = (c: (string | null | undefined | false)[], max: number, u?: Set<string>) => pickTitle(c.map((x) => (twice(x) ? null : x)), max, u);
-  const sentences = (c: (string | null | undefined | false)[], max: number) => joinSentences(c.map((x) => (twice(x) ? null : x)), max);
-  const hours = cleanText(b.hours) || null;
-  const cta = "Запишитесь онлайн за минуту!";
-  const fullOffer = offer && b.offer ? cap(withoutSuperlatives(b.offer)) || null : null;
-  const offerFull = offer ? (firstVisit ? `${offer} на первый визит` : offer) : null;
-
-  const price_: AdDraft = {
-    angle: "price",
-    title: pick([p && `${svc} — ${p}, ${b.city}`, p && `${svc} — ${p}`, p && `${svc} за ${p}`, `${svc} — ${b.city}`, svc], L.title, used),
-    title2: pick([adv[0], brand, name, "Онлайн-запись"], L.title2),
-    text: sentences([`${svc}${p ? ` — ${p}` : ""}`, adv[0], adv[1], `${name}, ${where}`, fullOffer, cta, "Запись онлайн"], L.text),
-  };
-  const offer_: AdDraft = offerFull
-    ? {
-        angle: "offer",
-        title: pick([`${svc}: ${offerFull}`, offerFull, `${svc}: ${offer}`, offer], L.title, used),
-        title2: pick([brand, firstVisit ? "Для новых клиентов" : name], L.title2),
-        text: sentences([cap(offerFull), p && `${svc} — ${p}`, adv[0], `${name}, ${where}`, cta, "Запись онлайн"], L.text),
-      }
-    : {
-        angle: "convenience",
-        title: pick([street ? `${svc} — ${b.city}, ${street}` : null, `${svc} в ${name} — ${b.city}`, `${svc} — ${b.city}`, svc], L.title, used),
-        title2: pick([hours, street, "Онлайн-запись"], L.title2),
-        text: sentences([`${name}: ${where}`, hours, adv[0], adv[1], cta, "Запись онлайн"], L.text),
-      };
-  const proof_: AdDraft = review
-    ? {
-        angle: "proof",
-        title: pick([`${svc} — отзыв клиента`, `${name}: отзыв клиента`, svc], L.title, used),
-        title2: pick([adv[0], brand, "Отзыв клиента"], L.title2),
-        text: sentences([`«${review}»`, adv[0], `${name}, ${where}`, cta, "Запись онлайн"], L.text),
-      }
-    : {
-        angle: "result",
-        title: pick([`${svc} в ${name} — ${b.city}`, `${svc} в ${name}`, `${svc} — ${b.city}`, svc], L.title, used),
-        title2: pick([adv[0], adv[1], brand, name], L.title2),
-        text: sentences([adv[0], adv[1], adv[2], p && `${svc} — ${p}`, `${name}, ${where}`, cta, "Запись онлайн"], L.text),
-      };
-  const convenience_: AdDraft = {
-    angle: "convenience",
-    title: pick([street ? `${svc} — ${street}, ${name}` : null, street ? `${svc} — ${street}` : null, `${svc} — ${name}, ${b.city}`, `${svc} — ${b.city}`, svc], L.title, used),
-    title2: pick([hours, "Онлайн-запись"], L.title2),
-    text: sentences([`${name}, ${where}`, hours, adv[1] ?? adv[0], adv[0], "Выберите удобное время онлайн"], L.text),
-  };
-  const emotion_: AdDraft = {
-    angle: "emotion",
-    title: pick([`Время для себя: ${low(svc, name)} в ${name}`, `Время для себя: ${low(svc, name)}`, `Время для себя в ${name}`, svc], L.title, used),
-    title2: pick([street ? `${name}, ${street}` : null, brand, name], L.title2),
-    text: sentences(["Время только для себя", `${cap(svc)} — ${name}, ${where}`, adv[0], fullOffer, cta, "Запись онлайн"], L.text),
-  };
-  // Медуслуги: «Время для себя» не про приём специалиста — вместо него удобство
-  const sets = [[price_, offer_, proof_], [convenience_, medical ? offer_ : emotion_, price_]];
-  return uniqueAds(sets[set % 2].map((a) => normalizeAd(a, ch)));
+/** Текст с призывом записаться: если факты заняли всё место, убираем последний факт ради короткого «Запись онлайн» */
+function withCta(parts: (string | null | undefined | false)[], max: number) {
+  const t = joinSentences(parts, max);
+  const CALL = /запис|запиш/i;
+  if (CALL.test(t)) return t;
+  const CTA = "Запись онлайн.";
+  // Два способа освободить место: убрать последние факты или заново набрать факты в укороченный текст — берём полнее
+  const sents = t.split(/(?<=[.!?])\s+/);
+  let popped = "";
+  while (sents.length > 1 && !popped) {
+    sents.pop();
+    const x = `${sents.join(" ")} ${CTA}`;
+    if (x.length <= max) popped = x;
+  }
+  const body = joinSentences(parts.filter((x) => !(x && CALL.test(x))), max - CTA.length - 1);
+  const packed = body && body.split(/(?<=[.!?])\s+/)[0] === t.split(/(?<=[.!?])\s+/)[0] ? `${body} ${CTA}` : "";
+  const best = [popped, packed].filter((x) => x && x.length <= max).sort((a, b) => b.length - a.length)[0];
+  return best ?? t;
 }
 
-/** Три объявления группы с разными подходами: основной набор, недостающие — из второго (без повторов подходов и заголовков) */
-function threeAds(b: Business, ch: keyof typeof LIMITS, service?: string, price?: string, set = 0): AdDraft[] {
+/** Первое предложение текста — по нему сравниваем объявления группы (два текста с одного предложения читаются одинаково) */
+const firstSentence = (s: string) => cleanText(s).split(/(?<=[.!?])\s+/)[0] ?? "";
+const fmtClock = (h: number) => `${Math.floor(h)}:${String(Math.round((h % 1) * 60)).padStart(2, "0")}`;
+
+/**
+ * Факты анкеты для шаблонных объявлений — всё, из чего можно собрать разные тексты, и ничего сверх анкеты:
+ * услуга и цена, другие услуги прайса с ценами, «цены от», для кого приём (взрослые и дети — по прайсу),
+ * описание и заметка к услуге, преимущества, предложение, отзыв (не для медицины), адрес с домом, часы
+ * и что из них следует (работаем в субботу, приём до 20:00), онлайн-запись, телефон и мессенджеры.
+ */
+function factsOf(b: Business, serviceName?: string, price?: string) {
+  const rawSvc = cleanText(serviceName);
+  const svc = humanService(b, rawSvc) || mainService(b);
+  const services = (b.services ?? []).filter((s) => cleanText(s.name));
+  const owned = services.find((s) => cleanText(s.name) === rawSvc) ?? (serviceName ? undefined : services[0]);
+  const p = priceText(cleanText(price || owned?.price || (serviceName ? null : services[0]?.price))) || null;
+  const medical = isMedical(b);
+  const ok = (s: string | null | undefined): s is string => !!s && !hasClaims(s, medical) && !hasSuperlative(s);
+  const name = cleanText(b.name);
+  const addrFull = cleanText(b.address) || null;
+  const street = b.address ? cleanText(b.address.split(/[,—–]/)[0]) : null;
+  // Адрес с домом («улица Чайковского, 78»), если он короткий; иначе — только улица
+  const addr = addrFull && addrFull.length <= 32 && addrFull !== street ? addrFull : street;
+  const where = street ? `${b.city}, ${street}` : b.city;
+  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter((x) => x && !hasClaims(x, medical));
+  // Описание владельца — по предложениям: короткие факты без обещаний («Центр остеопатии для взрослых и детей»)
+  const desc = cleanText(b.description)
+    .split(/(?<=[.!?])\s+/)
+    .map((x) => x.replace(/[.!]+$/, "").trim())
+    .filter((x) => x.length >= 12 && x.length <= 75 && ok(x) && titleKey(x) !== titleKey(name));
+  const note = owned?.note && ok(cleanText(owned.note)) && cleanText(owned.note).length <= 60 ? cap(cleanText(owned.note)) : null;
+  // Другие услуги с ценами — названия как в прайсе владельца; сначала из того же раздела
+  const others = services
+    .filter((s) => s !== owned && s.price && cleanText(s.name).length <= 40 && ok(s.name))
+    .sort((x, y) => Number((y.category ?? "") === (owned?.category ?? "")) - Number((x.category ?? "") === (owned?.category ?? "")))
+    .map((s) => `${cap(cleanText(s.name))} — ${priceText(s.price)}`);
+  // «Цены от …» — только если в прайсе несколько цен
+  const priced = services.map((s) => parsePrice(s.price)).filter((x): x is NonNullable<typeof x> => !!x);
+  const minPrice = priced.length >= 2 ? Math.min(...priced.map((x) => x.price)) : null;
+  const ownPrice = parsePrice(p)?.price ?? null;
+  const from = minPrice && (!ownPrice || minPrice < ownPrice) ? `от ${new Intl.NumberFormat("ru-RU").format(minPrice).replace(/[\u00a0\u202f]/g, " ")} ₽` : null;
+  // Для кого — по прайсу: есть детская услуга и взрослая (или обычная)
+  const kidsOf = (s: Service) => KIDS_RE.test(`${s.name} ${s.category ?? ""}`.toLowerCase().replace(/ё/g, "е"));
+  const both = services.some(kidsOf) && services.some((s) => !kidsOf(s));
+  const who = both ? (medical ? "Принимаем взрослых и детей" : "Для взрослых и детей") : null;
+  const whoShort = both ? "Взрослые и дети" : null;
+  // Часы и что из них следует — тоже факты
+  const hours = cleanText(b.hours) || null;
+  const hoursShort = hours ? (hours.length <= 30 ? hours : cleanText(hours.split(/[,;]/)[0])) : null;
+  const week = parseWeekHours(b.hours);
+  const open = week ? week.filter((d): d is { open: number; close: number } => !!d) : [];
+  const verb = medical ? "Принимаем" : "Работаем";
+  const hoursFacts: string[] = [];
+  if (week && open.length) {
+    if (week.every(Boolean)) hoursFacts.push("Работаем без выходных");
+    else if (week[5] && week[6]) hoursFacts.push(`${verb} и в выходные`);
+    else if (week[5]) hoursFacts.push(`${verb} и в субботу`);
+    else if (week[6]) hoursFacts.push(`${verb} и в воскресенье`);
+    const close = Math.max(...open.map((d) => d.close));
+    if (close >= 19 && close < 24) hoursFacts.push(`${medical ? "Приём" : "Открыто"} до ${fmtClock(close)}`);
+    const early = Math.min(...open.map((d) => d.open));
+    if (early > 0 && early <= 9) hoursFacts.push(`${medical ? "Приём" : "Открыто"} с ${fmtClock(early)}`);
+  }
+  const msg = b.whatsapp && b.telegram ? "WhatsApp и Telegram" : b.whatsapp ? "WhatsApp" : b.telegram ? "Telegram" : null;
+  // Призывы разные — чтобы и концовки текстов в группе не совпадали
+  const book = [
+    "Запишитесь онлайн за минуту!",
+    "Онлайн-запись на удобное время",
+    "Выберите удобное время онлайн",
+    msg ? `Запись онлайн или в ${msg}` : b.phone ? "Запись онлайн или по телефону" : "Запись онлайн",
+  ];
+  const sp = specialistOf(b);
+  const lsvc = svc.toLowerCase();
+  const spLine = sp && !lsvc.includes(sp.gen) && !lsvc.includes(sp.nom) ? `${medical ? "Приём ведёт" : "Работает"} ${sp.nom}` : null;
+  const offer = b.offer && !hasClaims(b.offer, medical) ? withoutSuperlatives(b.offer.replace(/\s*(на|за)\s+первый\s+визит\s*$/i, "")) || null : null;
+  const firstVisit = Boolean(b.offer && /первый\s+визит/i.test(b.offer));
+  const offerFull = offer ? (firstVisit ? `${offer} на первый визит` : offer) : null;
+  const fullOffer = offer && b.offer ? cap(withoutSuperlatives(b.offer)) || null : null;
+  const rv = medical ? null : withoutSuperlatives(b.review) || null;
+  return { svc, p, name, addr, street, where, adv, desc, note, others, from, who, whoShort, hours, hoursShort, hoursFacts, book, sp, spLine, offer, offerFull, fullOffer, firstVisit, review: rv, medical, brand: `${name} — ${b.city}` };
+}
+type Facts = ReturnType<typeof factsOf>;
+
+/** Сдвиг списка — у соседних групп второстепенные факты идут в другом порядке, тексты не повторяются */
+const rot = <T,>(xs: T[], k: number) => (xs.length ? [...xs.slice(k % xs.length), ...xs.slice(0, k % xs.length)] : xs);
+
+/**
+ * Сборщик объявлений одной группы: заголовки, вторые заголовки, тексты и первые предложения текстов не повторяются.
+ * Текст — первое предложение (свой «угол» объявления) + факты, пока помещаются.
+ */
+function adBuilder(b: Business, ch: keyof typeof LIMITS) {
+  const L = LIMITS[ch];
+  const name = cleanText(b.name);
+  const nk = titleKey(name);
+  // Услуга совпадает с названием («Студия Лак»): варианты вида «Студия Лак в Студия Лак» пропускаем
+  const twice = (x: string | null | undefined | false) => !!x && nk.length > 2 && titleKey(x).split(nk).length > 2;
+  const clean = (c: (string | null | undefined | false)[]) => c.map((x) => (twice(x) ? null : x));
+  const used = new Set<string>(), used2 = new Set<string>(), firsts = new Set<string>(), texts = new Set<string>();
+  const text = (leads: (string | null | undefined | false)[], rest: (string | null | undefined | false)[]) => {
+    for (const lead of clean(leads)) {
+      if (!lead) continue;
+      const t = withCta([lead, ...clean(rest)], L.text);
+      const f = titleKey(firstSentence(t));
+      if (!t || firsts.has(f) || texts.has(titleKey(t)) || f !== titleKey(firstSentence(cleanText(lead).replace(/([^.!?»"])$/, "$1.")))) continue;
+      firsts.add(f);
+      texts.add(titleKey(t));
+      return t;
+    }
+    const t = joinSentences(clean([...leads, ...rest]), L.text);
+    firsts.add(titleKey(firstSentence(t)));
+    texts.add(titleKey(t));
+    return t;
+  };
+  const ad = (angle: string, titles: (string | null | undefined | false)[], title2: (string | null | undefined | false)[], leads: (string | null | undefined | false)[], rest: (string | null | undefined | false)[]): AdDraft =>
+    normalizeAd({ angle, title: pickTitle(clean(titles), L.title, used), title2: ch === "vk" ? null : pickTitle(clean(title2), L.title2, used2), text: text(leads, rest) }, ch);
+  return { ad };
+}
+
+/** До трёх объявлений: сначала с разными подходами, затем — хотя бы с разными заголовками и текстами */
+function pickThree(pool: AdDraft[]): AdDraft[] {
   const out: AdDraft[] = [];
-  const pool = [...templateAds(b, ch, service, price, set), ...templateAds(b, ch, service, price, set + 1)];
-  // Сначала разные подходы; если заголовки совпали (длинное название услуги) — хотя бы разные заголовки
   for (const strict of [true, false]) {
     for (const a of pool) {
       if (out.length >= 3) break;
-      if (out.includes(a) || out.some((x) => (strict && x.angle === a.angle) || titleKey(x.title) === titleKey(a.title))) continue;
+      if (out.includes(a) || out.some((x) => (strict && x.angle === a.angle) || titleKey(x.title) === titleKey(a.title) || titleKey(x.text) === titleKey(a.text) || titleKey(firstSentence(x.text)) === titleKey(firstSentence(a.text)))) continue;
       out.push(a);
     }
   }
   return out;
 }
 
+/** Порядок подходов в наборе: соседние группы начинают с разных гипотез */
+const ANGLE_ORDER = [
+  ["price", "offer", "proof", "result", "convenience", "booking", "emotion"],
+  ["convenience", "offer", "result", "emotion", "price", "booking", "proof"],
+  ["result", "booking", "offer", "price", "convenience", "proof", "emotion"],
+] as const;
+
+/**
+ * Объявления группы услуги. set — номер группы: от него зависит, с какого подхода начинаем и какие второстепенные
+ * факты идут в текст, поэтому у разных групп тексты разные даже при скудной анкете.
+ */
+function adPool(b: Business, ch: keyof typeof LIMITS, serviceName?: string, price?: string, set = 0): AdDraft[] {
+  const f = factsOf(b, serviceName, price);
+  const { svc, p, name, addr, street, where, adv, desc, note, others, from, who, whoShort, hours, hoursShort, hoursFacts, book, spLine } = f;
+  const city = b.city;
+  const sl = low(svc, name);
+  const { ad } = adBuilder(b, ch);
+  const k = Math.max(0, set);
+  // Второстепенные факты — по кругу от номера группы
+  const extra = [...rot([adv[0], desc[0], note, adv[1], desc[1]].filter((x): x is string => !!x), k), ...rot([others[0], who, spLine, hoursFacts[0], others[1]].filter((x): x is string => !!x), k)];
+  const make: Record<string, () => AdDraft | null> = {
+    price: () =>
+      ad("price",
+        [p && `${svc} — ${p}, ${city}`, p && `${svc} — ${p}`, p && `${svc} за ${p}`, `${svc} — ${city}`, svc],
+        [others[0], from && `Цены ${from}`, adv[0], f.brand, name, "Онлайн-запись"],
+        [p && `${svc} — ${p}`, p && `${sl} за ${p}`, svc],
+        [...rot([others[0], others[1], from && `Цены ${from}`].filter(Boolean) as string[], k), adv[0], `${name}, ${where}`, book[0], "Запись онлайн"]),
+    offer: () =>
+      f.offerFull
+        ? ad("offer",
+            [`${svc}: ${f.offerFull}`, f.offerFull, `${svc}: ${f.offer}`, f.offer],
+            [f.brand, f.firstVisit ? "Для новых клиентов" : name],
+            [cap(f.offerFull)],
+            [p && `${svc} — ${p}`, adv[0], `${name}, ${where}`, book[0], "Запись онлайн"])
+        : null,
+    proof: () =>
+      f.review
+        ? ad("proof",
+            [`${svc} — отзыв клиента`, `${name}: отзыв клиента`, svc],
+            [adv[0], f.brand, "Отзыв клиента"],
+            [`«${f.review.length > Math.max(30, LIMITS[ch].text - 38) ? f.review.slice(0, Math.max(30, LIMITS[ch].text - 38)).replace(/\s+\S*$/, "").replace(/[,—–-]$/, "").trim() + "..." : f.review}»`],
+            [adv[0], `${name}, ${where}`, book[1]])
+        : null,
+    // Для кого и что за приём: описание, преимущества, заметка к услуге, взрослые и дети — что есть в анкете
+    result: () =>
+      ad("result",
+        [`${svc} в ${name} — ${city}`, `${svc} в ${name}`, who && `${svc}: ${low(who)}`, `${svc} — ${city}`, svc],
+        [adv[0], whoShort, adv[1], f.brand, name],
+        [desc[0], adv[0], note, who, spLine, `${name}, ${city}: ${sl}`, desc[1], adv[1]],
+        [p && `${svc} — ${p}`, ...extra, `${name}, ${where}`, book[1], "Запись онлайн"]),
+    convenience: () =>
+      ad("convenience",
+        [street ? `${svc} — ${city}, ${street}` : null, street ? `${svc} — ${street}, ${name}` : null, `${svc} — ${name}, ${city}`, `${svc} — ${city}`, svc, street && `${name}, ${street}`, f.brand],
+        [hoursShort, addr, street, "Онлайн-запись"],
+        // У группы услуги — адрес вместе с услугой: тексты «Удобства» разных групп не совпадают
+        [serviceName && addr && `${svc}: ${addr}`, serviceName && `${svc} — ${name}, ${where}`, addr ? `${name}: ${city}, ${addr}` : `${name}, ${where}`, `${name}, ${where}`],
+        [hours, hoursFacts[0], book[2], "Запись онлайн"]),
+    // Простая запись: онлайн-форма, часы, мессенджеры
+    booking: () =>
+      ad("convenience",
+        [`${svc} — запись онлайн`, `Запись онлайн: ${sl}`, `${svc} — ${name}, ${city}`, `${svc} — ${city}`],
+        [hoursFacts[0], hoursFacts[1], from && `Цены ${from}`, "Онлайн-запись"],
+        [`Запись онлайн: ${sl}${p ? ` — ${p}` : ""}`, `Запись онлайн: ${sl}`, "Онлайн-запись за минуту"],
+        [...rot(hoursFacts, k), book[3] !== "Запись онлайн" ? book[3] : null, addr && `${name}, ${addr}`]),
+    // Медуслуги: «Время для себя» не про приём специалиста
+    emotion: () =>
+      f.medical
+        ? null
+        : ad("emotion",
+            [`Время для себя: ${sl} в ${name}`, `Время для себя: ${sl}`, `Время для себя в ${name}`, svc],
+            [street ? `${name}, ${street}` : null, f.brand, name],
+            ["Время только для себя"],
+            [`${cap(svc)} — ${name}, ${where}`, adv[0], f.fullOffer, book[0]]),
+  };
+  const out: AdDraft[] = [];
+  for (const angle of ANGLE_ORDER[k % ANGLE_ORDER.length]) {
+    const a = make[angle]();
+    if (a && a.title && a.text) out.push(a);
+  }
+  return uniqueAds(out);
+}
+
+function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string, price?: string, set = 0): AdDraft[] {
+  return pickThree(adPool(b, ch, serviceName, price, set));
+}
+
+/** Три объявления группы с разными подходами, разными заголовками и разными текстами */
+function threeAds(b: Business, ch: keyof typeof LIMITS, service?: string, price?: string, set = 0): AdDraft[] {
+  return templateAds(b, ch, service, price, set);
+}
+
 /**
  * Объявления групп проблем, смежных запросов и аудиторий: «проблема → решение». Заголовок отвечает на запрос
  * («Ломкие ногти? Маникюр без покрытия», «Ищете мануального терапевта? Взрослый прием остеопата»), в тексте — услуга,
  * цена из прайса, адрес и запись. Медуслуги — без вопроса о болезни читателя: «Остеопат при боли в шее — Екатеринбург».
- * Никаких обещаний результата: только факты анкеты.
+ * Никаких обещаний результата: только факты анкеты. Запрос группы есть и в тексте — у каждой группы свои тексты.
  */
 export function layerAds(b: Business, g: Pick<SemanticGroup, "layer" | "hook" | "service" | "name">, set = 0): AdDraft[] {
   const L = LIMITS.search;
   const hook = g.hook;
   if (!hook) return threeAds(b, "search", g.service, b.services?.find((s) => s.name === g.service)?.price, set);
-  const medical = isMedical(b);
   const owned = b.services?.find((s) => s.name === g.service);
-  const svc = humanService(b, g.service) || mainService(b);
-  const p = priceText(cleanText(owned?.price)) || null;
-  const name = cleanText(b.name);
-  const street = b.address ? cleanText(b.address.split(/[,—–]/)[0]) : null;
-  const where = street ? `${b.city}, ${street}` : b.city;
-  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter((x) => x && !hasClaims(x, medical));
-  const hours = cleanText(b.hours) || null;
+  const f: Facts = factsOf(b, g.service, owned?.price);
+  const { svc, p, name, addr, street, where, adv, desc, others, from, hours, hoursShort, hoursFacts, book, sp } = f;
+  const medical = f.medical;
+  const city = b.city;
   const Noun = cap(cleanText(hook.noun));
   const ask = cleanText(hook.ask);
   const sl = low(svc, name);
   const when = hook.when ? cleanText(hook.when) : null;
+  // «Остеопат после травмы: приём для взрослых» — специалиста второй раз не повторяем
+  const hookText = `${Noun} ${ask} ${when ?? ""}`.toLowerCase().replace(/ё/g, "е");
+  const short = sp && hookText.includes(sp.nom) ? svc.replace(new RegExp(`\\s+${sp.gen}(?=\\s|,|$)`), "") : svc;
+  const ss = low(short, name);
   // Медуслуги: специалист и показание, а не вопрос о болезни читателя (закон «О рекламе», ст. 24, ч. 1 п. 5)
   const medProblem = medical && g.layer === "problem";
   const lead: (string | null)[] =
-    medProblem ? (when ? [`${Noun} ${when} — ${b.city}`, `${Noun} ${when}`, `${cap(when)}: ${sl}`] : [`${Noun} — ${b.city}`, `${svc} — ${b.city}`])
-    : g.layer === "audience" ? [`${ask} — ${b.city}`, ask]
-    : [`${ask}? ${svc}`, `${ask}? ${Noun} — ${b.city}`, `${ask}? ${Noun}`];
+    medProblem ? (when ? [`${Noun} ${when} — ${city}`, `${Noun} ${when}`, `${cap(when)}: ${sl}`] : [`${Noun} — ${city}`, `${svc} — ${city}`])
+    : g.layer === "audience" ? [`${ask} — ${city}`, ask]
+    : [`${ask}? ${svc}`, `${ask}? ${Noun} — ${city}`, `${ask}? ${Noun}`];
   const priced: (string | null)[] =
     medProblem ? [p && when && `${Noun} ${when}: ${p}`, p && `${svc} — ${p}`]
     : g.layer === "audience" ? [p && `${ask} — ${p}`, p && `${ask}: ${sl} — ${p}`, p && `${svc} — ${p}`]
-    : [p && `${ask}? ${Noun} — ${p}`, p && `${ask}? ${svc} — ${p}`, p && `${svc} — ${p}, ${b.city}`];
+    : [p && `${ask}? ${Noun} — ${p}`, p && `${ask}? ${svc} — ${p}`, p && `${svc} — ${p}, ${city}`];
   const near: (string | null)[] =
-    medProblem ? [street && when && `${Noun} ${when} — ${street}`, street && `${Noun} — ${b.city}, ${street}`]
-    : g.layer === "audience" ? [street && `${ask} — ${street}`, street && `${ask} — ${b.city}, ${street}`]
-    : [street && `${ask}? ${Noun} — ${street}`, street && `${Noun} — ${b.city}, ${street}`];
-  const used = new Set<string>();
+    medProblem ? [street && when && `${Noun} ${when} — ${street}`, street && `${Noun} — ${city}, ${street}`]
+    : g.layer === "audience" ? [street && `${ask} — ${street}`, street && `${ask} — ${city}, ${street}`]
+    : [street && `${ask}? ${Noun} — ${street}`, street && `${Noun} — ${city}, ${street}`];
+  // Первое предложение текста: запрос группы своими словами
+  const hookLead: (string | null)[] =
+    medProblem ? [when && `${cap(when)} — ${sl}`, when && `${Noun} ${when}: ${ss}`, `${Noun}: ${sl}`]
+    : g.layer === "audience" ? [`${ask}: ${ss}`, `${ask} — ${name}`]
+    : [`${ask}? ${cap(sl)}`, `${ask}? ${Noun} в ${name}`];
+  const priceLead: (string | null | false)[] = [
+    p && medProblem && when && `${Noun} ${when}: ${ss} — ${p}`,
+    p && g.layer === "audience" && `${ask}: ${ss} — ${p}`,
+    p && `${svc} — ${p}`,
+    p && `${sl} за ${p}`,
+    `${svc} в ${name}`,
+    `${name}, ${city}: ${sl}`,
+  ];
+  const placeLead: (string | null | false)[] = [
+    addr && medProblem && when && `${Noun} ${when} — ${addr}`,
+    addr && g.layer === "audience" && `${ask} — ${name}, ${addr}`,
+    addr && g.layer !== "audience" && !medProblem && `${Noun} — ${name}, ${addr}`,
+    addr ? `${name}: ${city}, ${addr}` : `${name}, ${where}`,
+  ];
+  const k = Math.max(0, set);
+  // «Взрослые и дети» в группе запроса про травму или роды не к месту — только факты о приёме
+  // Сначала то, что написал владелец (описание, преимущества), — по кругу между группами; затем часы и прайс
+  const facts = [...rot([desc[0], adv[0], adv[1], desc[1], adv[2]].filter((x): x is string => !!x), k), ...rot(hoursFacts, k), others[0]].filter((x): x is string => !!x);
+  const used = new Set<string>(), used2 = new Set<string>(), firsts = new Set<string>(), seenText = new Set<string>();
   const safe = (list: (string | null | false | undefined)[]) => list.filter((x): x is string => !!x && !hasClaims(x, medical));
-  const cta = "Запишитесь онлайн за минуту!";
-  const svcLine = `${svc}${p ? ` — ${p}` : ""}`;
+  const text = (leads: (string | null | false | undefined)[], rest: (string | null | false | undefined)[]) => {
+    for (const l of safe(leads)) {
+      const t = withCta(safe([l, ...rest]), L.text);
+      const fk = titleKey(firstSentence(t));
+      if (!t || firsts.has(fk) || seenText.has(titleKey(t)) || fk !== titleKey(firstSentence(cleanText(l).replace(/([^.!?»"])$/, "$1.")))) continue;
+      firsts.add(fk);
+      seenText.add(titleKey(t));
+      return t;
+    }
+    return joinSentences(safe([...leads, ...rest]), L.text);
+  };
   const ads: AdDraft[] = [
     {
       angle: "result",
-      title: pickTitle(safe([...lead, `${svc} — ${b.city}`, svc]), L.title, used),
-      title2: pickTitle(safe([adv[0], p && `Цена — ${p}`, `${name} — ${b.city}`, "Онлайн-запись"]), L.title2),
-      text: joinSentences(safe([svcLine, adv[0], `${name}, ${where}`, cta, "Запись онлайн"]), L.text),
+      title: pickTitle(safe([...lead, `${svc} — ${city}`, svc]), L.title, used),
+      title2: pickTitle(safe([adv[0], p && `Цена — ${p}`, from && `Цены ${from}`, `${name} — ${city}`, "Онлайн-запись"]), L.title2, used2),
+      text: text(hookLead, [...facts, p && `${svc} — ${p}`, book[0], "Запись онлайн"]),
     },
     {
       angle: "price",
-      title: pickTitle(safe([...priced, ...lead, `${svc} — ${b.city}`, svc]), L.title, used),
-      title2: pickTitle(safe([adv[1] ?? adv[0], `${name} — ${b.city}`, name, "Онлайн-запись"]), L.title2),
-      text: joinSentences(safe([svcLine, adv[1] ?? adv[0], `${name}, ${where}`, cta, "Запись онлайн"]), L.text),
+      title: pickTitle(safe([...priced, ...lead, `${svc} — ${city}`, svc]), L.title, used),
+      title2: pickTitle(safe([others[0], from && `Цены ${from}`, adv[1] ?? adv[0], `${name} — ${city}`, name, "Онлайн-запись"]), L.title2, used2),
+      text: text(priceLead, [...rot(others, k).slice(0, 2), from && `Цены ${from}`, adv[1] ?? adv[0], book[1], "Запись онлайн"]),
     },
     {
       angle: "convenience",
-      title: pickTitle(safe([...near, ...lead, `${svc} — ${name}, ${b.city}`, svc]), L.title, used),
-      title2: pickTitle(safe([hours, street, "Онлайн-запись"]), L.title2),
-      text: joinSentences(safe([`${name}: ${where}`, hours, svcLine, "Выберите удобное время онлайн"]), L.text),
+      title: pickTitle(safe([...near, ...lead, `${svc} — ${name}, ${city}`, svc]), L.title, used),
+      title2: pickTitle(safe([hoursShort, addr, street, "Онлайн-запись"]), L.title2, used2),
+      text: text(placeLead, [hours, ...rot(hoursFacts, k), book[2], "Запись онлайн"]),
     },
   ];
   return uniqueAds(ads.map((a) => normalizeAd(a, "search")).filter((a) => a.title && a.text && !hasClaims(`${a.title} ${a.title2 ?? ""} ${a.text}`, medical)));
@@ -863,7 +1077,7 @@ export function templatePlan(b: Business, core: SemanticCore = buildSemanticCore
       ...(typeof g.demand === "number" ? { demand: g.demand } : {}),
       // Тёплые запросы — только по фразам: автотаргетинг расширил бы их до совсем случайных («болит спина у собаки»)
       ...(layer === "service" ? {} : { autotargeting: false }),
-      ads: layer === "service" ? threeAds(b, "search", g.service, priceOf(g.service), i % 2) : layerAds(b, g, i % 2),
+      ads: layer === "service" ? threeAds(b, "search", g.service, priceOf(g.service), i) : layerAds(b, g, i),
     };
   });
   if (!search.length) {
@@ -874,7 +1088,7 @@ export function templatePlan(b: Business, core: SemanticCore = buildSemanticCore
   const interests = networkInterests(core, 3);
   const network: GroupDraft[] = [
     ...(interests.length > 1
-      ? interests.map((x, i) => ({ name: `Интересуются: ${low(cleanText(x.name), b.name)}`, service: x.service, audience: `Недавно искали «${x.keywords[0] ?? low(x.name)}» и похожее`, keywords: x.keywords, ads: threeAds(b, "network", x.service, priceOf(x.service), i % 2), autotargeting: true }))
+      ? interests.map((x, i) => ({ name: `Интересуются: ${low(cleanText(x.name), b.name)}`, service: x.service, audience: `Недавно искали «${x.keywords[0] ?? low(x.name)}» и похожее`, keywords: x.keywords, ads: threeAds(b, "network", x.service, priceOf(x.service), i), autotargeting: true }))
       : [{ name: "Интересуются услугой", audience: "Недавно искали похожие услуги", keywords: interests[0]?.keywords.length ? interests[0].keywords : seeds.slice(0, 8), ads: templateAds(b, "network"), autotargeting: true }]),
     { name: "Похожие на клиентов", audience: "Интересы как у ваших клиентов — подбирает Яндекс", keywords: [], ads: templateAds(b, "network", undefined, undefined, 1), autotargeting: true },
   ];

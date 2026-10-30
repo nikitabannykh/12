@@ -29,6 +29,7 @@
  * Проверка частотности и дублей через API Директа — refineWithDirect (вызывает сервер, если подключён Директ).
  */
 import type { Business, Service } from "../db/schema";
+import { parseWeekHours } from "./extras";
 import { CITY_ALIASES, COMMERCIAL, isMedical, KIDS_RE, LAYER_JUNK, LAYER_LABEL, LAYERS, layersFor, NO_KIDS_NEG, nicheById, semanticsFor, sharedMods, type Concept, type Layer, type LayerEntry } from "../niches";
 
 export type { Layer } from "../niches";
@@ -618,9 +619,11 @@ function timeEntries(b: B, noun: string): LayerEntry[] {
   const h = lower(b.hours);
   if (!h || !noun) return [];
   const phrases: string[] = [];
+  // По разобранным часам: «Пн–Сб 10–20, Вс выходной» — суббота рабочая, воскресенье нет (а не «вс» в тексте)
+  const week = parseWeekHours(b.hours);
   const daily = /ежедневн|без выходных|круглосуточ/.test(h);
-  const sat = daily || /(?<!\p{L})(сб|суб\p{L}*)(?!\p{L})/u.test(h);
-  const sun = daily || /(?<!\p{L})(вс|воскр\p{L}*)(?!\p{L})/u.test(h);
+  const sat = week ? !!week[5] : daily || /(?<!\p{L})(сб|суб\p{L}*)(?!\p{L})/u.test(h);
+  const sun = week ? !!week[6] : daily || /(?<!\p{L})(вс|воскр\p{L}*)(?!\p{L})/u.test(h);
   if (sat && sun) phrases.push(`${noun} в выходные`);
   if (sat) phrases.push(`${noun} в субботу`);
   if (sun) phrases.push(`${noun} в воскресенье`);
