@@ -167,9 +167,10 @@ async function weekRates(b: Business, days: Map<string, DayAgg>) {
   return { rate, k, markOf };
 }
 
-export async function report(b: Business, days: number) {
+export async function report(b: Business, days: number, end?: string) {
   const now = await reportNow(b);
-  const to = isoDay(now);
+  // end — последний день периода (для произвольных дат и «прошлого месяца»); не позже сегодняшнего
+  const to = end && end < isoDay(now) ? end : isoDay(now);
   const from = isoDay(addDays(now, -(days - 1)));
   const prevFrom = isoDay(addDays(now, -(2 * days - 1)));
   // Грузим целые недели: доля клиентов недели считается по всем её обращениям

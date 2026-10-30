@@ -4,13 +4,14 @@ import { redirect } from "next/navigation";
 import { desc, eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth";
 import { getBusinessForUser } from "@/lib/engine/launch";
-import { metricaVisits, report, weeksForMarking } from "@/lib/engine/report";
+import { metricaVisits, report, reportNow, weeksForMarking } from "@/lib/engine/report";
+import { PeriodPicker } from "./PeriodPicker";
 import { METRICA_REASON_TEXT, metricaStatus } from "@/lib/engine/metrica-sync";
 import { getDb, schema } from "@/lib/db";
 import { DaysChart } from "@/components/charts";
 import { ClientsWeek } from "@/components/ClientsWeek";
 import { CHANNEL_NAME } from "@/lib/platforms";
-import { num, pl, rub } from "@/lib/util";
+import { addDays, isoDay, num, pl, rub } from "@/lib/util";
 import { LeadStatus } from "./LeadStatus";
 import { landingFor } from "@/lib/engine/landing";
 
@@ -20,13 +21,54 @@ const CH: Record<string, string> = { ...CHANNEL_NAME, unknown: "Реклама, 
 /** Среднее время визита: «1 мин 05 с» */
 const dur = (sec: number) => (sec >= 60 ? `${Math.floor(sec / 60)} мин ${String(Math.round(sec % 60)).padStart(2, "0")} с` : `${Math.round(sec)} с`);
 
-export default async function Stats({ searchParams }: { searchParams: Promise<{ days?: string }> }) {
+/** Готовые периоды — как в Директе */
+const PRESETS = [
+  { id: "today", label: "Сегодня" },
+  { id: "yesterday", label: "Вчера" },
+  { id: "7", label: "7 дней" },
+  { id: "30", label: "30 дней" },
+  { id: "month", label: "Этот месяц" },
+  { id: "prevmonth", label: "Прошлый месяц" },
+  { id: "90", label: "3 месяца" },
+  { id: "180", label: "Полгода" },
+  { id: "365", label: "Год" },
+] as const;
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const fmtDay = (d: string) => new Date(d + "T00:00:00Z").toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+
+function periodOf(q: { days?: string; p?: string; from?: string; to?: string }, now: Date) {
+  const today = isoDay(now);
+  const span = (from: string, to: string) => Math.round((Date.parse(to) - Date.parse(from)) / 86400_000) + 1;
+  if (q.from && q.to && DAY_RE.test(q.from) && DAY_RE.test(q.to)) {
+    let [from, to] = q.from <= q.to ? [q.from, q.to] : [q.to, q.from];
+    if (to > today) to = today;
+    if (from > to) from = to;
+    const days = Math.min(span(from, to), 3 * 366);
+    return { id: "custom", from: isoDay(addDays(new Date(to + "T00:00:00Z"), -(days - 1))), to, days };
+  }
+  const id = q.p ?? q.days ?? "7";
+  if (id === "today") return { id, from: today, to: today, days: 1 };
+  if (id === "yesterday") { const y = isoDay(addDays(now, -1)); return { id, from: y, to: y, days: 1 }; }
+  if (id === "month") { const from = today.slice(0, 8) + "01"; return { id, from, to: today, days: span(from, today) }; }
+  if (id === "prevmonth") {
+    const first = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+    const last = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0));
+    return { id, from: isoDay(first), to: isoDay(last), days: span(isoDay(first), isoDay(last)) };
+  }
+  const n = [7, 30, 90, 180, 365].includes(Number(id)) ? Number(id) : 7;
+  return { id: String(n), from: isoDay(addDays(now, -(n - 1))), to: today, days: n };
+}
+
+export default async function Stats({ searchParams }: { searchParams: Promise<{ days?: string; p?: string; from?: string; to?: string }> }) {
   const user = await requireUser();
   const b = await getBusinessForUser(user.id);
   if (!b) redirect("/app/start");
   if (!isLaunched(b.status)) redirect("/app/launch");
-  const days = (await searchParams).days === "30" ? 30 : 7;
-  const r = await report(b, days);
+  const period = periodOf(await searchParams, await reportNow(b));
+  const days = period.days;
+  const r = await report(b, days, period.to);
+  const unit = days > 200 ? "month" : days > 62 ? "week" : "day";
+  const periodText = period.from === period.to ? fmtDay(period.from) : `${fmtDay(period.from)} — ${fmtDay(period.to)}`;
   const weeks = await weeksForMarking(b, 4);
   const db = await getDb();
   const leads = await db.select().from(schema.leads).where(eq(schema.leads.businessId, b.id)).orderBy(desc(schema.leads.createdAt)).limit(30);
@@ -51,15 +93,9 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-3xl font-extrabold tracking-tight">Статистика</h1>
-          <p className="text-muted mt-1">Сколько потрачено и сколько людей обратилось</p>
+          <p className="text-muted mt-1">{periodText} · сравнение — с таким же периодом перед ним</p>
         </div>
-        <div className="inline-flex rounded-xl bg-card border border-line p-1" role="tablist">
-          {[7, 30].map((d) => (
-            <Link key={d} href={`/app/stats?days=${d}`} role="tab" aria-selected={days === d} className={`px-4 h-9 grid place-items-center rounded-lg text-sm font-semibold ${days === d ? "bg-ink text-white" : "text-ink-2"}`}>
-              {pl(d, "день", "дня", "дней")}
-            </Link>
-          ))}
-        </div>
+        <PeriodPicker presets={PRESETS.map((x) => ({ ...x }))} current={period.id} from={period.from} to={period.to} />
       </div>
 
       <section className="card p-5 sm:p-7">
@@ -84,7 +120,7 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
             <span className="text-muted">Пришли без рекламной метки — напрямую на страницу записи, из поиска или по совету. В стоимость клиента не входят.</span>
           </div>
         ) : null}
-        <div className="mt-6"><DaysChart series={r.series} /></div>
+        <div className="mt-6"><DaysChart series={r.series} unit={unit} /></div>
         <p className="hint mt-4 max-w-3xl">
           Здесь всё — только из рекламы: обращение — заявка, звонок или сообщение от человека, который пришёл по объявлению; стоимость клиента = потрачено ÷ клиенты.{" "}
           {c.adBooked || c.adMarked
@@ -156,7 +192,7 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
       <section id="funnel" className="card p-5 sm:p-7 scroll-mt-6">
         <h2 className="text-lg font-bold">Путь клиента: от показа до обращения</h2>
         <p className="hint mt-1 max-w-3xl">
-          Сколько людей дошло до каждого шага за {pl(days, "день", "дня", "дней")}. Визиты — по Яндекс Метрике: человек открыл страницу. Качественный визит — человек не ушёл сразу: посмотрел больше одной страницы или пробыл дольше 15 секунд. Робот смотрит на качественные визиты, когда обращений пока мало, чтобы судить.
+          Сколько людей дошло до каждого шага за выбранный период. Визиты — по Яндекс Метрике: человек открыл страницу. Качественный визит — человек не ушёл сразу: посмотрел больше одной страницы или пробыл дольше 15 секунд. Робот смотрит на качественные визиты, когда обращений пока мало, чтобы судить.
         </p>
         {mstatus?.source === "demo" && hasVisits ? <p className="mt-3 text-sm text-warn">Демо-кабинет: визиты и отказы смоделированы, это не данные Метрики.</p> : null}
         {mNote ? (
