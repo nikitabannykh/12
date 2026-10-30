@@ -6,11 +6,14 @@ import { ToastProvider, UrlNotice } from "@/components/client";
 import { requireUser } from "@/lib/auth";
 import { getBusinessForUser, listProjects, projectLimit } from "@/lib/engine/launch";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
+import { BellMenu, ProfileMenu } from "@/components/TopBar";
 import { and, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { familyOf } from "@/lib/channels";
 
 export const dynamic = "force-dynamic";
+
+const who = (u: { email: string; name: string | null }) => (u.email.includes("@demo.") ? "Демо-аккаунт" : u.name || u.email.split("@")[0]);
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
@@ -39,19 +42,22 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <ProjectSwitcher projects={projects} current={b?.id ?? null} limit={limit} variant="side" />
           </div>
           <Nav launched={launched} variant="side" ads={ads} />
-          <div className="mt-auto px-2 text-sm">
-            <div className="text-muted truncate">{user.email.includes("@demo.") ? "Демо-аккаунт" : user.email}</div>
-            <form action="/api/auth/logout" method="post" className="mt-2">
-              <button className="text-muted hover:text-ink underline underline-offset-2">Выйти</button>
-            </form>
-          </div>
           </div>
         </aside>
         <div className="min-w-0">
           <header className="md:hidden flex items-center justify-between px-4 h-14 border-b border-line bg-card">
             <Link href="/app"><Logo size={24} /></Link>
-            <ProjectSwitcher projects={projects} current={b?.id ?? null} limit={limit} variant="top" />
+            <div className="flex items-center gap-2">
+              <ProjectSwitcher projects={projects} current={b?.id ?? null} limit={limit} variant="top" />
+              {b ? <BellMenu /> : null}
+              <ProfileMenu email={user.email} label={who(user)} />
+            </div>
           </header>
+          {/* Шапка справа: уведомления и профиль */}
+          <div className="hidden md:flex justify-end items-center gap-2 mx-auto max-w-[1040px] px-8 pt-5 -mb-4">
+            {b ? <BellMenu /> : null}
+            <ProfileMenu email={user.email} label={who(user)} />
+          </div>
           <main className="mx-auto max-w-[1040px] px-4 sm:px-8 py-6 sm:py-10 pb-28 md:pb-12">{children}</main>
         </div>
       </div>

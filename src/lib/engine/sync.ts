@@ -5,7 +5,9 @@ import type { Business, Campaign } from "../db/schema";
 import { clientFor } from "../platforms";
 import { PlatformError } from "../platforms/types";
 import { demoNow } from "../platforms/demo";
-import { addDays, errorText, isoDay, uid } from "../util";
+import { addDays, errorText, isoDay, pl, uid } from "../util";
+import { pushInbox, type InboxEvent } from "./inbox";
+import { CHANNEL_NAME } from "../platforms";
 
 /**
  * Доступ к кабинету потерян (токен отозван/истёк, нет прав), а не временный сбой: по кодам площадок, а не по тексту —
@@ -39,6 +41,7 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
   const errors: string[] = [];
   // Кабинеты, где расход мог идти, а статистику получить не удалось: робот не должен поднимать лимиты «вслепую»
   const failedAccounts: string[] = [];
+  const inbox: Omit<InboxEvent, "id" | "at">[] = [];
   const byAccount = new Map<string, Campaign[]>();
   for (const c of camps) if (c.externalId) byAccount.set(c.accountId, [...(byAccount.get(c.accountId) ?? []), c]);
 
@@ -153,6 +156,9 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
           if (!x) continue;
           const prev = (c.meta as { delivery?: { ok: boolean; note?: string } } | null)?.delivery;
           if (prev?.ok === x.ok && prev?.note === x.note) continue;
+          if (prev?.ok !== x.ok) inbox.push(x.ok
+            ? { tone: "good", title: `${CHANNEL_NAME[c.channel] ?? c.channel}: показы идут`, href: `/app/ads#c-${c.id}` }
+            : { tone: "bad", title: `${CHANNEL_NAME[c.channel] ?? c.channel}: реклама не показывается`, text: x.note, href: `/app/ads#c-${c.id}` });
           const [fresh] = await db.select({ meta: schema.campaigns.meta }).from(schema.campaigns).where(eq(schema.campaigns.id, c.id));
           await db.update(schema.campaigns).set({ meta: { ...(fresh?.meta ?? {}), delivery: { ...x, at: new Date().toISOString() } } }).where(eq(schema.campaigns.id, c.id));
         }
@@ -165,6 +171,7 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
       if (!live.length) return;
       const states = await client.getAdStates(live.map((a) => a.externalId!));
       const drafts: string[] = [];
+      const moved = { accepted: 0, rejected: 0, docs: 0 };
       for (const a of live) {
         const s = states[a.externalId!];
         if (!s) continue;
@@ -177,18 +184,29 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
         // значит его включили в кабинете — переводим в active, иначе оно навсегда выпадает из оптимизации.
         let next = s.status as string;
         if (s.status === "moderation" && a.status === "paused") next = "paused";
+        if (next !== a.status) {
+          const blockedNow = next === "active" && /^Не показывается/.test(s.note ?? "");
+          if (next === "rejected") moved.rejected++;
+          else if (blockedNow && /документ|лиценз/i.test(s.note ?? "")) moved.docs++;
+          else if (next === "active" && a.status === "moderation") moved.accepted++;
+        }
         if (next !== a.status || (s.note ?? null) !== a.statusNote) {
           await db.update(schema.ads).set({ status: next, statusNote: s.note ?? null }).where(eq(schema.ads.id, a.id));
         }
       }
+      if (moved.accepted) inbox.push({ tone: "good", title: `Модерацию прошли ${pl(moved.accepted, "объявление", "объявления", "объявлений")}`, href: "/app/ads" });
+      if (moved.rejected) inbox.push({ tone: "warn", title: `Модерация отклонила ${pl(moved.rejected, "объявление", "объявления", "объявлений")}`, text: "Причины и что делать — у каждого объявления.", href: "/app/ads" });
+      if (moved.docs) inbox.push({ tone: "bad", title: "Директ ждёт лицензию", text: `${pl(moved.docs, "объявление прошло", "объявления прошли", "объявлений прошли")} модерацию, но не показываются, пока Директ не проверит лицензию.`, href: "/app" });
       if (drafts.length && client.moderateAds) {
         for (const w of await client.moderateAds(drafts)) errors.push(`Модерация: ${w}`);
       }
     });
 
+    if (authErr && acc.status === "ok") inbox.push({ tone: "bad", title: `Нет доступа к кабинету ${acc.login}`, text: authErr, href: "/app/settings" });
     if (authErr) await db.update(schema.adAccounts).set({ status: "error", statusNote: authErr }).where(eq(schema.adAccounts.id, accountId));
     else if (reached && acc.status !== "ok") await db.update(schema.adAccounts).set({ status: "ok", statusNote: null }).where(eq(schema.adAccounts.id, acc.id));
   }
+  await pushInbox(b.id, inbox);
   return { errors, failedAccounts };
 }
 
