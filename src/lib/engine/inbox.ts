@@ -93,7 +93,14 @@ export async function inboxFor(b: Business): Promise<{ items: InboxItem[]; unrea
 
   // ─── События ───
   const since = new Date(Date.now() - 30 * 86400_000);
-  const events: InboxItem[] = ((await kvGet<InboxEvent[]>(key(b.id))) ?? []).map((e) => ({ ...e, group: "event", unread: e.at > seen }));
+  // «Показы идут», а объявления кампании ждут лицензию — так не пишем (старые записи тоже поправляем на лету)
+  const docsCamps = new Set(ads.filter((a) => a.status === "active" && /документ|лиценз/i.test(a.note ?? "")).map((a) => a.campaignId));
+  const events: InboxItem[] = ((await kvGet<InboxEvent[]>(key(b.id))) ?? []).map((e) => {
+    const camp = /#c-(.+)$/.exec(e.href ?? "")?.[1];
+    if (camp && docsCamps.has(camp) && /: показы идут$/.test(e.title))
+      return { ...e, tone: "warn" as const, title: e.title.replace(/: показы идут$/, ": Директ включил кампанию, но показов ещё нет"), text: "Объявления ждут проверки лицензии — показы начнутся после неё.", group: "event" as const, unread: e.at > seen };
+    return { ...e, group: "event" as const, unread: e.at > seen };
+  });
   const changes = await db.select().from(schema.changes).where(and(eq(schema.changes.businessId, b.id), gte(schema.changes.at, since))).orderBy(desc(schema.changes.at)).limit(15);
   for (const c of changes) {
     const at = c.at.toISOString();

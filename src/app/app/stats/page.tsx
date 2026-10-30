@@ -8,7 +8,7 @@ import { metricaVisits, report, reportNow, weeksForMarking } from "@/lib/engine/
 import { PeriodPicker } from "./PeriodPicker";
 import { METRICA_REASON_TEXT, metricaStatus } from "@/lib/engine/metrica-sync";
 import { getDb, schema } from "@/lib/db";
-import { DaysChart } from "@/components/charts";
+import { DaysChart, Delta } from "@/components/charts";
 import { ClientsWeek } from "@/components/ClientsWeek";
 import { CHANNEL_NAME } from "@/lib/platforms";
 import { addDays, isoDay, num, pl, rub } from "@/lib/util";
@@ -113,6 +113,23 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
             </div>
           ))}
         </div>
+        {/* Вторая строка — как в Директе: показы, CTR, цена клика, конверсия и сравнение с прошлым периодом */}
+        <div className="mt-5 pt-4 border-t border-line grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-5 gap-y-3 text-sm">
+          {[
+            ["Показы", num(c.impressions), <Delta key="i" cur={c.impressions} prev={r.prev.impressions} />],
+            ["CTR", c.impressions ? `${((c.clicks / c.impressions) * 100).toLocaleString("ru-RU", { maximumFractionDigits: 2 })}%` : "—", c.impressions && r.prev.impressions ? <Delta key="c" cur={c.clicks / c.impressions} prev={r.prev.clicks / r.prev.impressions} /> : null],
+            ["Ср. цена клика", c.clicks ? rub(c.cost / c.clicks) : "—", c.clicks && r.prev.clicks ? <Delta key="p" cur={c.cost / c.clicks} prev={r.prev.cost / r.prev.clicks} inverse /> : null],
+            ["Конверсия в обращение", c.clicks ? `${((c.leads / c.clicks) * 100).toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%` : "—", c.clicks && r.prev.clicks ? <Delta key="v" cur={c.leads / c.clicks} prev={r.prev.leads / r.prev.clicks} /> : null],
+            ["Цена обращения", c.leads ? rub(c.cost / c.leads) : "—", c.leads && r.prev.leads ? <Delta key="l" cur={c.cost / c.leads} prev={r.prev.cost / r.prev.leads} inverse /> : null],
+            ["Визиты (Метрика)", hasVisits ? num([...mv.byChannel.values()].reduce((a, x) => a + x.visits, 0)) : "—", null],
+          ].map(([l, v, d]) => (
+            <div key={l as string} className="min-w-0">
+              <div className="text-xs text-muted">{l}</div>
+              <div className="text-lg font-bold tabular-nums">{v}</div>
+              <div className="h-4">{d}</div>
+            </div>
+          ))}
+        </div>
         {c.otherLeads ? (
           <div className="mt-5 rounded-xl bg-paper p-4 text-sm leading-relaxed">
             <b>Другие обращения: {num(c.otherLeads)}</b>
@@ -134,52 +151,61 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
       </section>
 
       <section className="card p-5 sm:p-7">
-        <h2 className="text-lg font-bold">По каналам</h2>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-lg font-bold">По каналам</h2>
+          <span className="text-xs text-muted">Под каждым каналом — что было после клика: визиты, отказы и цели по Метрике</span>
+        </div>
         {rows.length ? (
           <>
-            {/* Телефон: карточки вместо широкой таблицы */}
-            <ul className="mt-4 grid gap-3 sm:hidden">
-              {rows.map(([ch, t]) => (
-                <li key={ch} className="rounded-xl border border-line p-4">
-                  <div className="flex items-baseline justify-between gap-3">
-                    <span className="font-semibold">{CH[ch] ?? ch}</span>
-                    <span className="font-extrabold">{t.clients && t.cost ? rub(t.cost / t.clients) : "—"}</span>
-                  </div>
-                  <div className="text-xs text-faint text-right">стоимость клиента</div>
-                  <dl className="mt-2 grid grid-cols-3 gap-2 text-sm">
-                    <div><dt className="text-xs text-muted">Расход</dt><dd className="font-semibold">{rub(t.cost)}</dd></div>
-                    <div><dt className="text-xs text-muted">Обращения</dt><dd className="font-semibold">{num(t.leads)}{t.leads && t.cost ? <span className="text-muted font-normal"> · {rub(t.cost / t.leads)}</span> : null}</dd></div>
-                    <div><dt className="text-xs text-muted">Клиенты{t.clientsEstimated ? " ≈" : ""}</dt><dd className="font-semibold">{num(t.clients)}</dd></div>
-                  </dl>
-                </li>
-              ))}
-            </ul>
-            <div className="hidden sm:block mt-4 overflow-x-auto">
-              <table className="w-full text-sm">
+            <div className="mt-4 -mx-1 overflow-x-auto">
+              <table className="w-full text-sm min-w-[46rem]">
                 <thead>
-                  <tr className="text-left text-muted border-b border-line">
-                    <th className="py-2 pr-2 font-semibold">Канал</th>
+                  <tr className="text-left text-muted border-b border-line text-xs">
+                    <th className="py-2 px-1 font-semibold">Канал</th>
+                    <th className="py-2 px-2 font-semibold text-right" title="Сколько раз объявления показали">Показы</th>
+                    <th className="py-2 px-2 font-semibold text-right">Клики</th>
+                    <th className="py-2 px-2 font-semibold text-right" title="Доля показов, после которых кликнули">CTR</th>
+                    <th className="py-2 px-2 font-semibold text-right">Ср. цена клика</th>
                     <th className="py-2 px-2 font-semibold text-right">Расход</th>
-                    <th className="py-2 px-2 font-semibold text-right">Переходы</th>
                     <th className="py-2 px-2 font-semibold text-right">Обращения</th>
+                    <th className="py-2 px-2 font-semibold text-right" title="Доля кликов, после которых человек обратился">Конверсия</th>
                     <th className="py-2 px-2 font-semibold text-right">Цена обращения</th>
-                    <th className="py-2 px-2 font-semibold text-right">Клиенты</th>
-                    <th className="py-2 pl-2 font-semibold text-right">Стоимость клиента</th>
+                    <th className="py-2 px-1 font-semibold text-right">Цена клиента</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {rows.map(([ch, t]) => (
-                    <tr key={ch} className="border-b border-line last:border-0">
-                      <td className="py-3 pr-2 font-semibold">{CH[ch] ?? ch}</td>
-                      <td className="py-3 px-2 text-right">{rub(t.cost)}</td>
-                      <td className="py-3 px-2 text-right">{num(t.clicks)}</td>
-                      <td className="py-3 px-2 text-right">{num(t.leads)}</td>
-                      <td className="py-3 px-2 text-right">{t.leads && t.cost ? rub(t.cost / t.leads) : "—"}</td>
-                      <td className="py-3 px-2 text-right">{t.clientsEstimated && t.clients ? "≈ " : ""}{num(t.clients)}</td>
-                      <td className="py-3 pl-2 text-right font-semibold">{t.clients && t.cost ? rub(t.cost / t.clients) : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
+                {rows.map(([ch, t]) => {
+                  const m = mv.byChannel.get(ch);
+                  const pct = (a: number, b: number) => (b ? `${((a / b) * 100).toLocaleString("ru-RU", { maximumFractionDigits: a / b < 0.1 ? 2 : 1 })}%` : "—");
+                  return (
+                    <tbody key={ch} className="border-b border-line last:border-0 group/ch">
+                      <tr>
+                        <td className="py-3 px-1 font-semibold">
+{CH[ch] ?? ch}
+                        </td>
+                        <td className="py-3 px-2 text-right tabular-nums">{num(t.impressions)}</td>
+                        <td className="py-3 px-2 text-right tabular-nums">{num(t.clicks)}</td>
+                        <td className="py-3 px-2 text-right tabular-nums">{pct(t.clicks, t.impressions)}</td>
+                        <td className="py-3 px-2 text-right tabular-nums">{t.clicks ? rub(t.cost / t.clicks) : "—"}</td>
+                        <td className="py-3 px-2 text-right tabular-nums">{rub(t.cost)}</td>
+                        <td className="py-3 px-2 text-right tabular-nums">{num(t.leads)}</td>
+                        <td className="py-3 px-2 text-right tabular-nums">{pct(t.leads, t.clicks)}</td>
+                        <td className="py-3 px-2 text-right tabular-nums">{t.leads && t.cost ? rub(t.cost / t.leads) : "—"}</td>
+                        <td className="py-3 px-1 text-right tabular-nums font-semibold">{t.clients && t.cost ? `${t.clientsEstimated ? "≈ " : ""}${rub(t.cost / t.clients)}` : "—"}</td>
+                      </tr>
+                      <tr>
+                        <td colSpan={10} className="pb-3 px-1">
+                          <div className="grid grid-cols-2 sm:grid-cols-5 gap-x-4 gap-y-2 rounded-xl bg-paper px-3 py-2.5 text-xs">
+                            <div><div className="text-muted">Визиты (Метрика)</div><div className="font-semibold text-sm tabular-nums">{m ? num(m.visits) : "—"}</div></div>
+                            <div><div className="text-muted">Отказы</div><div className="font-semibold text-sm tabular-nums">{m && m.visits ? pct(m.bounces, m.visits) : "—"}</div></div>
+                            <div><div className="text-muted">Время на сайте</div><div className="font-semibold text-sm tabular-nums">{m && m.visits ? dur(m.durationSum / m.visits) : "—"}</div></div>
+                            <div><div className="text-muted">Цели в Метрике</div><div className="font-semibold text-sm tabular-nums">{m ? num(m.goalLeads) : "—"}</div></div>
+                            <div><div className="text-muted">Клиенты{t.clientsEstimated ? ", оценка" : ""}</div><div className="font-semibold text-sm tabular-nums">{num(t.clients)}</div></div>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  );
+                })}
               </table>
             </div>
             <p className="hint mt-3">Суммы по каналам равны итогу выше.{r.byChannel.unknown ? " «Канал не определён» — заявки с рекламной меткой, но без номера объявления: расход по ним уже учтён в своих каналах." : ""}</p>

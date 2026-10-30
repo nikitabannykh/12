@@ -500,7 +500,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                 <h2 className="text-xl font-bold">{CHANNEL_NAME[ch]}</h2>
                 {waiting ? (
                   aud!.state === "off" ? <span className="pill bg-paper text-muted">автозапуск выключен</span> : <span className="pill bg-good-soft text-good"><Users size={13} /> копим аудиторию</span>
-                ) : <CampaignPill s={states.get(camp.id)} ch={ch} />}
+                ) : ads.some((x) => x.campaignId === camp.id && x.status === "active" && /документ|лиценз/i.test(x.statusNote ?? "")) && !states.get(camp.id)?.stopped ? <span className="pill bg-bad-soft text-bad">Не показывается — ждёт лицензию</span> : <CampaignPill s={states.get(camp.id)} ch={ch} />}
               </div>
               <p className="text-sm text-muted mt-0.5"><Purpose type={typeOf(ch)} /></p>
 

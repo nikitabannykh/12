@@ -370,7 +370,12 @@ export async function metricaVisits(b: Business, from: string, to: string) {
   const camps = await db.select().from(schema.campaigns).where(eq(schema.campaigns.businessId, b.id));
   const rows = await db.select().from(schema.metricaDaily).where(and(eq(schema.metricaDaily.businessId, b.id), gte(schema.metricaDaily.day, from), lte(schema.metricaDaily.day, to)));
   const stats = await db.select().from(schema.statsDaily).where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, from), lte(schema.statsDaily.day, to)));
-  const byChannel = new Map<string, { visits: number; quality: number }>();
+  const byChannel = new Map<string, { visits: number; quality: number; bounces: number; durationSum: number; goalLeads: number; conversions: number }>();
+  const chOf = (channel: string) => {
+    let x = byChannel.get(channel);
+    if (!x) byChannel.set(channel, (x = { visits: 0, quality: 0, bounces: 0, durationSum: 0, goalLeads: 0, conversions: 0 }));
+    return x;
+  };
   const byCamp = new Map<string, CampaignVisits>();
   const campOf = (id: string) => {
     let x = byCamp.get(id);
@@ -384,10 +389,12 @@ export async function metricaVisits(b: Business, from: string, to: string) {
     c.visits += r.visits;
     c.bounces += r.bounces;
     c.durationSum += r.durationSum;
-    const ch = byChannel.get(c.channel) ?? { visits: 0, quality: 0 };
+    const ch = chOf(c.channel);
     ch.visits += r.visits;
     ch.quality += Math.max(0, r.visits - r.bounces);
-    byChannel.set(c.channel, ch);
+    ch.bounces += r.bounces;
+    ch.durationSum += r.durationSum;
+    ch.goalLeads += r.leads;
   }
   for (const s of stats) {
     const c = byCamp.get(s.campaignId);

@@ -42,6 +42,9 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
   // Кабинеты, где расход мог идти, а статистику получить не удалось: робот не должен поднимать лимиты «вслепую»
   const failedAccounts: string[] = [];
   const inbox: Omit<InboxEvent, "id" | "at">[] = [];
+  // Смена «показывается/нет» у кампании — пишем после статусов объявлений: если объявления ждут лицензию,
+  // «показы идут» было бы неправдой
+  const deliveryMoves: { c: Campaign; ok: boolean; note?: string; wasMoney: boolean }[] = [];
   const byAccount = new Map<string, Campaign[]>();
   for (const c of camps) if (c.externalId) byAccount.set(c.accountId, [...(byAccount.get(c.accountId) ?? []), c]);
 
@@ -156,9 +159,7 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
           if (!x) continue;
           const prev = (c.meta as { delivery?: { ok: boolean; note?: string } } | null)?.delivery;
           if (prev?.ok === x.ok && prev?.note === x.note) continue;
-          if (prev?.ok !== x.ok) inbox.push(x.ok
-            ? { tone: "good", title: `${CHANNEL_NAME[c.channel] ?? c.channel}: показы идут`, href: `/app/ads#c-${c.id}` }
-            : { tone: "bad", title: `${CHANNEL_NAME[c.channel] ?? c.channel}: реклама не показывается`, text: x.note, href: `/app/ads#c-${c.id}` });
+          if (prev?.ok !== x.ok) deliveryMoves.push({ c, ok: x.ok, note: x.note, wasMoney: /средств|пополн/i.test(prev?.note ?? "") });
           const [fresh] = await db.select({ meta: schema.campaigns.meta }).from(schema.campaigns).where(eq(schema.campaigns.id, c.id));
           await db.update(schema.campaigns).set({ meta: { ...(fresh?.meta ?? {}), delivery: { ...x, at: new Date().toISOString() } } }).where(eq(schema.campaigns.id, c.id));
         }
@@ -205,6 +206,19 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
     if (authErr && acc.status === "ok") inbox.push({ tone: "bad", title: `Нет доступа к кабинету ${acc.login}`, text: authErr, href: "/app/settings" });
     if (authErr) await db.update(schema.adAccounts).set({ status: "error", statusNote: authErr }).where(eq(schema.adAccounts.id, accountId));
     else if (reached && acc.status !== "ok") await db.update(schema.adAccounts).set({ status: "ok", statusNote: null }).where(eq(schema.adAccounts.id, acc.id));
+  }
+  if (deliveryMoves.length) {
+    const docsAds = await db.select({ campaignId: schema.ads.campaignId, note: schema.ads.statusNote }).from(schema.ads)
+      .where(and(eq(schema.ads.businessId, b.id), eq(schema.ads.status, "active")));
+    for (const m of deliveryMoves) {
+      const name = CHANNEL_NAME[m.c.channel] ?? m.c.channel;
+      const href = `/app/ads#c-${m.c.id}`;
+      if (!m.ok) { inbox.push({ tone: "bad", title: `${name}: реклама не показывается`, text: m.note, href }); continue; }
+      const waitingDocs = docsAds.some((a) => a.campaignId === m.c.id && /документ|лиценз/i.test(a.note ?? ""));
+      inbox.push(waitingDocs
+        ? { tone: "warn", title: `${name}: ${m.wasMoney ? "деньги поступили" : "Директ включил кампанию"}, но показов ещё нет`, text: "Объявления ждут проверки лицензии — показы начнутся после неё.", href }
+        : { tone: "good", title: `${name}: показы идут`, href });
+    }
   }
   await pushInbox(b.id, inbox);
   return { errors, failedAccounts };
