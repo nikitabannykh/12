@@ -14,6 +14,7 @@ import { SearchAdPreview, ImageAdPreview, ResponsiveAssets } from "@/components/
 import { SerpScheme, AuctionTable } from "@/components/Serp";
 import { ceilingOf } from "@/lib/engine/ops";
 import { CHANNEL_HINT, CHANNEL_NAME, PLATFORM_NAME } from "@/lib/platforms";
+import { DIRECT_VAT, netOfVat } from "@/lib/platforms/yandex";
 import { MAX_MONTHLY, MIN_WEEKLY, allocate } from "@/lib/engine/budget";
 import { ANGLES, LAYERS, LAYER_ITEM, LAYER_LABEL, type Layer } from "@/lib/niches";
 import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
@@ -512,6 +513,11 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                 <div className="rounded-xl bg-paper px-3.5 py-3">
                   <div className="text-xs text-muted">{waiting ? "Лимит после включения" : "Лимит"}</div>
                   <div className="mt-0.5">{waiting ? <span className="font-semibold">{plannedShort ? "не хватает бюджета" : `≈ ${rub(plannedWeekly)} в неделю`}</span> : <BudgetInline campaignId={camp.id} weekly={camp.weeklyBudget} min={MIN_WEEKLY[ch]} />}</div>
+                  {!waiting && camp.platform === "yandex" && DIRECT_VAT > 0 ? (
+                    <div className="text-[11.5px] text-muted mt-1 leading-snug" title="Бюджет в сервисе — с НДС, как списывается с вашего счёта. Директ показывает лимит стратегии без НДС.">
+                      с НДС · в Директе {rub(netOfVat(camp.weeklyBudget))} без НДС
+                    </div>
+                  ) : null}
                 </div>
                 <div className="rounded-xl bg-paper px-3.5 py-3">
                   <div className="text-xs text-muted">Потрачено</div>
@@ -733,7 +739,8 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                         const s = sc.s;
                         const inTest = running.some((e) => e.controlId === ad.id || e.variantId === ad.id);
                         const V = VERDICT[sc.verdict];
-                        const special = waiting && ad.status === "moderation" ? { text: "Ждёт включения", cls: "bg-paper text-muted" } : campOff && ad.status !== "archived" ? { text: "Не показывается — канал выключен", cls: "bg-paper text-muted" } : STATUS[ad.status];
+                        const blocked = ad.status === "active" && /^Не показывается/.test(ad.statusNote ?? "");
+                        const special = waiting && ad.status === "moderation" ? { text: "Ждёт включения", cls: "bg-paper text-muted" } : campOff && ad.status !== "archived" ? { text: "Не показывается — канал выключен", cls: "bg-paper text-muted" } : blocked ? { text: /документ/i.test(ad.statusNote ?? "") ? "Нужны документы" : "Не показывается", cls: "bg-bad-soft text-bad" } : STATUS[ad.status];
                         const layout = ad.imageId ? layoutOf.get(ad.imageId) : null;
                         return (
                           <li key={ad.id} className={`rounded-xl border ${sc.verdict === "leader" ? "border-good/40 bg-good-soft/40" : "border-line"} ${ad.status === "paused" ? "opacity-60" : ""}`}>
@@ -754,7 +761,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                                     {ch === "search" && tvOf([ad.id]) !== null ? <span className="pill bg-paper text-muted">Место: {placeName(tvOf([ad.id])!).replace(" над результатами", "")}</span> : null}
                                   </div>
                                   <p className="text-sm text-muted mt-1.5 leading-snug">
-                                    {ad.status === "rejected" ? <span className="text-bad">{cleanNote(ad.statusNote) ?? "Модерация не пропустила объявление — что делать, ниже"}</span> : sc.why}
+                                    {ad.status === "rejected" ? <span className="text-bad">{cleanNote(ad.statusNote) ?? "Модерация не пропустила объявление — что делать, ниже"}</span> : blocked ? <span className="text-bad">Модерацию прошло. {ad.statusNote}</span> : sc.why}
                                   </p>
                                 </div>
                                 <div className="col-start-2 sm:col-start-3 sm:row-start-1 grid gap-1.5">

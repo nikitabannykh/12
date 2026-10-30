@@ -142,7 +142,7 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
     }
 
     // Идёт ли показ на самом деле: включённая кампания может стоять (нет денег, модерация, лимит)
-    if (client.getCampaignDelivery && !statesOnly) {
+    if (client.getCampaignDelivery) {
       const getDelivery = client.getCampaignDelivery.bind(client);
       await step("Состояние показа", async () => {
         const active = list.filter((c) => c.status === "active" && c.externalId);

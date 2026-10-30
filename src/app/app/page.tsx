@@ -44,7 +44,7 @@ export default async function Dashboard() {
   const isDemo = camps.length > 0 && camps.every((c) => c.platform === "demo");
   const groups = camps.length ? await db.select({ id: schema.adGroups.id, status: schema.adGroups.status }).from(schema.adGroups).where(inArray(schema.adGroups.campaignId, camps.map((c) => c.id))) : [];
   const ads = await db
-    .select({ status: schema.ads.status, campaignId: schema.ads.campaignId, adGroupId: schema.ads.adGroupId })
+    .select({ status: schema.ads.status, statusNote: schema.ads.statusNote, campaignId: schema.ads.campaignId, adGroupId: schema.ads.adGroupId })
     .from(schema.ads)
     .where(and(eq(schema.ads.businessId, b.id), inArray(schema.ads.status, ["moderation", "rejected", "active"])));
   const monthCost = (await db.select({ cost: schema.statsDaily.cost }).from(schema.statsDaily).where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, monthStartDay(r.now))))).reduce((s, x) => s + x.cost, 0);
@@ -62,7 +62,11 @@ export default async function Dashboard() {
   const liveCamp = new Set(camps.filter((x) => x.status === "active").map((x) => x.id));
   const liveGroup = new Set(groups.filter((g) => g.status === "active").map((g) => g.id));
   const showing = (a: (typeof ads)[number]) => liveCamp.has(a.campaignId) && liveGroup.has(a.adGroupId);
-  const active = ads.filter((a) => a.status === "active" && showing(a)).length;
+  // «Модерацию прошло, но показов нет» (нужны документы, нет денег…) — площадка пишет причину, мы храним её с префиксом
+  const isBlocked = (a: (typeof ads)[number]) => a.status === "active" && /^Не показывается/.test(a.statusNote ?? "");
+  const blockedAds = ads.filter((a) => isBlocked(a) && liveCamp.has(a.campaignId));
+  const blockedDocs = blockedAds.filter((a) => /документ/i.test(a.statusNote ?? "")).length;
+  const active = ads.filter((a) => a.status === "active" && !isBlocked(a) && showing(a)).length;
   const moderation = ads.filter((a) => a.status === "moderation" && showing(a)).length;
   const rejected = ads.filter((a) => a.status === "rejected").length;
   // Итог модерации — по объявлениям всех созданных кампаний, включая те, что на паузе: иначе на паузе «прошли 0 из 1, отклонено 1»
@@ -159,7 +163,7 @@ export default async function Dashboard() {
           <Link href="/app/settings" className="btn btn-ghost btn-sm bg-white">Настройки</Link>
         </StopBanner>
       ))}
-      {moderation ? <ModerationCheck /> : null}
+      <ModerationCheck />
       {mod.moderation || mod.rejected ? (() => {
         const { active: passed, moderation: checking, rejected: declined } = mod;
         const total = checking + passed + declined;
@@ -179,11 +183,26 @@ export default async function Dashboard() {
             <p className="text-sm text-ink-2 mt-3 leading-relaxed">
               {checking ? "Площадки обычно проверяют объявления в течение суток. Статусы обновляются, когда вы открываете кабинет (не чаще раза в 10 минут), и каждое утро. " : ""}
               {declined ? <>Что делать с отклонёнными: робот перепишет их при следующей проверке, причина и подсказки — в разделе <Link href="/app/ads" className="underline">«Реклама»</Link>. </> : null}
-              {allStopped ? "Реклама сейчас на паузе — прошедшие проверку объявления начнут показываться, когда вы её включите." : noMoney ? "Показы начнутся, когда пополните рекламный кабинет." : "Прошедшие проверку объявления показываются сразу."}
+              {allStopped ? "Реклама сейчас на паузе — прошедшие проверку объявления начнут показываться, когда вы её включите." : blockedAds.length ? "Часть прошедших проверку объявлений пока не показывается — причина ниже." : noMoney ? "Показы начнутся, когда пополните рекламный кабинет." : "Прошедшие проверку объявления показываются сразу."}
             </p>
           </section>
         );
       })() : null}
+
+      {blockedDocs ? (
+        <StopBanner
+          tone="bad"
+          title="Директ просит документы — объявления не показываются"
+          text={`Модерацию ${pl(blockedDocs, "объявление прошло", "объявления прошли", "объявлений прошли")}, но для медицинских услуг Директ показывает рекламу только после проверки лицензии. Откройте кабинет Директа → любое объявление со статусом «предоставьте документы» → «Отправить документы» и приложите лицензию со всеми приложениями (адрес приёма — как в рекламе, юрлицо — как на сайте). Проверка обычно занимает до двух рабочих дней, после неё показы начнутся сами.`}
+        >
+          <a href="https://direct.yandex.ru/" target="_blank" rel="noreferrer" className="btn btn-primary btn-sm">Открыть Директ <ExternalLink size={14} /></a>
+          <a href="https://yandex.ru/support/tooltips-direct/moderation-warning-data-forms.html" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm bg-white">Как отправить</a>
+        </StopBanner>
+      ) : blockedAds.length ? (
+        <StopBanner tone="warn" title="Часть объявлений не показывается" text={`Модерацию прошли, но ${pl(blockedAds.length, "объявление сейчас не показывается", "объявления сейчас не показываются", "объявлений сейчас не показываются")}. Причина — у каждого объявления в разделе «Реклама».`}>
+          <Link href="/app/ads" className="btn btn-ghost btn-sm bg-white">Смотреть объявления</Link>
+        </StopBanner>
+      ) : null}
 
       {lowBalance.map((x) => (
         <StopBanner key={x.accountId} tone={x.daysLeft === 0 ? "bad" : "warn"} icon="wallet" title={x.daysLeft === 0 ? "Кончились деньги в рекламном кабинете" : "Скоро кончатся деньги в рекламном кабинете"} text={`${balanceText(x)}${x.demo ? " В демо пополнение происходит само." : " Пополнение — в самом кабинете площадки."} Пока денег мало, робот не поднимает недельные лимиты — расход ниже плана из-за остатка, а не из-за площадки.`}>

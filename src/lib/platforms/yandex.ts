@@ -1090,8 +1090,12 @@ export class YandexDirect implements PlatformClient, WordstatReports {
         } else if (a.Status === "MODERATION") status = "moderation";
         else if (a.State === "ON") status = "active";
         else if (a.Status === "ACCEPTED" || a.Status === "PREACCEPTED") {
+          // Модерацию прошло, но показов нет. Причину берём из пояснения Директа; «Не показывается: …» — признак для интерфейса
           status = "active";
-          note = a.State === "OFF_BY_MONITORING" ? "Не показывается: сайт недоступен (мониторинг Директа)" : note ?? "Сейчас не показывается: кампания остановлена или на счёте нет денег";
+          const why = String(a.StatusClarification ?? "");
+          note = a.State === "OFF_BY_MONITORING" ? "Не показывается: сайт недоступен (мониторинг Директа)"
+            : /документ|лиценз|регион/i.test(why) ? `Не показывается: Директ просит документы (для медицинских услуг — лицензию). Отправьте их в кабинете Директа: объявление → «Отправить документы»${why ? `. Директ: «${why}»` : ""}`
+            : `Не показывается: ${why || "кампания остановлена или на счёте нет денег"}`;
         }
         out[String(a.Id)] = { status, note };
       }
