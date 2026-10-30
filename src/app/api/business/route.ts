@@ -12,6 +12,7 @@ import { NICHES } from "@/lib/niches";
 import { logChange } from "@/lib/engine/ops";
 import { parseOrgId, stripEmoji } from "@/lib/engine/extras";
 import { cleanLinks, linkKey, normalizeLink, MAX_SOURCE_LINKS, type SourceLink } from "@/lib/links";
+import { landingAfterSiteCheck, siteWarning } from "./site";
 
 const Body = z.object({
   name: z.string().trim().min(1, "Укажите название").max(80),
@@ -176,8 +177,14 @@ export const POST = route(async ({ user, business, req }) => {
     if (d.monthlyBudget < min) return fail(`Бюджет в месяц: минимум ${rub(min)} — меньше площадка «${CHANNEL_NAME[firstChannel(channels)]}» не принимает`);
   }
   const db = await getDb();
+  // Сайт, который не открывается, не делаем ссылкой объявлений по умолчанию — ведём на страницу записи и предупреждаем.
+  // У запущенной рекламы ссылки объявлений не трогаем (их меняют в «Настройках»)
+  const site = isLaunched(business?.status) ? null : await landingAfterSiteCheck(siteUrl, business?.siteUrl, business?.landing);
+  const landingPatch = site ? { landing: site.landing as Record<string, unknown> } : {};
+  const warning = site?.bad && siteUrl ? siteWarning(siteUrl) : undefined;
   const values = {
     ...d,
+    ...landingPatch,
     siteUrl,
     ...org,
     sourceLinks: links,
@@ -202,7 +209,7 @@ export const POST = route(async ({ user, business, req }) => {
     if (isLaunched(business.status)) {
       await logChange({ businessId: business.id, actor: "owner", kind: "profile", title: "Обновлено описание бизнеса", reason: "Новые объявления робот будет писать с учётом изменений. Уже работающие объявления не трогаем — их можно поправить в разделе «Объявления»." });
     }
-    return json({ id: business.id, planReset: Boolean(nicheChanged && plan) });
+    return json({ id: business.id, planReset: Boolean(nicheChanged && plan), ...(warning ? { warning } : {}) });
   }
   // Новый проект: не больше лимита, и сразу делаем его текущим
   const count = (await listProjects(user.id)).length;
@@ -210,5 +217,5 @@ export const POST = route(async ({ user, business, req }) => {
   const id = uid("b_");
   await db.insert(schema.businesses).values({ id, userId: user.id, publicKey: uid().replace(/[-_]/g, "").slice(0, 10).toLowerCase(), ...values });
   await setCurrentProject(user.id, id);
-  return json({ id, created: true });
+  return json({ id, created: true, ...(warning ? { warning } : {}) });
 });

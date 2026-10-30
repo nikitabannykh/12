@@ -6,30 +6,38 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, 
  *  1. APP_SECRET (≥16 символов) — основной и рекомендуемый вариант.
  *  2. sha256 от DATABASE_URL / POSTGRES_URL — строка подключения к базе секретна сама по себе;
  *     на этом сейчас работает прод на Vercel + Neon, поэтому вариант сохранён: старые сессии и токены не ломаются.
- *  3. Без того и другого — только локально или в демо. В production (VERCEL_ENV=production или
- *     NODE_ENV=production не на localhost) без ALLOW_INSECURE сервис отказывается работать:
- *     производные от VERCEL_PROJECT_ID и прочих несекретных значений больше не используются.
+ *     В production при этом в лог пишется громкое предупреждение: задайте APP_SECRET (старые сессии и токены
+ *     продолжат открываться — см. legacySecret).
+ *  3. Без того и другого — только при разработке (next dev) или с явным ALLOW_INSECURE (показ демо).
+ *     Любая production-сборка (NODE_ENV=production: next start, Docker, Vercel), в том числе без APP_URL
+ *     и на localhost, без ALLOW_INSECURE работать отказывается: константа из репозитория и производные
+ *     от несекретных значений (VERCEL_PROJECT_ID) секретом не являются.
  */
-function isProduction() {
-  if (process.env.VERCEL_ENV === "production") return true;
-  if (process.env.NODE_ENV !== "production") return false;
-  // `next start` на своём компьютере — это не прод
-  const url = process.env.APP_URL || "";
-  const local = !process.env.VERCEL && (!url || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(url));
-  return !local;
-}
+const isProductionBuild = () => process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production";
 
 const insecureAllowed = () => Boolean(process.env.ALLOW_INSECURE || process.env.ALLOW_INSECURE_SECRET);
 
 type SecretResult = { secret: string; error: null } | { secret: null; error: string };
+
+let warnedLegacy = false;
 
 function resolveSecret(): SecretResult {
   const app = process.env.APP_SECRET?.trim();
   if (app && app.length >= 16) return { secret: app, error: null };
   const dbUrl = (process.env.DATABASE_URL || process.env.POSTGRES_URL)?.trim();
   // (как и раньше: короткий APP_SECRET при наличии базы игнорируется — чтобы не сломать действующие сессии)
-  if (dbUrl) return { secret: createHash("sha256").update("pz-secret:" + dbUrl).digest("hex"), error: null };
-  if (isProduction() && !insecureAllowed()) {
+  if (dbUrl) {
+    if (isProductionBuild() && !warnedLegacy) {
+      warnedLegacy = true;
+      console.warn(
+        "⚠️  SECURITY: APP_SECRET не задан — секрет сессий и шифрования токенов выводится из DATABASE_URL. " +
+          "Утечка или смена строки подключения = подделка сессий / потеря токенов. Задайте APP_SECRET (openssl rand -hex 32): " +
+          "старые сессии и токены продолжат работать (проверяются прежним ключом).",
+      );
+    }
+    return { secret: createHash("sha256").update("pz-secret:" + dbUrl).digest("hex"), error: null };
+  }
+  if (isProductionBuild() && !insecureAllowed()) {
     return {
       secret: null,
       error: app
@@ -37,7 +45,11 @@ function resolveSecret(): SecretResult {
         : "Не задан APP_SECRET. Добавьте в переменные окружения случайную строку из 32+ символов (например, `openssl rand -hex 32`) и перезапустите сервис.",
     };
   }
-  // Локальный запуск или явно разрешённый небезопасный режим (ALLOW_INSECURE) — только для демо
+  // Разработка (next dev) или явно разрешённый небезопасный режим (ALLOW_INSECURE) — только для демо
+  if (isProductionBuild() && !warnedLegacy) {
+    warnedLegacy = true;
+    console.warn("⚠️  SECURITY: ALLOW_INSECURE — сессии подписываются несекретным ключом. Только для демо!");
+  }
   if (process.env.VERCEL && process.env.VERCEL_PROJECT_ID) return { secret: createHash("sha256").update("pz-tmp:" + process.env.VERCEL_PROJECT_ID).digest("hex"), error: null };
   return { secret: "dev-secret-change-me-dev-secret-change-me", error: null };
 }

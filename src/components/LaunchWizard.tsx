@@ -18,7 +18,7 @@ import { LandingEditor } from "./LandingEditor";
 import { landingFor, type LandingSettings } from "@/lib/engine/landing";
 import type { ShowSettings } from "@/lib/engine/show";
 import type { ExtrasBiz } from "@/lib/engine/extras";
-import { allocate, forecastWithDemand, minMonthlyFor, recommendedBudget, type Range } from "@/lib/engine/budget";
+import { allocate, forecastWithDemand, MAX_MONTHLY, minMonthlyFor, recommendedBudget, type Range } from "@/lib/engine/budget";
 import { LAYER_ITEM } from "@/lib/niches";
 import type { DemandView } from "@/lib/engine/demand";
 import type { LaunchPlan, PlanAd, PublishStep } from "@/lib/engine/launch";
@@ -128,6 +128,8 @@ export function LaunchWizard(p: Props) {
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [imgProgress, setImgProgress] = useState<{ ready: number; total: number } | null>(null);
   const [uploading, setUploading] = useState(false);
+  /** Фото поменялись после подготовки объявлений — предлагаем перерисовать картинки (тексты и правки остаются) */
+  const [photosChanged, setPhotosChanged] = useState(false);
   const [edit, setEdit] = useState<{ ad: PlanAd; channel: Channel } | null>(null);
   /** Новое объявление «написать самому»: та же форма, что и правка */
   const [newAd, setNewAd] = useState<{ groupId: string; channel: Channel } | null>(null);
@@ -150,29 +152,41 @@ export function LaunchWizard(p: Props) {
     if (vk) out.push("retarget_vk");
     return out;
   }, [usable]);
-  // Если в плане канал выключен, его доля уходит оставшимся — показываем ту же раскладку, что получит запуск
-  const planChannels = plan?.channels.filter((c) => c.enabled).map((c) => c.channel) ?? [];
-  const alloc = allocate(budget, planChannels.length && budget === savedBudget ? planChannels : channels.length ? channels : ["search"]);
+  // Если в плане канал выключил владелец, его доля уходит оставшимся — показываем ту же раскладку, что получит запуск.
+  // Каналы, выключенные из-за бюджета, участвуют: при другом бюджете они вернутся (как rebalancePlan на сервере)
+  const planChannels = plan?.channels.filter((c) => c.enabled || c.disabledReason === "budget").map((c) => c.channel) ?? [];
+  const runChannels: Channel[] = planChannels.length ? planChannels : channels.length ? channels : ["search"];
+  const alloc = allocate(budget, runChannels);
   const minBudget = minMonthlyFor(channels.length ? channels : ["search"]);
   const hasAccounts = usable.length > 0;
   const demandReady = demand?.status === "done" && demand.summary ? demand.summary.total : null;
   const medical = demand?.medical ?? p.business.medical;
   const fc = forecastWithDemand({ monthly: budget, niche: p.business.niche, medical, regionIds: demand?.regionIds, allocation: alloc.allocation, demand: demandReady });
-  // Рекомендованный бюджет по спросу: доля поиска зависит от бюджета (при малом часть каналов отключается) — уточняем раз
+  // Рекомендованный бюджет по спросу — не зависит от того, что сейчас в поле: доля поиска берётся из раскладки
+  // тех же каналов при рекомендуемой сумме (при малом бюджете часть каналов отключается — уточняем до схождения)
   const rec = (() => {
     if (demandReady === null || !demandReady) return null;
-    const avail = channels.length ? channels : (["search"] as Channel[]);
-    if (!avail.includes("search")) return null;
-    const shareAt = (m: number) => allocate(m, avail).allocation.find((x) => x.channel === "search")?.share ?? 1;
+    if (!runChannels.includes("search")) return null;
+    const shareAt = (m: number) => allocate(m, runChannels).allocation.find((x) => x.channel === "search")?.share ?? 1;
     const base = { demand: demandReady, niche: p.business.niche, medical, regionIds: demand?.regionIds, minMonthly: minBudget };
-    const r1 = recommendedBudget({ ...base, searchShare: shareAt(budget) });
-    const r2 = recommendedBudget({ ...base, searchShare: shareAt(r1.monthly) });
-    return { ...r2, share: shareAt(r2.monthly) };
+    let r = recommendedBudget({ ...base, searchShare: shareAt(MAX_MONTHLY) });
+    for (let i = 0; i < 4; i++) {
+      const next = recommendedBudget({ ...base, searchShare: shareAt(r.monthly) });
+      if (next.monthly === r.monthly) break;
+      const up = next.monthly > r.monthly;
+      r = next;
+      // Колебание (каналы то отключаются, то возвращаются) — останавливаемся на сумме побольше: поиску её точно хватит
+      if (up) break;
+    }
+    return { ...r, share: shareAt(r.monthly) };
   })();
   const [allGroups, setAllGroups] = useState(false);
   // Группы спроса: сначала услуги и аудитории (они в итоге), потом смежные и проблемы
   const LAYER_ORDER = ["service", "audience", "adjacent", "problem"];
-  const demandGroups = demand?.summary ? [...demand.summary.groups].sort((a, b) => LAYER_ORDER.indexOf(a.layer) - LAYER_ORDER.indexOf(b.layer)) : [];
+  // counted — группа входит в итог (у старых сводок поля нет: тогда как раньше — услуги и аудитории)
+  const counted = (g: { layer: string; counted?: boolean }) => g.counted ?? (g.layer === "service" || g.layer === "audience");
+  const demandGroups = demand?.summary ? [...demand.summary.groups].sort((a, b) => Number(!counted(a)) - Number(!counted(b)) || LAYER_ORDER.indexOf(a.layer) - LAYER_ORDER.indexOf(b.layer)) : [];
+  const countedSum = demandGroups.filter(counted).reduce((n, g) => n + (g.demand ?? 0), 0);
 
   // Сбор спроса: каждый POST продвигает его (до ~40 с), пока не готово. Не блокирует страницу; кабинет поменялся — заново
   const accKey = usable.map((a) => `${a.id}:${a.status}`).join(",");
@@ -200,13 +214,30 @@ export function LaunchWizard(p: Props) {
     return () => { off = true; };
   }, [accKey]);
 
-  async function saveBudget(v: number) {
+  async function saveBudget(raw: number) {
+    // Поле и ползунок: не меньше минимума площадки и не больше потолка (сервер больше не примет)
+    if (!Number.isFinite(raw) || raw <= 0) {
+      setBudget(savedBudget);
+      toast("Введите сумму числом, например 30000", "error");
+      return;
+    }
+    let v = Math.round(raw);
+    if (v > MAX_MONTHLY) {
+      v = MAX_MONTHLY;
+      toast(`Максимальный бюджет — ${rub(MAX_MONTHLY)} в месяц`, "error");
+    } else if (v < minBudget) v = minBudget;
     setBudget(v);
+    if (v === savedBudget) return;
     try {
       await api("PATCH", "/api/budget", { monthly: v });
       setSavedBudget(v);
-      if (plan) setPlan(null); // бюджет поменялся — объявления и каналы пересоберём
+      // Бюджет поменялся — объявления и правки остаются, сервер только пересчитывает недельные лимиты каналов
+      if (plan) {
+        const r = await api<{ plan: LaunchPlan | null }>("GET", "/api/launch/plan").catch(() => null);
+        if (r?.plan) setPlan(r.plan);
+      }
     } catch (e) {
+      setBudget(savedBudget);
       toast((e as Error).message, "error");
     }
   }
@@ -221,6 +252,20 @@ export function LaunchWizard(p: Props) {
       if (b.done !== false) break;
     }
     setImgProgress(null);
+  }
+
+  /** Перерисовать картинки с новыми фото: сервер сбрасывает только картинки, тексты и правки остаются */
+  async function redrawImages() {
+    try {
+      setPhotosChanged(false);
+      const r = await api<{ plan: LaunchPlan }>("PATCH", "/api/launch/plan", { redrawImages: true });
+      setPlan(r.plan);
+      await drawImages();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setPhase(null);
+    }
   }
 
   async function prepare() {
@@ -319,8 +364,9 @@ export function LaunchWizard(p: Props) {
         const dataUrl = await resizeToJpeg(f);
         await api("POST", "/api/photos", { dataUrl });
       }
+      // Объявления и правки не трогаем: фото появятся в ленте, а картинки объявлений можно перерисовать кнопкой
       router.refresh();
-      setPlan(null);
+      if (plan?.stage === "ready") setPhotosChanged(true);
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
@@ -364,7 +410,7 @@ export function LaunchWizard(p: Props) {
               <img src={`/api/images/${ph.id}`} alt="" className="w-full h-full object-cover" />
               {ph.kind === "generated" ? <span className="absolute left-1 bottom-1 pill bg-white/90 text-[10px]">ИИ</span> : null}
               <button className="absolute right-1 top-1 bg-white/90 rounded-md p-1 opacity-0 group-hover:opacity-100 focus:opacity-100" aria-label="Удалить фото"
-                onClick={async () => { try { await api("DELETE", `/api/photos/${ph.id}`); setPlan(null); router.refresh(); } catch (e) { toast((e as Error).message, "error"); } }}>
+                onClick={async () => { try { await api("DELETE", `/api/photos/${ph.id}`); if (plan?.stage === "ready") setPhotosChanged(true); router.refresh(); } catch (e) { toast((e as Error).message, "error"); } }}>
                 <Trash2 size={14} />
               </button>
             </div>
@@ -374,6 +420,12 @@ export function LaunchWizard(p: Props) {
           </button>
           <input ref={fileRef} type="file" accept="image/jpeg,image/png" multiple hidden onChange={(e) => upload(e.target.files)} />
       </div>
+      {photosChanged && ready && !phase ? (
+        <div className="rounded-xl bg-info-soft p-3 text-sm flex flex-wrap items-center justify-between gap-2">
+          <span className="min-w-0">Фото изменились. Картинки объявлений можно перерисовать с новыми фото — тексты и ваши правки останутся.</span>
+          <button type="button" className="btn btn-primary btn-sm" onClick={redrawImages}><ImagePlus size={15} /> Обновить картинки</button>
+        </div>
+      ) : null}
     </div>
 
   );
@@ -389,7 +441,7 @@ export function LaunchWizard(p: Props) {
           ].map((x) => {
             const acc = p.accounts.find((a) => a.platform === x.platform);
             return (
-              <div key={x.platform} className="rounded-xl border border-line p-4 flex flex-col gap-3">
+              <div key={x.platform} className="rounded-xl border border-line p-4 flex flex-col gap-3 min-w-0 [&_.btn]:max-w-full [&_.btn]:h-auto [&_.btn]:min-h-9 [&_.btn]:py-1.5 [&_.btn]:whitespace-normal [&_.btn]:text-left">
                 <div>
                   <div className="font-bold">{x.name}</div>
                   <div className="text-sm text-muted">{x.desc}</div>
@@ -450,7 +502,8 @@ export function LaunchWizard(p: Props) {
               <div className="mt-0.5"><span className="text-3xl font-extrabold">~{approx(demand.summary.total)}</span> <span className="font-semibold">{plural(round2(demand.summary.total), "запрос", "запроса", "запросов")} в месяц</span></div>
               <p className="text-xs text-ink-2 mt-1 leading-relaxed max-w-2xl">
                 {demand.source === "demo" ? <><b className="font-semibold">Демо-данные</b> — с кабинетом Директа здесь будет Wordstat.</> : <><b className="font-semibold text-good">Данные Wordstat</b> за прошлый месяц.</>}{" "}
-                В итоге — только запросы об услугах, без «фото», «обучения» и других нецелевых; запросы о проблемах и смежных специалистах показаны отдельно и в итог не входят.
+                В итоге — только запросы об услугах и вашем специалисте, без «фото», «обучения» и других нецелевых; запросы о проблемах и похожих услугах показаны отдельно и в итог не входят.
+                {countedSum > demand.summary.total * 1.05 ? " Итог — без пересечений: общий запрос уже включает свои уточнения, поэтому итог меньше суммы групп." : ""}
               </p>
               {demand.note ? <p className="text-xs text-muted mt-1">{demand.note}</p> : null}
             </div>
@@ -461,7 +514,7 @@ export function LaunchWizard(p: Props) {
                     <div className="font-semibold min-w-0 [overflow-wrap:anywhere]">{g.name}</div>
                     <div className="text-sm font-semibold whitespace-nowrap">{g.demand === null ? <span className="text-faint font-normal">нет данных</span> : `~${approx(g.demand)} в мес.`}</div>
                   </div>
-                  {g.layer !== "service" ? <div className="text-xs text-muted">{LAYER_ITEM[g.layer]}{g.layer === "problem" || g.layer === "adjacent" ? " · не входит в итог" : ""}</div> : null}
+                  {g.layer !== "service" ? <div className="text-xs text-muted">{g.layer === "adjacent" && counted(g) ? "Ищут специалиста" : LAYER_ITEM[g.layer]}{counted(g) ? "" : " · не входит в итог"}</div> : null}
                   {g.top.length ? (
                     <ul className="mt-1.5 grid gap-0.5 text-xs text-ink-2">
                       {g.top.map((t) => (
@@ -494,15 +547,15 @@ export function LaunchWizard(p: Props) {
             <div className="flex items-end gap-3">
               <input
                 type="number" inputMode="numeric" className="field w-44 text-2xl font-extrabold h-14" aria-label="Бюджет в месяц, рублей"
-                min={minBudget} step={1000} value={budget} disabled={!hasAccounts}
+                min={minBudget} max={MAX_MONTHLY} step={1000} value={budget || ""} disabled={!hasAccounts}
                 onChange={(e) => setBudget(Number(e.target.value))}
-                onBlur={(e) => saveBudget(Math.max(minBudget, Number(e.target.value) || minBudget))}
+                onBlur={(e) => saveBudget(Number(e.target.value))}
               />
               <span className="pb-3 text-muted font-semibold">₽ в месяц</span>
             </div>
             <input
-              type="range" min={Math.min(minBudget, 3000)} max={100000} step={1000} value={Math.min(budget, 100000)} disabled={!hasAccounts}
-              onChange={(e) => setBudget(Number(e.target.value))} onMouseUp={(e) => saveBudget(Number((e.target as HTMLInputElement).value))} onTouchEnd={(e) => saveBudget(Number((e.target as HTMLInputElement).value))}
+              type="range" min={Math.floor(minBudget / 1000) * 1000} max={100000} step={1000} value={Math.min(budget, 100000)} disabled={!hasAccounts}
+              onChange={(e) => setBudget(Math.max(minBudget, Number(e.target.value)))} onMouseUp={(e) => saveBudget(Number((e.target as HTMLInputElement).value))} onTouchEnd={(e) => saveBudget(Number((e.target as HTMLInputElement).value))}
               onKeyUp={(e) => saveBudget(Number((e.target as HTMLInputElement).value))}
               className="w-full mt-4 accent-[#1d2045]" aria-label="Бюджет"
             />
@@ -540,7 +593,7 @@ export function LaunchWizard(p: Props) {
                     <div className="text-sm leading-snug">
                       Чтобы забрать почти весь спрос на поиске, хватит <b className="whitespace-nowrap">~{fmt(rec.monthly)} ₽</b> в месяц{rec.monthly < budget ? " — сейчас поиску выделено больше, чем он потратит" : ""}.
                     </div>
-                    <div className="text-xs text-ink-2 leading-relaxed">~{fmt(rec.clicks)} {plural(rec.clicks, "клик", "клика", "кликов")} по ~{fmt(rec.cpc)} ₽ ≈ {approx(rec.search)} ₽ на поиск — его доля {Math.round(rec.share * 100)}% бюджета. Оценка.</div>
+                    <div className="text-xs text-ink-2 leading-relaxed">Спрос даст ~{span(rec.reachable)} {plural(rec.reachable[1], "клик", "клика", "кликов")}, в среднем ~{fmt(rec.clicks)} по ~{fmt(rec.cpc)} ₽ ≈ {approx(rec.search)} ₽ на поиск — его доля {Math.round(rec.share * 100)}% бюджета. Оценка.</div>
                     <button type="button" className="btn btn-primary btn-sm justify-self-start" onClick={() => saveBudget(rec.monthly)} disabled={!hasAccounts}>Поставить {fmt(rec.monthly)} ₽</button>
                   </div>
                 ) : rec ? (
@@ -584,6 +637,9 @@ export function LaunchWizard(p: Props) {
       </Section>
 
       <Section id="landing" title="Куда ведёт реклама" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>
+        {p.landing.siteUrl && (p.landing.initial as { siteBad?: string }).siteBad === p.landing.siteUrl ? (
+          <p className="mb-3 rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2"><TriangleAlert size={16} className="shrink-0 mt-0.5" /><span>Сайт {p.landing.siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")} не открылся, когда мы его проверяли, — поэтому реклама ведёт на страницу записи. Проверьте адрес в <a href="/app/start" className="underline">«Данных о бизнесе»</a>.</span></p>
+        ) : null}
         <LandingEditor initial={p.landing.initial} siteUrl={p.landing.siteUrl} pageUrl={p.landing.pageUrl} channels={channels} live={false} hasYandex={usable.some((a) => a.platform === "yandex")} />
       </Section>
 
@@ -709,19 +765,20 @@ export function LaunchWizard(p: Props) {
         </div>
       </div>
 
-      <EditAdModal edit={edit} onClose={() => setEdit(null)} onSave={async (v) => { if (await patchPlan({ adId: edit!.ad.id, ...v })) setEdit(null); }} />
+      <EditAdModal edit={edit} onClose={() => setEdit(null)} onSave={async (v) => {
+        // Ошибку (например, «слишком длинно») показывает сама форма — не всплывашкой
+        const r = await api<{ plan: LaunchPlan }>("PATCH", "/api/launch/plan", { adId: edit!.ad.id, ...v });
+        setPlan(r.plan);
+        setEdit(null);
+      }} />
       <EditAdModal title="Новое объявление" edit={newAd ? { ad: { title: "", title2: "", text: "" }, channel: newAd.channel } : null} onClose={() => setNewAd(null)}
         onSave={async (v) => {
-          try {
-            const r = await api<{ plan: LaunchPlan; ad: PlanAd }>("POST", "/api/launch/plan/ad", { groupId: newAd!.groupId, ...v });
-            setPlan(r.plan);
-            setNewAd(null);
-            toast(r.ad.enabled ? "Объявление добавлено" : "Добавили выключенным: в группе Директа работают 3 объявления — выключите одно, чтобы включить новое");
-          } catch (e) {
-            toast((e as Error).message, "error");
-          }
+          const r = await api<{ plan: LaunchPlan; ad: PlanAd }>("POST", "/api/launch/plan/ad", { groupId: newAd!.groupId, ...v });
+          setPlan(r.plan);
+          setNewAd(null);
+          toast(r.ad.enabled ? "Объявление добавлено" : "Добавили выключенным: в группе Директа работают 3 объявления — выключите одно, чтобы включить новое");
         }} />
-      <RewriteModal channel={rewriteFor} name={rewriteFor ? CH[rewriteFor].name : ""} count={plan?.channels.find((c) => c.channel === rewriteFor)?.groups.reduce((n, g) => n + g.ads.length, 0) ?? 0}
+      <RewriteModal channel={rewriteFor} name={rewriteFor ? CH[rewriteFor].name : ""} ads={plan?.channels.find((c) => c.channel === rewriteFor)?.groups.flatMap((g) => g.ads) ?? []}
         onClose={() => setRewriteFor(null)} onPlan={setPlan} />
     </div>
   );
@@ -733,8 +790,17 @@ const LIM: Record<AdFormat, { title: number; title2: number; text: number }> = L
 const WISHES = ["Живее и проще", "Понятнее, что за услуга", "Больше про результат для клиента", "Упор на цену", "Короче", "Без канцелярита"];
 
 /** «Переписать тексты» канала по пожеланию: идёт порциями, показываем прогресс; вернуть прежние — в списке объявлений */
-function RewriteModal({ channel, name, count, onClose, onPlan }: { channel: Channel | null; name: string; count: number; onClose: () => void; onPlan: (p: LaunchPlan) => void }) {
+/** Текст объявления — владельца: написал сам или поправил (метка edited ставится сервером при правке) */
+const ownText = (a: PlanAd) => a.angle === "custom" || Boolean((a as PlanAd & { edited?: boolean }).edited);
+
+function RewriteModal({ channel, name, ads, onClose, onPlan }: { channel: Channel | null; name: string; ads: PlanAd[]; onClose: () => void; onPlan: (p: LaunchPlan) => void }) {
   const [wish, setWish] = useState("");
+  /** «Ваши правки тоже переписать?» — по умолчанию нет */
+  const [withOwn, setWithOwn] = useState(false);
+  const on = ads.filter((a) => a.enabled);
+  const own = on.filter(ownText).length;
+  const off = ads.length - on.length;
+  const count = withOwn ? on.length : on.length - own;
   const [busy, setBusy] = useState<{ done: number; total: number } | null>(null);
   const toast = useToast();
   async function run() {
@@ -743,7 +809,7 @@ function RewriteModal({ channel, name, count, onClose, onPlan }: { channel: Chan
     try {
       let start = true;
       for (let i = 0; i < 20; i++) {
-        const r = await api<{ plan: LaunchPlan; done: boolean; progress: { done: number; total: number }; changed: number; failed: number; ai: boolean }>("POST", "/api/launch/plan/rewrite", { channel, wish, start });
+        const r = await api<{ plan: LaunchPlan; done: boolean; progress: { done: number; total: number }; changed: number; failed: number; ai: boolean }>("POST", "/api/launch/plan/rewrite", { channel, wish, start, includeEdited: withOwn });
         start = false;
         onPlan(r.plan);
         setBusy(r.progress);
@@ -751,6 +817,7 @@ function RewriteModal({ channel, name, count, onClose, onPlan }: { channel: Chan
           if (!r.ai && wish.trim()) toast("Генерация текстов не подключена — подобрали другие проверенные формулировки, но пожелание учесть не смогли. Точечно поправить можно карандашом", "error");
           else toast(r.failed ? `Переписали ${r.progress.total - r.failed} из ${r.progress.total}. Остальные оставили как были — новый вариант не прошёл проверку фактов` : `Переписали ${r.progress.total} ${plural(r.progress.total, "объявление", "объявления", "объявлений")}`);
           setWish("");
+          setWithOwn(false);
           onClose();
           return;
         }
@@ -764,7 +831,16 @@ function RewriteModal({ channel, name, count, onClose, onPlan }: { channel: Chan
   return (
     <Modal open={!!channel} onClose={() => { if (!busy) onClose(); }} title={`Переписать тексты — ${name}`}>
       <div className="grid gap-4">
-        <p className="text-sm text-muted">Робот перепишет все {count} {plural(count, "объявление", "объявления", "объявлений")} канала. Картинки, аудитории и идея каждого объявления останутся. Не понравится — верните прежние тексты одной кнопкой.</p>
+        <p className="text-sm text-muted">
+          Робот перепишет {count} {plural(count, "включённое объявление", "включённых объявления", "включённых объявлений")} канала. Картинки, аудитории и идея каждого объявления останутся. Не понравится — верните прежние тексты одной кнопкой.
+          {off ? ` Выключенные (${off}) не трогаем.` : ""}
+        </p>
+        {own ? (
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1" checked={withOwn} onChange={(e) => setWithOwn(e.target.checked)} disabled={!!busy} />
+            <span>Ваши правки тоже переписать? <span className="text-muted">{own} {plural(own, "объявление написали или поправили вы", "объявления написали или поправили вы", "объявлений написали или поправили вы")} — без галочки оставим как есть.</span></span>
+          </label>
+        ) : null}
         <div>
           <label className="label" htmlFor="wish">Что изменить?</label>
           <textarea id="wish" className="field" rows={3} maxLength={300} placeholder="Например: проще, больше про боль в спине и шее, упомянуть приём для детей" value={wish} onChange={(e) => setWish(e.target.value)} disabled={!!busy} />
@@ -793,14 +869,21 @@ function RewriteModal({ channel, name, count, onClose, onPlan }: { channel: Chan
 export function EditAdModal({ edit, onClose, onSave, title = "Текст объявления" }: { edit: { ad: { title: string; title2?: string | null; text: string }; channel: Channel } | null; onClose: () => void; onSave: (v: { title: string; title2: string; text: string }) => Promise<void>; title?: string }) {
   const [v, setV] = useState({ title: "", title2: "", text: "" });
   const [busy, setBusy] = useState(false);
+  /** Ошибка сохранения — в самой форме (а не всплывашкой, которая висит и после удачного сохранения) */
+  const [err, setErr] = useState<string | null>(null);
   const [lastKey, setLastKey] = useState<string | null>(null);
   const key = edit ? `${(edit.ad as { id?: string }).id ?? ""}|${edit.ad.title}|${edit.ad.text}` : null;
   // Закрыли без сохранения — при следующем открытии показываем текст объявления, а не брошенный черновик
   if (!edit && lastKey !== null) setLastKey(null);
   if (edit && key !== lastKey) {
     setLastKey(key);
+    setErr(null);
     setV({ title: edit.ad.title, title2: edit.ad.title2 ?? "", text: edit.ad.text });
   }
+  const change = (next: typeof v) => {
+    setV(next);
+    setErr(null);
+  };
   const L = edit ? LIM[formatOf(edit.channel)] : LIM.search;
   const counter = (s: string, max: number) => <span className={`text-xs ${s.length > max ? "text-bad" : "text-faint"}`}>{s.length}/{max}</span>;
   return (
@@ -808,23 +891,24 @@ export function EditAdModal({ edit, onClose, onSave, title = "Текст объ�
       <div className="grid gap-4">
         <div>
           <div className="flex justify-between"><label className="label" htmlFor="t1">Заголовок</label>{counter(v.title, L.title)}</div>
-          <input id="t1" className="field" value={v.title} onChange={(e) => setV({ ...v, title: e.target.value })} />
+          <input id="t1" className="field" value={v.title} onChange={(e) => change({ ...v, title: e.target.value })} />
         </div>
         {edit?.channel === "search" ? (
           <div>
             <div className="flex justify-between"><label className="label" htmlFor="t2">Второй заголовок</label>{counter(v.title2, L.title2)}</div>
-            <input id="t2" className="field" value={v.title2} onChange={(e) => setV({ ...v, title2: e.target.value })} />
+            <input id="t2" className="field" value={v.title2} onChange={(e) => change({ ...v, title2: e.target.value })} />
           </div>
         ) : null}
         <div>
           <div className="flex justify-between"><label className="label" htmlFor="tx">Текст</label>{counter(v.text, L.text)}</div>
-          <textarea id="tx" className="field" rows={3} value={v.text} onChange={(e) => setV({ ...v, text: e.target.value })} />
+          <textarea id="tx" className="field" rows={3} value={v.text} onChange={(e) => change({ ...v, text: e.target.value })} />
         </div>
         <p className="hint">Площадки не пропускают «лучший», «№1», капслок и обещания, которые нельзя проверить.</p>
+        {err ? <p role="alert" className="rounded-lg bg-bad-soft text-bad px-3 py-2 text-sm">{err}</p> : null}
         <div className="flex justify-end gap-2">
           <button className="btn btn-ghost" onClick={onClose}>Отмена</button>
           <button className="btn btn-primary" disabled={busy || !v.title.trim() || !v.text.trim() || v.title.length > L.title || v.text.length > L.text || v.title2.length > L.title2}
-            onClick={async () => { setBusy(true); try { await onSave(v); } finally { setBusy(false); } }}>
+            onClick={async () => { setBusy(true); setErr(null); try { await onSave(v); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); } }}>
             {busy ? <Loader2 size={16} className="spin" /> : null}Сохранить
           </button>
         </div>

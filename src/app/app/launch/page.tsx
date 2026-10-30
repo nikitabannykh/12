@@ -20,6 +20,9 @@ import { vkConfigured } from "@/lib/platforms/vk";
 import { aiConfigured } from "@/lib/ai/yandex";
 import { hostOf } from "@/lib/util";
 import { isMedical } from "@/lib/niches";
+import { eq } from "drizzle-orm";
+import { getDb, schema } from "@/lib/db";
+import { landingAfterSiteCheck } from "@/app/api/business/site";
 
 /** Этап 2 «Запуск рекламы»: кабинеты → бюджет → объявления → запуск (разделы одной страницы) */
 export default async function Launch() {
@@ -27,6 +30,13 @@ export default async function Launch() {
   const b = await getBusinessForUser(user.id);
   if (!b) redirect("/app/start");
   if (isLaunched(b.status)) redirect("/app");
+  // Сайт, который не открывается, не делаем ссылкой объявлений по умолчанию (проверяем один раз — результат в landing)
+  const site = await landingAfterSiteCheck(b.siteUrl, b.siteUrl, b.landing).catch(() => null);
+  if (site) {
+    b.landing = site.landing as Record<string, unknown>;
+    const db = await getDb();
+    await db.update(schema.businesses).set({ landing: b.landing }).where(eq(schema.businesses.id, b.id));
+  }
   const accounts = await accountsFor(user.id);
   const photos = await listPhotos(b.id);
   const plan = (b.launchPlan as LaunchPlan | null) ?? null;

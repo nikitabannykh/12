@@ -21,6 +21,8 @@ import { showOf, showSummary, type ShowSettings } from "@/lib/engine/show";
 
 type Names = Record<Channel, { name: string; hint: string }>;
 const ANGLE: Record<string, string> = { custom: "своё", price: "цена", offer: "предложение новым", proof: "доверие", convenience: "удобство", result: "результат", emotion: "эмоция" };
+/** Подпись идеи: текст, поправленный владельцем, — уже его, а не исходный подход робота */
+const angleOf = (ad: PlanAd) => ((ad as PlanAd & { edited?: boolean }).edited ? "ваша правка" : ANGLE[ad.angle] ?? ad.angle);
 const rub = (n: number) => new Intl.NumberFormat("ru-RU").format(Math.round(n)) + " ₽";
 function plural(n: number, one: string, few: string, many: string) {
   const a = Math.abs(n) % 100, b = a % 10;
@@ -39,6 +41,8 @@ function whoOf(g: Pick<PlanGroup, "ageFrom" | "ageTo" | "sex">) {
 function geoText(ch: Channel, city: string, vkRadiusKm: number | null, address: string | null, sh: ShowSettings = {}) {
   const extra = sh.extraRegions?.length ? ` + ${sh.extraRegions.join(", ")}` : "";
   if (extra && !isRetarget(ch)) return `${city}${extra}`;
+  // Координаты адреса не определили — ВКонтакте показывает по всему городу (как в showSummary)
+  if (ch === "vk" && vkRadiusKm == null) return `${city} целиком`;
   if (ch === "vk" && sh.geoMode === "radius" && sh.radiusKm) return `Живут или работают в ${String(sh.radiusKm).replace(".", ",")} км от ${address ? address : "вас"}`;
   if (ch === "vk" && sh.geoMode !== "city" && vkRadiusKm) return `Живут или работают в ${vkRadiusKm} км от ${address ? address : "вас"}`;
   if (isRetarget(ch)) return `${city} — только те, кто уже был на сайте`;
@@ -119,7 +123,7 @@ export function PlanManager(p: {
         </summary>
         <div className="px-4 pb-4 grid gap-3">
           <div className="grid sm:grid-cols-2 gap-2 text-sm">
-            <div className="flex gap-2"><MapPin size={15} className="mt-0.5 shrink-0 text-muted" /><span><b>Где:</b> {showSummary(sh, p.biz, null).where}</span></div>
+            <div className="flex gap-2"><MapPin size={15} className="mt-0.5 shrink-0 text-muted" /><span><b>Где:</b> {showSummary(sh, { ...p.biz, hasGeo: p.vkRadiusKm != null }, null).where}</span></div>
             <div className="flex gap-2"><Clock size={15} className="mt-0.5 shrink-0 text-muted" /><span><b>Когда:</b> {tt ? tt.note : sh.scheduleMode === "always" ? "круглосуточно" : "круглосуточно — часы работы не указаны"}</span></div>
           </div>
           <div className="grid md:grid-cols-2 gap-2">
@@ -274,7 +278,7 @@ export function PlanManager(p: {
                                   <div className="text-sm font-semibold truncate">{ad.title}{ad.title2 ? <span className="font-normal text-ink-2"> — {ad.title2}</span> : null}</div>
                                   <div className="text-xs text-muted line-clamp-2">{ad.text}</div>
                                 </div>
-                                <span className="hidden sm:inline text-xs text-faint whitespace-nowrap">{ANGLE[ad.angle] ?? ad.angle}</span>
+                                <span className="hidden sm:inline text-xs text-faint whitespace-nowrap">{angleOf(ad)}</span>
                                 <button className="p-1.5 rounded-md hover:bg-paper shrink-0" aria-label="Изменить текст" onClick={() => p.onEdit(ad, ch.channel)}><Pencil size={14} /></button>
                                 <Toggle checked={ad.enabled} label="Объявление включено" onChange={(v) => p.onPatch({ adId: ad.id, enabled: v })} />
                               </li>
@@ -294,7 +298,7 @@ export function PlanManager(p: {
                                   return <ResponsiveAssets titles={ra.titles} texts={ra.texts} className="mt-1.5" />;
                                 })() : null}
                                 <div className="mt-1.5 flex items-center justify-between gap-2 text-xs">
-                                  <span className="text-muted">Идея: {ANGLE[ad.angle] ?? ad.angle}</span>
+                                  <span className="text-muted">Идея: {angleOf(ad)}</span>
                                   <span className="flex items-center gap-1">
                                     <button className="p-1.5 rounded-md hover:bg-paper" aria-label="Изменить текст" onClick={() => p.onEdit(ad, ch.channel)}><Pencil size={14} /></button>
                                     <Toggle checked={ad.enabled} label="Объявление включено" onChange={(v) => p.onPatch({ adId: ad.id, enabled: v })} />

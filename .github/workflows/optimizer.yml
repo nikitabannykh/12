@@ -2,15 +2,38 @@
 # В репозитории: Settings → Secrets and variables → Actions → добавьте
 #   APP_URL      — адрес сервиса, например https://polny-zal.vercel.app
 #   CRON_SECRET  — то же значение, что в переменных окружения сервиса
+# Логи Actions публичного репозитория видны всем: печатаем только HTTP-статус и счётчики (processed/total/failed),
+# никаких данных бизнесов. Подробный ответ (?debug=1) — только вручную, не здесь.
 name: optimizer
 on:
   schedule:
     - cron: "17 */2 * * *"
   workflow_dispatch: {}
+permissions: {}
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Run optimizer
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl -fsS --max-time 70 -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" "${{ secrets.APP_URL }}/api/cron/run" | head -c 2000
+          set -u
+          body=$(mktemp)
+          code=$(curl -sS --max-time 70 --retry 2 --retry-all-errors --retry-delay 10 \
+            -o "$body" -w '%{http_code}' \
+            -H "Authorization: Bearer ${CRON_SECRET}" "${APP_URL}/api/cron/run" || echo 000)
+          echo "HTTP $code"
+          if [ "$code" != "200" ]; then exit 1; fi
+          # Только числа из сводки; тело целиком не печатаем
+          processed=$(jq -r '.processed // 0' "$body")
+          total=$(jq -r '.total // 0' "$body")
+          failed=$(jq -r '.failed // 0' "$body")
+          echo "processed=$processed total=$total failed=$failed"
+          rm -f "$body"
+          if [ "$processed" = "0" ] && [ "$total" != "0" ]; then
+            echo "::error::Робот не обработал ни одного бизнеса из $total"
+            exit 1
+          fi

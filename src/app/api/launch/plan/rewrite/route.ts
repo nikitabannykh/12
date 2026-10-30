@@ -1,10 +1,12 @@
 import { isLaunched } from "@/lib/util";
 import { route, json, fail, needBusiness } from "@/lib/api";
+import { useQuota } from "@/lib/ratelimit";
 import { updatePlan, type LaunchPlan } from "@/lib/engine/launch";
 import { rewriteAdsBatch, type AdDraft } from "@/lib/ai/copy";
 import { aiConfigured } from "@/lib/ai/yandex";
 import { formatOf } from "@/lib/channels";
 import type { Channel } from "@/lib/platforms/types";
+import { marks, ownText } from "../marks";
 
 export const maxDuration = 60;
 
@@ -17,14 +19,18 @@ const bad = (message: string, status = 400) => Object.assign(new Error(message),
  * Порциями (лимит времени функции): клиент повторяет запрос, пока done=false. undo — вернуть прежние тексты.
  * Каждая волна сохраняется сразу и в свежий план (updatePlan): правки владельца и начатый запуск не затираются.
  */
-export const POST = route(async ({ business, req }) => {
+export const POST = route(async ({ user, business, req }) => {
   const started = Date.now();
   needBusiness(business);
   if (isLaunched(business.status)) return fail("Реклама уже запущена — тексты меняются на странице «Реклама»");
   const initial = business.launchPlan as LaunchPlan | null;
   if (!initial) return fail("План не найден — начните подготовку заново");
   if (initial.launch) return fail("Запуск уже начат — дождитесь окончания", 409);
-  const body = (await req.json().catch(() => ({}))) as { channel?: Channel; wish?: string; start?: boolean; undo?: boolean };
+  const body = (await req.json().catch(() => ({}))) as { channel?: Channel; wish?: string; start?: boolean; undo?: boolean; includeEdited?: boolean };
+  if (body.start && !body.undo) {
+    const over = await useQuota("rewrite", user);
+    if (over) return fail(over, 429);
+  }
   const channel = body.channel;
   const chOf = (p: LaunchPlan) => {
     const ch = p.channels.find((c) => c.channel === channel);
@@ -38,7 +44,7 @@ export const POST = route(async ({ business, req }) => {
       const ch = chOf(p);
       const r = p.rewrite;
       if (!r || r.channel !== ch.channel) throw bad("Возвращать нечего");
-      for (const g of ch.groups) for (const ad of g.ads) if (r.undo[ad.id]) Object.assign(ad, r.undo[ad.id]);
+      for (const g of ch.groups) for (const ad of g.ads) if (r.undo[ad.id]) Object.assign(ad, r.undo[ad.id]); // вместе с меткой edited
       p.rewrite = undefined;
     });
     return json({ plan, done: true });
@@ -51,12 +57,16 @@ export const POST = route(async ({ business, req }) => {
       const ch = chOf(p);
       // Переписываем повторно — «Вернуть» всё равно возвращает тексты до первого переписывания
       const keep = p.rewrite?.channel === ch.channel ? p.rewrite.undo : {};
-      p.rewrite = { channel: ch.channel, wish, done: [], failed: 0, undo: keep, changed: 0 };
+      // Что переписываем: включённые объявления; написанные или поправленные владельцем — только если он попросил
+      const ids = ch.groups.flatMap((g) => g.ads).filter((a) => a.enabled && (body.includeEdited || !ownText(a))).map((a) => a.id);
+      p.rewrite = { channel: ch.channel, wish, done: [], failed: 0, undo: keep, changed: 0, ...{ ids } };
     });
   }
   const jobWish = plan.rewrite!.wish;
   const ch0 = chOf(plan);
-  const todo = ch0.groups.flatMap((g) => g.ads.map((ad) => ({ g, ad }))).filter((x) => !plan.rewrite!.done.includes(x.ad.id));
+  const targets = (p: LaunchPlan) => (p.rewrite as { ids?: string[] } | undefined)?.ids ?? chOf(p).groups.flatMap((g) => g.ads.map((a) => a.id));
+  const todoIds = new Set(targets(plan));
+  const todo = ch0.groups.flatMap((g) => g.ads.map((ad) => ({ g, ad }))).filter((x) => todoIds.has(x.ad.id) && !plan.rewrite!.done.includes(x.ad.id));
   const deadline = started + 40_000;
   const chunks: (typeof todo)[] = [];
   for (let i = 0; i < todo.length; i += CHUNK) chunks.push(todo.slice(i, i + CHUNK));
@@ -86,10 +96,14 @@ export const POST = route(async ({ business, req }) => {
         const ad = ads.get(id);
         if (!ad) continue;
         if (next) {
-          if (!job.undo[id]) job.undo[id] = { angle: ad.angle, title: ad.title, title2: ad.title2 ?? null, text: ad.text };
+          // «Вернуть» возвращает и метку «текст владельца»
+          if (!job.undo[id]) job.undo[id] = { angle: ad.angle, title: ad.title, title2: ad.title2 ?? null, text: ad.text, ...{ edited: marks(ad).edited ?? false } };
           ad.title = next.title;
           ad.title2 = next.title2 ?? null;
           ad.text = next.text;
+          // Подход мог смениться (без модели берём другой шаблон) — подпись «идея» должна соответствовать тексту
+          if (next.angle) ad.angle = next.angle;
+          marks(ad).edited = false;
           job.changed = (job.changed ?? 0) + 1;
         } else job.failed++;
       }
@@ -102,12 +116,12 @@ export const POST = route(async ({ business, req }) => {
     await updatePlan(business.id, (p) => {
       const r = p.rewrite;
       if (!r || r.channel !== ch0.channel) return;
-      p.rewrite = Object.keys(r.undo).length ? { ...r, done: chOf(p).groups.flatMap((g) => g.ads.map((a) => a.id)), failed: 0, changed: 0 } : undefined;
+      p.rewrite = Object.keys(r.undo).length ? { ...r, done: targets(p), failed: 0, changed: 0 } : undefined;
     }).catch(() => null);
     return fail(error);
   }
   const job = plan.rewrite;
-  const ids = chOf(plan).groups.flatMap((g) => g.ads.map((a) => a.id));
+  const ids = targets(plan);
   const doneCount = job ? ids.filter((id) => job.done.includes(id)).length : ids.length;
   return json({ plan, done: doneCount >= ids.length, progress: { done: doneCount, total: ids.length }, changed: Object.keys(job?.undo ?? {}).length, failed: job?.failed ?? 0, ai: aiConfigured() });
 });

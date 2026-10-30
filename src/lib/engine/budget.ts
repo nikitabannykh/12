@@ -165,6 +165,8 @@ export function recommendedBudget(p: { demand: number; niche: string; medical?: 
   const search = clicks * cpc;
   const share = p.searchShare > 0 ? p.searchShare : 1;
   const monthly = Math.min(MAX_MONTHLY, Math.max(p.minMonthly, Math.ceil(search / share / 1000) * 1000));
-  return { monthly, search: Math.round(search), clicks: Math.round(clicks), cpc: Math.round(cpc) };
+  // Достижимые клики — тот же диапазон, что в прогнозе (спрос × ctr): прогноз не обещает кликов больше, чем здесь
+  const reachable: Range = [Math.floor(p.demand * a.ctr[0]), Math.max(Math.floor(p.demand * a.ctr[0]), Math.round(p.demand * a.ctr[1]))];
+  return { monthly, search: Math.round(search), clicks: Math.round(clicks), reachable, cpc: Math.round(cpc) };
 }
 

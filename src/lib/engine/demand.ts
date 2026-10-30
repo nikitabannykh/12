@@ -14,6 +14,8 @@ import { cityIn, demandSeeds, summarizeDemand, type DemandSeedGroup, type Demand
 import { regionIdsFor, yandexRegionIds } from "./regions";
 import { isMedical } from "../niches";
 import { errorText, sleep } from "../util";
+import { isDemoEmail } from "../auth";
+import { useQuota } from "../ratelimit";
 
 /**
  * Сбор спроса по Wordstat для бизнеса — возобновляемая задача (kv `demand:<businessId>`), которую двигает
@@ -54,7 +56,7 @@ export type DemandJob = {
   total: number;
   note: string | null;
   lockUntil: number;
-  /** Ошибку 31 (5 отчётов) лечили уборкой чужих готовых отчётов — один раз за сбор */
+  /** Ошибку 31 (5 отчётов) лечили уборкой своих брошенных отчётов (kv wsrep:<логин>) — один раз за сбор */
   cleaned?: boolean;
   /** Последняя настоящая ошибка источника — для понятной причины владельцу и диагностики */
   lastError?: DemandError | null;
@@ -165,17 +167,55 @@ async function directDaily(accountId: string, add = 0): Promise<number> {
   return Number((row?.value as { n?: number } | undefined)?.n ?? add);
 }
 
+/**
+ * Отчёты Wordstat v4, созданные этим сервисом, по логину Директа (kv `wsrep:<логин>` → { ids }).
+ * Уборка при ошибке 31 («уже 5 отчётов») удаляет только их: отчёты, которые владелец или другой сервис
+ * создали в том же аккаунте, не трогаем.
+ */
+const REPORTS_KEY = (login: string) => `wsrep:${login.toLowerCase()}`;
+async function ownReports(login: string): Promise<Set<string>> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, REPORTS_KEY(login)));
+  const ids = (row?.value as { ids?: unknown[] } | undefined)?.ids;
+  return new Set(Array.isArray(ids) ? ids.map(String) : []);
+}
+async function trackReport(login: string, id: number | string, add: boolean) {
+  const db = await getDb();
+  const sid = JSON.stringify(String(id));
+  const key = REPORTS_KEY(login);
+  if (add) {
+    await db
+      .insert(schema.kv)
+      .values({ key, value: { ids: [String(id)] } })
+      .onConflictDoUpdate({
+        target: schema.kv.key,
+        // Храним последние 50 — больше 5 у пользователя одновременно не бывает
+        set: { value: sql`jsonb_build_object('ids', (SELECT coalesce(jsonb_agg(x), '[]'::jsonb) FROM (SELECT x FROM jsonb_array_elements(coalesce(${schema.kv.value}->'ids', '[]'::jsonb)) x WHERE x <> ${sid}::jsonb UNION ALL SELECT ${sid}::jsonb) t) )`, updatedAt: new Date() },
+      });
+  } else {
+    await db
+      .update(schema.kv)
+      .set({ value: sql`jsonb_build_object('ids', (SELECT coalesce(jsonb_agg(x), '[]'::jsonb) FROM jsonb_array_elements(coalesce(${schema.kv.value}->'ids', '[]'::jsonb)) x WHERE x <> ${sid}::jsonb))`, updatedAt: new Date() })
+      .where(eq(schema.kv.key, key));
+  }
+}
+async function deleteReport(client: YandexDirect, login: string, id: number) {
+  await client.wordstatDelete(id);
+  await trackReport(login, id, false).catch(() => {});
+}
+
 // ─── Подготовка ───────────────────────────────────────────────────────
 
 type Ctx = { sources: Source[]; regionIds: number[] | null; yandex: AdAccount | null; demo: AdAccount | null; note: string | null };
 
-async function context(b: Business, accounts: AdAccount[]): Promise<Ctx> {
-  const yandex = accounts.find((a) => a.platform === "yandex" && a.status === "ok") ?? null;
+async function context(b: Business, accounts: AdAccount[], demoUser = false): Promise<Ctx> {
+  // Демо-аккаунт (почта @demo…) — только демо-данные, даже если демо-кабинет не подключён или подключён настоящий:
+  // анонимные демо не тратят квоту настоящего Wordstat (ни Yandex Cloud, ни Директа)
+  const yandex = demoUser ? null : accounts.find((a) => a.platform === "yandex" && a.status === "ok") ?? null;
   const demo = accounts.find((a) => a.platform === "demo") ?? null;
   const real = accounts.some((a) => a.platform !== "demo");
   const sources: Source[] = [];
-  // Демо-посетители — только демо-данные: не тратим квоту настоящего Wordstat на анонимные демо
-  if (!real && demo) sources.push("demo");
+  if (demoUser || (!real && demo)) sources.push("demo");
   else {
     if (cloudWordstatConfigured()) sources.push("cloud");
     if (yandex) sources.push("direct");
@@ -241,16 +281,35 @@ function view(job: DemandJob | null, b: Business, fallbackNote?: string | null):
     // Пока идёт сбор, итог не показываем: частичная сумма занижала бы спрос
     summary: has && job.status !== "running" ? summarizeDemand(job.groups, job.results, job.negatives) : null,
     note: job.note,
-    debug: {
-      lastError: job.lastError ?? null,
-      raw: job.raw ?? {},
-      sources: job.sources,
-      failed: job.failed,
-      reports: job.reports.map((r) => ({ id: r.id, at: r.at, phrases: r.phrases.length })),
-      retryAt: job.retryAt ? new Date(job.retryAt).toISOString() : null,
-      startedAt: job.startedAt,
-      updatedAt: job.updatedAt,
-    },
+    // Диагностика — только при DEMAND_DEBUG=1 (по умолчанию выключена) и без токенов
+    ...(process.env.DEMAND_DEBUG === "1" ? { debug: debugOf(job) } : {}),
+  };
+}
+
+/**
+ * Убирает из диагностики всё, похожее на токен: поле token в теле запроса v4, заголовки OAuth/Bearer/Api-Key,
+ * OAuth-токены Яндекса (y0_…, AQAAAA…) и IAM-токены (t1.…).
+ */
+export function redactSecrets(s: string): string {
+  return s
+    .replace(/("?(?:token|access_token|refresh_token|client_secret|api[_-]?key)"?\s*[:=]\s*"?)[^"&\s,}]+/gi, "$1***")
+    .replace(/\b(OAuth|Bearer|Api-Key)\s+[\w.\-]+/gi, "$1 ***")
+    .replace(/\by[0-3]_[\w-]{20,}/g, "***")
+    .replace(/\bAQAAAA[\w-]{20,}/g, "***")
+    .replace(/\bt1\.[\w.\-]{20,}/g, "***");
+}
+
+function debugOf(job: DemandJob): NonNullable<DemandView["debug"]> {
+  const le = job.lastError ?? null;
+  return {
+    lastError: le ? { ...le, message: redactSecrets(le.message), sample: le.sample ? redactSecrets(le.sample) : le.sample } : null,
+    raw: Object.fromEntries(Object.entries(job.raw ?? {}).map(([k, v]) => [k, redactSecrets(String(v))])),
+    sources: job.sources,
+    failed: job.failed,
+    reports: job.reports.map((r) => ({ id: r.id, at: r.at, phrases: r.phrases.length })),
+    retryAt: job.retryAt ? new Date(job.retryAt).toISOString() : null,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
   };
 }
 
@@ -291,14 +350,15 @@ const sampleOf = (e: unknown) => {
 /** Запоминаем ошибку источника (любую — и PlatformError, и неожиданную) */
 function record(job: DemandJob, source: Source, method: string, e: unknown, sample?: string | null) {
   const code = v4Code(e);
-  job.lastError = { source, method, code: Number.isFinite(code) ? code : null, message: errorText(e).slice(0, 300), sample: sample ?? sampleOf(e), at: now() };
+  const smp = sample ?? sampleOf(e);
+  job.lastError = { source, method, code: Number.isFinite(code) ? code : null, message: redactSecrets(errorText(e)).slice(0, 300), sample: smp ? redactSecrets(smp) : smp, at: now() };
   console.warn("wordstat error", source, method, job.lastError.code, job.lastError.message);
 }
 
 async function stepDemo(job: DemandJob, accounts: AdAccount[]) {
+  // Демо-Wordstat не зависит от кабинета — нужен только для детерминированных «частот»
   const demo = accounts.find((a) => a.platform === "demo");
-  if (!demo) return dropSource(job, "demo", "Демо-кабинет не подключён.");
-  const client = (await clientFor(demo)) as DemoPlatform;
+  const client = demo ? ((await clientFor(demo)) as DemoPlatform) : new DemoPlatform("demo");
   const asked = [...job.queue];
   const res = await client.wordstat(asked, job.regionIds);
   for (let i = 0; i < asked.length; i++) {
@@ -308,10 +368,13 @@ async function stepDemo(job: DemandJob, accounts: AdAccount[]) {
   }
 }
 
-async function stepCloud(job: DemandJob, deadline: number) {
+async function stepCloud(job: DemandJob, deadline: number, user: { id: string; email: string } | null) {
   const PAR = 3;
   while (job.queue.length && job.sources[0] === "cloud" && Date.now() < deadline - 12_000) {
     const batch = job.queue.slice(0, PAR);
+    // Платные запросы: дневной лимит фраз на пользователя и на весь сервис (QUOTA_WORDSTAT_DAY, QUOTA_GLOBAL_WORDSTAT_DAY)
+    const over = user ? await useQuota("wordstat", user, batch.length) : "Wordstat в Yandex Cloud: нет пользователя для учёта лимита.";
+    if (over) return dropSource(job, "cloud", over);
     const settled = await Promise.allSettled(batch.map((p) => cloudWordstat(p, job.regionIds, { timeoutMs: Math.min(10_000, deadline - Date.now() - 2_000) })));
     for (let i = 0; i < batch.length; i++) {
       const s = settled[i];
@@ -361,7 +424,7 @@ async function stepDirect(job: DemandJob, accounts: AdAccount[], deadline: numbe
   if (!acc) return dropSource(job, "direct", "Кабинет Яндекс Директа не подключён.");
   const client = (await clientFor(acc)) as YandexDirect;
   job.accountId = acc.id;
-  const keepRaw = () => { job.raw = { ...(job.raw ?? {}), ...(client.v4Raw ?? {}) }; };
+  const keepRaw = () => { job.raw = { ...(job.raw ?? {}), ...Object.fromEntries(Object.entries(client.v4Raw ?? {}).map(([k, v]) => [k, redactSecrets(String(v))])) }; };
   const off = (method: string, e: unknown) => {
     record(job, "direct", method, e);
     dropSource(job, "direct", `Wordstat Директа не ответил: ${errorText(e)}`);
@@ -421,7 +484,7 @@ async function stepDirect(job: DemandJob, accounts: AdAccount[], deadline: numbe
             }
           }
           if (done) {
-            await client.wordstatDelete(rep.id).catch((e) => record(job, "direct", "DeleteWordstatReport", e));
+            await deleteReport(client, acc.login, rep.id).catch((e) => record(job, "direct", "DeleteWordstatReport", e));
             job.reports = job.reports.filter((r) => r.id !== rep.id);
             keepRaw();
             await save();
@@ -444,6 +507,7 @@ async function stepDirect(job: DemandJob, accounts: AdAccount[], deadline: numbe
         }
         try {
           const id = await client.wordstatCreate(batch, job.regionIds);
+          await trackReport(acc.login, id, true).catch((e) => console.warn("wordstat: не запомнили отчёт", id, errorText(e)));
           await directDaily(acc.id, batch.length);
           job.reports.push({ id, phrases: batch, at: now() });
           waiting = waiting.slice(batch.length);
@@ -453,11 +517,15 @@ async function stepDirect(job: DemandJob, accounts: AdAccount[], deadline: numbe
         } catch (e) {
           const code = v4Code(e);
           if (code === 31 && !job.cleaned) {
-            // 5 отчётов уже лежат (наши брошенные или созданные вручную) — убираем готовые и неудачные, кроме своих
+            // 5 отчётов уже лежат — убираем готовые и неудачные брошенные отчёты, созданные этим сервисом
+            // (кроме отчётов текущей задачи). Чужие отчёты на том же логине — владельца, других сервисов — не трогаем
             job.cleaned = true;
             record(job, "direct", "CreateNewWordstatReport", e);
             const mine = new Set(job.reports.map((r) => String(r.id)));
-            for (const r of await client.wordstatList().catch(() => [])) if (!mine.has(String(r.id)) && r.status !== "Pending") await client.wordstatDelete(r.id).catch(() => {});
+            const ours = await ownReports(acc.login).catch(() => new Set<string>());
+            for (const r of await client.wordstatList().catch(() => [])) {
+              if (ours.has(String(r.id)) && !mine.has(String(r.id)) && r.status !== "Pending") await deleteReport(client, acc.login, r.id).catch(() => {});
+            }
             continue;
           }
           if (code === 31) {
@@ -488,19 +556,24 @@ async function stepDirect(job: DemandJob, accounts: AdAccount[], deadline: numbe
  * услуги или регион (другие семена), данным больше 14 дней или прошлый сбор не удался больше часа назад.
  * Параллельные вызовы (две вкладки) не дублируют отчёты: шаг берёт задачу под блокировку (lockUntil) с проверкой ревизии.
  */
-export async function demandState(b: Business, accounts: AdAccount[], opts: { advance?: boolean; deadline?: number } = {}): Promise<DemandView> {
+export async function demandState(b: Business, accounts: AdAccount[], opts: { advance?: boolean; deadline?: number; user?: { id: string; email: string } } = {}): Promise<DemandView> {
   const deadline = opts.deadline ?? Date.now() + 40_000;
   let job = await readJob(b.id);
   if (!opts.advance) return view(job, b);
-  const ctx = await context(b, accounts);
+  const ctx = await context(b, accounts, opts.user ? isDemoEmail(opts.user.email) : false);
   const fresh = await newJob(b, ctx);
   const age = job ? Date.now() - new Date(job.startedAt).getTime() : Infinity;
   const stale = !job || job.key !== fresh.key || age > CACHE_TTL_DAYS * 864e5 || (job.status === "unavailable" && Date.now() > (job.retryAt ?? new Date(job.updatedAt).getTime() + (job.failed.length ? RETRY_FAILED_MS : RETRY_UNAVAILABLE_MS)));
   if (stale) {
+    // Новый сбор, который пойдёт в сеть, — единица дневной квоты (QUOTA_DEMAND_DAY); из кэша и демо — бесплатно
+    if (fresh.status === "running" && fresh.sources[0] !== "demo" && opts.user) {
+      const over = await useQuota("demand", opts.user);
+      if (over) throw Object.assign(new Error(over), { status: 429 });
+    }
     // Отчёты брошенной задачи Директа не ждём — освобождаем место (у пользователя их не больше 5)
     if (job?.reports.length && ctx.yandex) {
       const client = (await clientFor(ctx.yandex)) as YandexDirect;
-      for (const r of job.reports) await client.wordstatDelete(r.id).catch(() => {});
+      for (const r of job.reports) await deleteReport(client, ctx.yandex.login, r.id).catch(() => {});
     }
     if (!(await saveJob(b.id, fresh, job ? job.rev : null))) return view(await readJob(b.id), b);
     job = fresh;
@@ -517,7 +590,7 @@ export async function demandState(b: Business, accounts: AdAccount[], opts: { ad
       const before = job.sources.length;
       try {
         if (src === "demo") await stepDemo(job, accounts);
-        else if (src === "cloud") await stepCloud(job, deadline);
+        else if (src === "cloud") await stepCloud(job, deadline, opts.user ?? null);
         else await stepDirect(job, accounts, deadline, save);
       } catch (e) {
         record(job, src, "step", e);

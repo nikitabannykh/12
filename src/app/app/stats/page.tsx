@@ -12,6 +12,7 @@ import { ClientsWeek } from "@/components/ClientsWeek";
 import { CHANNEL_NAME } from "@/lib/platforms";
 import { num, pl, rub } from "@/lib/util";
 import { LeadStatus } from "./LeadStatus";
+import { landingFor } from "@/lib/engine/landing";
 
 const KIND: Record<string, string> = { form: "Заявка", phone: "Звонок", messenger: "Мессенджер", suspect: "Заявка" };
 const SRC: Record<string, string> = { yandex: "Реклама в Яндексе", vk: "Реклама ВКонтакте", demo: "Реклама (демо)" };
@@ -291,7 +292,7 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
           </ul>
         ) : (
           <p className="text-muted mt-3 leading-relaxed max-w-2xl">
-            Здесь появятся заявки, звонки и сообщения с {b.siteUrl ? "сайта — после установки кода счётчика" : "вашей страницы записи"}. Обращения, которые засчитала сама площадка (например, по целям Метрики), учитываются в цифрах выше.
+            Здесь появятся заявки, звонки и сообщения с {b.siteUrl && ["search", "network", "vk"].some((ch) => landingFor(b, ch).kind === "site") ? "сайта — после установки кода счётчика" : "вашей страницы записи"}. Обращения, которые засчитала сама площадка (например, по целям Метрики), учитываются в цифрах выше.
           </p>
         )}
       </section>

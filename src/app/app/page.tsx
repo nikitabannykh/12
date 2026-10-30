@@ -23,6 +23,7 @@ import { balanceText, LOW_DAYS, TOPUP_URL } from "@/lib/engine/balance";
 import { CHANNELS, CHANNEL_INFO, TYPE_INFO, adsHref, familyOf, typeOf } from "@/lib/channels";
 import { audiencesFor } from "@/lib/engine/retarget";
 import { PlatformMark, TypeBadge, AudienceBar } from "@/components/CampaignNav";
+import { landingFor } from "@/lib/engine/landing";
 
 const SHORT: Record<string, string> = Object.fromEntries(Object.entries(CHANNEL_INFO).map(([k, v]) => [k, v.short]));
 const ORDER: string[] = CHANNELS;
@@ -47,6 +48,8 @@ export default async function Dashboard() {
     .from(schema.ads)
     .where(and(eq(schema.ads.businessId, b.id), inArray(schema.ads.status, ["moderation", "rejected", "active"])));
   const monthCost = (await db.select({ cost: schema.statsDaily.cost }).from(schema.statsDaily).where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, monthStartDay(r.now))))).reduce((s, x) => s + x.cost, 0);
+  // Реклама ведёт на сайт (хотя бы в одном канале) — только тогда обращения зависят от кода счётчика на сайте
+  const toSite = Boolean(b.siteUrl) && camps.some((x) => landingFor(b, x.channel).kind === "site");
   const tracked = await db.select({ id: schema.leads.id }).from(schema.leads).where(eq(schema.leads.businessId, b.id)).limit(1);
   const health = await healthCheck(b);
   const lowBalance = health.balances.filter((x) => x.daysLeft !== null && x.daysLeft <= LOW_DAYS && camps.some((c) => c.accountId === x.accountId && c.status === "active"));
@@ -62,6 +65,13 @@ export default async function Dashboard() {
   const active = ads.filter((a) => a.status === "active" && showing(a)).length;
   const moderation = ads.filter((a) => a.status === "moderation" && showing(a)).length;
   const rejected = ads.filter((a) => a.status === "rejected").length;
+  // Итог модерации — по объявлениям всех созданных кампаний, включая те, что на паузе: иначе на паузе «прошли 0 из 1, отклонено 1»
+  const inCamp = new Set(camps.map((x) => x.id));
+  const mod = {
+    active: ads.filter((a) => a.status === "active" && inCamp.has(a.campaignId)).length,
+    moderation: ads.filter((a) => a.status === "moderation" && inCamp.has(a.campaignId)).length,
+    rejected: ads.filter((a) => a.status === "rejected" && inCamp.has(a.campaignId)).length,
+  };
   // Ретаргетинг, который копит аудиторию, не «стоит»: он ещё не включался и включится сам
   const runnable = camps.filter((x) => states.get(x.id)?.stopped !== "audience" && !(audiences.get(x.id) && x.status === "paused" && audiences.get(x.id)!.state === "off"));
   const stopped = runnable.filter((x) => states.get(x.id)?.stopped);
@@ -150,25 +160,26 @@ export default async function Dashboard() {
         </StopBanner>
       ))}
       {moderation ? <ModerationCheck /> : null}
-      {moderation || rejected ? (() => {
-        const total = moderation + active + rejected;
+      {mod.moderation || mod.rejected ? (() => {
+        const { active: passed, moderation: checking, rejected: declined } = mod;
+        const total = checking + passed + declined;
         const noMoney = health.balances.some((x) => x.daysLeft === 0 && !x.demo);
         return (
-          <section className={`card p-5 sm:p-6 ${rejected ? "border-warn/40" : ""}`} aria-live="polite">
+          <section className={`card p-5 sm:p-6 ${declined ? "border-warn/40" : ""}`} aria-live="polite">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2 className="text-lg font-bold">
-                {moderation ? "Модерация: " : "Модерация закончилась: "}прошли {active} из {total}{rejected ? `, отклонено ${rejected}` : ""}
+                {checking ? "Модерация: " : "Модерация закончилась: "}прошли {passed} из {total}{declined ? `, отклонено ${declined}` : ""}
               </h2>
-              {moderation ? <span className="text-sm text-muted">на проверке ещё {pl(moderation, "объявление", "объявления", "объявлений")}</span> : null}
+              {checking ? <span className="text-sm text-muted">на проверке ещё {pl(checking, "объявление", "объявления", "объявлений")}</span> : null}
             </div>
             <div className="mt-3 h-2.5 rounded-full bg-paper overflow-hidden flex" aria-hidden>
-              <span className="h-full bg-good" style={{ width: `${(active / Math.max(1, total)) * 100}%` }} />
-              <span className="h-full bg-bad" style={{ width: `${(rejected / Math.max(1, total)) * 100}%` }} />
+              <span className="h-full bg-good" style={{ width: `${(passed / Math.max(1, total)) * 100}%` }} />
+              <span className="h-full bg-bad" style={{ width: `${(declined / Math.max(1, total)) * 100}%` }} />
             </div>
             <p className="text-sm text-ink-2 mt-3 leading-relaxed">
-              {moderation ? "Площадки обычно проверяют объявления в течение суток. Статусы обновляются, когда вы открываете кабинет (не чаще раза в 10 минут), и каждое утро. " : ""}
-              {rejected ? <>Что делать с отклонёнными: робот перепишет их при следующей проверке, причина и подсказки — в разделе <Link href="/app/ads" className="underline">«Реклама»</Link>. </> : null}
-              {noMoney ? "Показы начнутся, когда пополните рекламный кабинет." : !moderation && !rejected ? "" : "Прошедшие проверку объявления показываются сразу."}
+              {checking ? "Площадки обычно проверяют объявления в течение суток. Статусы обновляются, когда вы открываете кабинет (не чаще раза в 10 минут), и каждое утро. " : ""}
+              {declined ? <>Что делать с отклонёнными: робот перепишет их при следующей проверке, причина и подсказки — в разделе <Link href="/app/ads" className="underline">«Реклама»</Link>. </> : null}
+              {allStopped ? "Реклама сейчас на паузе — прошедшие проверку объявления начнут показываться, когда вы её включите." : noMoney ? "Показы начнутся, когда пополните рекламный кабинет." : "Прошедшие проверку объявления показываются сразу."}
             </p>
           </section>
         );
@@ -225,7 +236,7 @@ export default async function Dashboard() {
       </section>
 
       {/* Требует внимания */}
-      {broken.length || needMark || rejected || (b.siteUrl && !tracked.length && c.cost > 0) ? (
+      {broken.length || needMark || rejected || (toSite && !tracked.length && c.cost > 0) ? (
         <section className="grid gap-3">
           {broken.map((a) => (
             <div key={a.id} className="rounded-xl bg-bad-soft text-bad p-4 flex flex-wrap gap-3 items-start">
@@ -241,7 +252,7 @@ export default async function Dashboard() {
               Робот перепишет {rejected === 1 ? "его" : "их"} при следующей проверке — или поправьте сами в разделе <Link href="/app/ads" className="underline">«Реклама»</Link>.
             </div>
           ) : null}
-          {b.siteUrl && !tracked.length && c.cost > 0 ? (
+          {toSite && !tracked.length && c.cost > 0 ? (
             <div className="rounded-xl bg-info-soft p-4 text-sm leading-relaxed">
               <b>Обращения с сайта пока не приходят.</b> Проверьте, что код счётчика стоит на всех страницах сайта — без него мы видим клики, но не видим записи. <Link href="/app/settings#counter" className="underline">Код счётчика</Link>
             </div>
@@ -345,7 +356,7 @@ export default async function Dashboard() {
               ) : null}
             </ul>
             {learning.length ? (
-              <p className="hint mt-3">Пока площадка обучается, цифры скачут — это нормально. Робот не меняет стратегию и бюджет, чтобы не сбить обучение.</p>
+              <p className="hint mt-3">Пока площадка обучается, цифры скачут — это нормально. Чтобы не сбить обучение, робот не меняет у такой кампании стратегию, ставки и недельный лимит (лимит снизит, только если иначе выйдем за бюджет месяца); объявления и аудитории проверяет как обычно.</p>
             ) : null}
             <dl className="mt-4 pt-4 border-t border-line grid grid-cols-3 gap-3 text-center">
               <div><dt className="text-xs text-muted">Показываются</dt><dd className="text-2xl font-extrabold">{active}</dd></div>

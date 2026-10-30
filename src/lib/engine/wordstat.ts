@@ -24,6 +24,15 @@ export const INFO_RE = /(^|\s)(фото\S*|картинк\S*|иде[яи]\S*|в�
 
 export type DemandSeedGroup = { name: string; layer: Layer; seeds: string[] };
 
+/**
+ * Смежная группа, которая на деле ищет вашего же специалиста («мастер по ногтям», «мужской парикмахер», «косметолог»):
+ * это готовый спрос на услугу, он входит в итог. Другие специалисты и методы («мануальный терапевт») — нет.
+ */
+const OWN_PRO_RE = /(^|\s)(мастер\S*|салон\S*|студи\S*|парикмахер\S*|барбер\S*|барбершоп\S*|стилист\S*|косметолог\S*|тренер\S*|нейл|ногтев\S*|бровист\S*|лэшмейкер\S*|массажист\S*)(\s|$)/;
+/** Группа входит в итог спроса: услуги, аудитории (в них слово услуги) и поиск вашего специалиста */
+export const countedGroup = (g: Pick<DemandSeedGroup, "layer" | "seeds" | "name">) =>
+  g.layer === "service" || g.layer === "audience" || (g.layer === "adjacent" && [g.name, ...g.seeds].some((x) => OWN_PRO_RE.test(displayKeyword(x).toLowerCase().replace(/ё/g, "е"))));
+
 const sig = (p: string) => [...new Set(phraseKey(p).split(" ").filter(Boolean))];
 /** Все слова a есть в b (b — уточнение a) */
 const within = (a: string[], b: string[]) => a.length > 0 && a.every((w) => b.includes(w));
@@ -79,7 +88,8 @@ export type DemandSummary = {
   total: number;
   /** То же без вычета нецелевых — для пояснения */
   raw: number;
-  groups: { name: string; layer: Layer; demand: number | null; top: { phrase: string; shows: number }[] }[];
+  /** counted — группа входит в итог (total) */
+  groups: { name: string; layer: Layer; counted: boolean; demand: number | null; top: { phrase: string; shows: number }[] }[];
   /** Сколько фраз с данными (из всех семян) */
   phrases: number;
   seeds: number;
@@ -88,9 +98,9 @@ export type DemandSummary = {
 const lookup = (results: Record<string, WordstatPhrase>, p: string) => results[phraseKey(p)] ?? null;
 
 /**
- * Итог спроса. Спрос группы — максимум по её семенам (семена группы пересекаются). Спрос поиска — только услуги и
- * аудитории (в них слово услуги): запросы о проблемах («болит спина») и смежные специалисты — тёплый, а не готовый
- * спрос, в прогноз записей их не складываем (а у групп показываем).
+ * Итог спроса. Спрос группы — максимум по её семенам и самому частому запросу (семена группы пересекаются).
+ * Спрос поиска — услуги, аудитории (в них слово услуги) и поиск вашего специалиста (countedGroup): запросы о проблемах
+ * («болит спина») и другие специалисты — тёплый, а не готовый спрос, в прогноз записей их не складываем (а у групп показываем).
  * Пересечения: семя, все слова которого содержат слова другого семени, уже посчитано в нём (вложенное) — пропускаем;
  * у независимых семян вычитаем общий хвост: самый частый запрос из SearchedWith одного, где есть все слова другого
  * («маникюр и педикюр»). Это нижняя оценка пересечения, поэтому итог лежит между настоящим объединением и суммой.
@@ -109,11 +119,13 @@ export function summarizeDemand(seedGroups: DemandSeedGroup[], results: Record<s
       .filter((t) => (seen.has(phraseKey(t.phrase)) ? false : (seen.add(phraseKey(t.phrase)), true)))
       .slice(0, 3)
       .map((t) => ({ phrase: displayKeyword(t.phrase), shows: t.shows }));
-    return { name: g.name, layer: g.layer, demand: vals.length ? Math.max(...vals) : null, top };
+    // Спрос группы не меньше её самого частого запроса: иначе «~900 в мес.» над строкой «маникюр рядом — 1 200»
+    const demand = vals.length || top.length ? Math.max(0, ...vals, ...top.map((t) => t.shows)) : null;
+    return { name: g.name, layer: g.layer, counted: countedGroup(g), demand, top };
   });
   const seeds = new Map<string, { r: WordstatPhrase; words: string[] }>();
   for (const g of seedGroups) {
-    if (g.layer !== "service" && g.layer !== "audience") continue;
+    if (!countedGroup(g)) continue;
     for (const s of g.seeds) {
       const r = lookup(results, s);
       // «остеопат» и «остеопатия» — один ключ: берём более частую
@@ -138,7 +150,8 @@ export function summarizeDemand(seedGroups: DemandSeedGroup[], results: Record<s
       total -= Math.round(ov * share);
     }
   }
-  const single = Math.max(0, ...top.map((a) => targetedShows(a.r, negatives)));
+  // Итог не меньше любой группы, которая в него входит
+  const single = Math.max(0, ...top.map((a) => targetedShows(a.r, negatives)), ...groups.filter((g) => g.counted).map((g) => g.demand ?? 0));
   return {
     total: Math.max(single, Math.round(total)),
     raw: Math.max(Math.max(0, ...top.map((a) => a.r.shows)), Math.round(raw)),

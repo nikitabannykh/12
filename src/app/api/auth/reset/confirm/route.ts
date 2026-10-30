@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { after } from "next/server";
 import { json, fail, publicRoute } from "@/lib/api";
-import { startSession } from "@/lib/auth";
+import { resetUnverifiedLinks, startSession } from "@/lib/auth";
 import { checkResetToken, consumeToken, MSG } from "@/lib/account";
 import { hashPassword, passwordProblem } from "@/lib/password";
 import { mailConfigured, passwordChangedMail, sendMail } from "@/lib/mail";
@@ -26,6 +26,8 @@ export const POST = publicRoute(async (req) => {
     })
     .where(eq(schema.users.id, user.id))
     .returning();
+  // Владелец почты забирает аккаунт, пароль к которому задали до подтверждения: отвязываем Telegram и кабинеты захватчика
+  if (!user.emailVerifiedAt && user.passwordHash) await resetUnverifiedLinks(user.id);
   await startSession(updated);
   if (mailConfigured()) after(() => sendMail(passwordChangedMail(user.email)).catch((e) => console.error("[mail] уведомление о смене пароля:", e)));
   return json({ ok: true, redirect: "/app" });

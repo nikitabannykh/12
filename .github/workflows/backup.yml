@@ -1,0 +1,53 @@
+# ШАБЛОН: ночной бэкап базы (pg_dump -Fc) в артефакт Actions на 7 дней.
+# Включение: Settings → Secrets and variables → Actions →
+#   DATABASE_URL       — строка подключения к базе (для Neon — direct, не pooled: pg_dump не работает через PgBouncer)
+#   BACKUP_PASSPHRASE  — длинная случайная строка (openssl rand -base64 48); храните её отдельно — без неё бэкап не открыть
+# Почему шифруем: артефакты публичного репозитория может скачать любой вошедший в GitHub пользователь,
+# а в дампе — персональные данные и зашифрованные токены кабинетов. Поэтому дамп шифруется gpg (AES256) до загрузки.
+# Восстановление:
+#   gpg --batch --pinentry-mode loopback --passphrase "$BACKUP_PASSPHRASE" -d samohod-YYYYMMDD.dump.gpg > db.dump
+#   pg_restore --no-owner --clean --if-exists -d "$DATABASE_URL" db.dump
+# Версия pg_dump должна быть не старше сервера: при необходимости поменяйте postgresql-client-17 ниже.
+name: backup
+on:
+  schedule:
+    - cron: "23 1 * * *"
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check secrets
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          if [ -z "$DATABASE_URL" ] || [ -z "$BACKUP_PASSPHRASE" ]; then
+            echo "::error::Нужны секреты DATABASE_URL и BACKUP_PASSPHRASE"; exit 1
+          fi
+      - name: Install pg_dump
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-17
+      - name: Dump and encrypt
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          name="samohod-$(date -u +%Y%m%d-%H%M).dump.gpg"
+          /usr/lib/postgresql/17/bin/pg_dump -Fc --no-owner --no-privileges "$DATABASE_URL" \
+            | gpg --batch --yes --symmetric --cipher-algo AES256 --pinentry-mode loopback --passphrase-fd 3 3<<<"$BACKUP_PASSPHRASE" -o "$name"
+          ls -l "$name"
+          echo "BACKUP_FILE=$name" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: ${{ env.BACKUP_FILE }}
+          retention-days: 7
+          if-no-files-found: error

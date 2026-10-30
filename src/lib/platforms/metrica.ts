@@ -302,9 +302,13 @@ export async function ensureGoals(token: string, counterId: number) {
   return ids;
 }
 
-/** Код счётчика + наш трекер обращений — один фрагмент, который владелец вставляет на сайт */
-export function trackingSnippet(p: { counterId?: number | null; publicKey: string; appUrl: string }) {
-  const ym = p.counterId
+/**
+ * Код счётчика + наш трекер обращений — один фрагмент, который владелец вставляет на сайт перед </head>.
+ * Трекер (/t.js) сам находит обращения (формы с телефоном или почтой, tel:, мессенджеры, онлайн-запись),
+ * шлёт их на /api/t и дублирует целями Метрики (data-ym). trackerOnly — только строка трекера (код Метрики уже стоит).
+ */
+export function trackingSnippet(p: { counterId?: number | null; publicKey: string; appUrl: string; trackerOnly?: boolean }) {
+  const ym = p.counterId && !p.trackerOnly
     ? `<!-- Яндекс Метрика -->
 <script type="text/javascript">
 (function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};

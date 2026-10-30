@@ -438,7 +438,9 @@ export function BusinessOnboarding({
     setBusy("Сохраняем…");
     setSaveError(null);
     try {
-      await api("POST", "/api/business", businessPayload(f, allLinksOf(f, links).map((l) => l.url)));
+      const saved = await api<{ warning?: string }>("POST", "/api/business", businessPayload(f, allLinksOf(f, links).map((l) => l.url)));
+      // Сайт не открылся — реклама пока поведёт на страницу записи
+      if (saved?.warning) toast(saved.warning, "error");
       if (draft?.photoToken && photos.length) {
         setBusy(`Сохраняем фото (${photos.length})…`);
         const r = await api<{ saved: number }>("POST", "/api/business/import/photos", { token: draft.photoToken, urls: photos }).catch(() => ({ saved: 0 }));

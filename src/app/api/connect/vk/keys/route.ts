@@ -1,6 +1,7 @@
 import { and, eq, or } from "drizzle-orm";
 import { z } from "zod";
 import { route, json, fail } from "@/lib/api";
+import { emailGate } from "@/lib/auth";
 import { getDb, schema } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { errorText, uid } from "@/lib/util";
@@ -16,6 +17,8 @@ const Body = z.object({
  * Работает для любого кабинета без OAuth-приложения сервиса. Секрет храним зашифрованным — им же обновляем токен.
  */
 export const POST = route(async ({ user, req }) => {
+  const gate = await emailGate(user);
+  if (gate) return fail(gate, 403);
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return fail(parsed.error.issues[0]?.message || "Проверьте ключи");
   const { clientId, clientSecret } = parsed.data;

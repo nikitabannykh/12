@@ -1,0 +1,41 @@
+# Проверки на каждый push и pull request: типы, схема БД против миграции, тесты импортёра, сборка.
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npx tsc --noEmit -p .
+      - name: Schema matches migration
+        # check-schema смотрит только CREATE TABLE: колонки, добавленные через ALTER TABLE … ADD COLUMN, считаем найденными
+        run: |
+          out=$(npm run -s check:schema)
+          echo "$out"
+          bad=0
+          while read -r kind what t c; do
+            [ -z "$kind" ] && continue
+            if [ "$kind $what" = "MISSING COL" ] && grep -q "ALTER TABLE $t ADD COLUMN IF NOT EXISTS $c " src/lib/db/migrate.ts; then continue; fi
+            echo "::error::$kind $what $t $c"; bad=1
+          done < <(echo "$out" | grep -E "^(MISSING|EXTRA)" || true)
+          exit $bad
+      - name: Importer tests
+        run: npm run -s test:importer
+      - name: Build
+        run: npm run build

@@ -10,6 +10,7 @@ import { reportNow } from "./report";
 import type { Channel } from "../platforms/types";
 import { addDays, isoDay, pl } from "../util";
 import { isMedical, MEDICAL_LICENSE_URL } from "../niches";
+import { landingFor } from "./landing";
 
 /**
  * «Здоровье рекламы»: чек-лист того, что мешает рекламе работать, с весами и ссылкой «исправить».
@@ -107,7 +108,9 @@ export async function healthCheck(b: Business): Promise<Health> {
 
   // 3. Счётчик и цель
   const counterOk = Boolean(b.counterId && b.goalIds?.lead);
-  if (b.siteUrl) {
+  // Про код счётчика на сайте говорим, только если реклама действительно ведёт на сайт (а не на страницу записи)
+  const toSite = Boolean(b.siteUrl) && (camps.length ? camps.some((c) => landingFor(b, c.channel).kind === "site") : landingFor(b).kind === "site");
+  if (toSite) {
     items.push({
       key: "counter",
       ok: counterOk && (anyLead || spent < 1),
@@ -177,7 +180,7 @@ export async function healthCheck(b: Business): Promise<Health> {
     ok: rejected === 0,
     title: moderation ? `Отклонённых объявлений нет (${pl(moderation, "ещё на проверке", "ещё на проверке", "ещё на проверке")})` : "Все объявления прошли модерацию",
     todo: "Есть отклонённые объявления",
-    hint: `${pl(rejected, "объявление не прошло", "объявления не прошли", "объявлений не прошли")} модерацию — робот перепишет их при следующей проверке, или поправьте сами.`,
+    hint: `${pl(rejected, "объявление не прошло", "объявления не прошли", "объявлений не прошли")} модерацию — робот перепишет ${rejected % 10 === 1 && rejected % 100 !== 11 ? "его" : "их"} при следующей проверке, или поправьте сами.`,
     fix: { href: "/app/ads", label: "Объявления" },
     weight: 10,
   });

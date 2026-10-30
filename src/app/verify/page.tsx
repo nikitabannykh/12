@@ -2,7 +2,7 @@ import Link from "next/link";
 import { AuthShell } from "@/components/AuthShell";
 import { findUserById, MSG, readVerifyToken } from "@/lib/account";
 
-export const metadata = { title: "Подтверждение почты — Самоход", referrer: "no-referrer" };
+export const metadata = { title: "Подтверждение почты — Самоход", referrer: "same-origin" };
 export const dynamic = "force-dynamic";
 
 /** Подтверждение почты, открытое не в том браузере, где выполнен вход: спрашиваем, кто регистрировался */

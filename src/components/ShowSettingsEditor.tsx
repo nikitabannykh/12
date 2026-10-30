@@ -97,9 +97,9 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
                 <button type="button" className="p-0.5 rounded hover:bg-line" aria-label={`Убрать ${r}`} onClick={() => set({ extraRegions: (s.extraRegions ?? []).filter((x) => x !== r) })}><X size={13} /></button>
               </span>
             ))}
-            <span className="inline-flex items-center gap-1">
-              <input className="field h-9 w-56 text-sm" placeholder="Например, Верхняя Пышма" value={region} onChange={(e) => setRegion(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addRegion(); } }} />
-              <button type="button" className="btn btn-ghost btn-sm" onClick={addRegion} disabled={!region.trim()}><Plus size={14} /> Добавить</button>
+            <span className="flex w-full sm:w-auto min-w-0 items-center gap-1">
+              <input className="field h-9 min-w-0 flex-1 sm:flex-none sm:w-56 text-sm" placeholder="Например, Верхняя Пышма" value={region} onChange={(e) => setRegion(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addRegion(); } }} />
+              <button type="button" className="btn btn-ghost btn-sm shrink-0" onClick={addRegion} disabled={!region.trim()}><Plus size={14} /> Добавить</button>
             </span>
           </div>
           {s.extraRegions?.length ? <p className="hint">С дополнительными городами ВКонтакте показывает по городам целиком, а не в радиусе.</p> : null}

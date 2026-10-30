@@ -27,6 +27,8 @@ RUN npm run build && npm prune --omit=dev --no-audit --no-fund
 FROM ${NODE_IMAGE} AS run
 WORKDIR /app
 # PGLITE_DIR — только для пробного запуска без DATABASE_URL: встроенная база во временной папке, данные не сохраняются
+# APP_SECRET обязателен (openssl rand -hex 32): без него и без DATABASE_URL production-сборка не стартует
+# (для пробного запуска демо можно явно разрешить небезопасный режим: -e ALLOW_INSECURE=1)
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=8080 \
@@ -34,6 +36,8 @@ ENV NODE_ENV=production \
 COPY --from=build --chown=node:node /app/package.json /app/next.config.ts ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/.next ./.next
+# Статика из public/ (иконки, картинки лендинга) — next start отдаёт её с диска
+COPY --from=build --chown=node:node /app/public ./public
 # Шрифты для рекламных картинок читаются с диска
 COPY --from=build --chown=node:node /app/assets ./assets
 USER node

@@ -3,16 +3,19 @@ import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { ownerVariant } from "@/lib/engine/optimizer";
 import { errorText } from "@/lib/util";
+import { useQuota } from "@/lib/ratelimit";
 
 export const maxDuration = 60;
 
 /** Владелец просит новый вариант объявления — A/B-тест против текущего */
-export const POST = route<{ id: string }>(async ({ business, params }) => {
+export const POST = route<{ id: string }>(async ({ user, business, params }) => {
   needBusiness(business);
   const db = await getDb();
   const [ad] = await db.select({ id: schema.ads.id, status: schema.ads.status }).from(schema.ads).where(and(eq(schema.ads.id, String(params.id)), eq(schema.ads.businessId, business.id)));
   if (!ad) return fail("Объявление не найдено — возможно, его уже заменил робот. Обновите страницу.", 404);
   if (ad.status !== "active") return fail("A/B-тест можно запустить только для работающего объявления. Сначала включите его.", 409);
+  const over = await useQuota("variant", user);
+  if (over) return fail(over, 429);
   try {
     return json({ ad: await ownerVariant(business, ad.id) });
   } catch (e) {

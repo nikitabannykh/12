@@ -14,12 +14,15 @@ export function BudgetEditor({ monthly, min }: { monthly: number; min: number })
   const [stage, setStage] = useState<string | null>(null);
   const toast = useToast();
   const router = useRouter();
-  const n = Number(v) || 0;
+  // Только цифры (пробелы между разрядами можно): «abc» — не «меньше минимума», а не число
+  const digits = v.replace(/[\s\u00a0]/g, "");
+  const n = /^\d+$/.test(digits) ? Number(digits) : NaN;
   return (
     <form
       className="flex flex-wrap items-center gap-3"
       onSubmit={async (e) => {
         e.preventDefault();
+        if (!Number.isFinite(n)) return toast("Введите сумму числом, например 30000", "error");
         if (n < min) return toast(`Минимум — ${rub(min)} в месяц: меньше площадка не принимает`, "error");
         if (n > MAX_MONTHLY) return toast(`Максимум — ${rub(MAX_MONTHLY)} в месяц`, "error");
         setBusy(true);
@@ -55,7 +58,7 @@ export function BudgetEditor({ monthly, min }: { monthly: number; min: number })
         }
       }}
     >
-      <input className="field w-40 text-lg font-bold" inputMode="numeric" value={v} onChange={(e) => setV(e.target.value.replace(/\D/g, ""))} aria-label="Бюджет в месяц" />
+      <input className="field w-40 text-lg font-bold" inputMode="numeric" value={v} maxLength={12} onChange={(e) => setV(e.target.value)} aria-label="Бюджет в месяц" />
       <span className="text-muted font-semibold">₽ в месяц</span>
       <button className="btn btn-primary" disabled={busy || n === monthly}>{busy ? <Loader2 size={16} className="spin" /> : null}Сохранить</button>
       {stage ? <p className="w-full text-sm font-semibold inline-flex items-center gap-2"><Loader2 size={14} className="spin" /> {stage}</p> : null}

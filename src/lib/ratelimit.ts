@@ -3,6 +3,7 @@ import { and, eq, lt, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import { randomBytes } from "node:crypto";
 import { fingerprint, sign, verify } from "./crypto";
+import { isDemoEmail } from "./auth";
 
 /**
  * Лимит «не больше N событий за окно» — счётчики лежат в Postgres, поэтому работают
@@ -152,4 +153,73 @@ export async function attribute(b: { id: string; publicKey: string }, token: unk
     if (c) out.campaignExt = ft.c;
   }
   return out;
+}
+
+// --- Дневные квоты на платные вызовы (YandexGPT, YandexART, Wordstat в Yandex Cloud) ---
+
+/**
+ * Виды платной работы и дневные лимиты на пользователя: [обычный, демо]. Переопределяются переменными окружения
+ * QUOTA_<ВИД>_DAY (например, QUOTA_COPY_DAY=40) и QUOTA_DEMO_<ВИД>_DAY. Сутки — календарные, по Москве.
+ * Плюс общий лимит на весь сервис QUOTA_GLOBAL_AI_DAY (все виды вместе, по умолчанию 3000 вызовов в сутки) —
+ * страховка от счёта в Yandex Cloud, если кто-то наплодит аккаунты.
+ *  copy — подготовка объявлений; rewrite — «Переписать тексты» (за порцию); images — порция картинок (~20 с);
+ *  variant — новый вариант объявления (A/B, «ещё вариант»); demand — новый сбор спроса по Wordstat;
+ *  wordstat — фраз в Wordstat Yandex Cloud (свой общий лимит QUOTA_GLOBAL_WORDSTAT_DAY, по умолчанию 3000).
+ */
+export type QuotaKind = "copy" | "rewrite" | "images" | "variant" | "demand" | "wordstat";
+const QUOTA_DEFAULTS: Record<QuotaKind, [number, number]> = {
+  copy: [20, 3],
+  rewrite: [30, 3],
+  images: [60, 20],
+  variant: [60, 5],
+  demand: [10, 3],
+  wordstat: [300, 0],
+};
+const QUOTA_NAME: Record<QuotaKind, string> = {
+  copy: "подготовок объявлений",
+  rewrite: "переписываний текстов",
+  images: "генераций картинок",
+  variant: "новых вариантов объявлений",
+  demand: "пересчётов спроса",
+  wordstat: "запросов к Wordstat",
+};
+
+const envInt = (name: string, def: number) => {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v >= 0 && process.env[name]?.trim() ? Math.floor(v) : def;
+};
+/** Сутки по Москве — счётчики квот обнуляются в полночь МСК */
+const mskDay = () => new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10);
+
+export function quotaLimit(kind: QuotaKind, demo: boolean): number {
+  const [normal, demoLimit] = QUOTA_DEFAULTS[kind];
+  const k = kind.toUpperCase();
+  return demo ? envInt(`QUOTA_DEMO_${k}_DAY`, demoLimit) : envInt(`QUOTA_${k}_DAY`, normal);
+}
+
+/**
+ * Списать n единиц квоты. null — можно; иначе — текст отказа для ответа 429.
+ * Пользовательский счётчик проверяется первым: исчерпавший свою квоту не тратит общую.
+ */
+export async function useQuota(kind: QuotaKind, user: { id: string; email: string }, n = 1): Promise<string | null> {
+  const demo = isDemoEmail(user.email);
+  const day = mskDay();
+  const limit = quotaLimit(kind, demo);
+  const name = QUOTA_NAME[kind];
+  let mine = { ok: true, count: 0 };
+  for (let i = 0; i < n; i++) mine = await hit(`q:${kind}:${user.id}:${day}`, limit, 2 * 86400);
+  if (!mine.ok) {
+    return demo
+      ? `В демо-режиме лимит ${name} — ${limit} в сутки. Зарегистрируйтесь, чтобы работать без демо-ограничений.`
+      : `Дневной лимит ${name} исчерпан (${limit} в сутки). Попробуйте завтра или напишите в поддержку, если нужно больше.`;
+  }
+  const globalName = kind === "wordstat" ? "QUOTA_GLOBAL_WORDSTAT_DAY" : "QUOTA_GLOBAL_AI_DAY";
+  const globalKey = kind === "wordstat" ? "wordstat" : "ai";
+  let all = { ok: true, count: 0 };
+  for (let i = 0; i < n; i++) all = await hit(`q:global:${globalKey}:${day}`, envInt(globalName, 3000), 2 * 86400);
+  if (!all.ok) {
+    console.warn(`quota: общий дневной лимит ${globalName} исчерпан (${kind})`);
+    return "Сервис сегодня перегружен генерацией — попробуйте завтра. Уже готовое сохранено.";
+  }
+  return null;
 }

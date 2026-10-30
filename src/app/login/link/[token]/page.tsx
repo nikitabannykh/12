@@ -2,7 +2,7 @@ import Link from "next/link";
 import { AuthShell } from "@/components/AuthShell";
 import { checkMagicToken, MSG } from "@/lib/account";
 
-export const metadata = { title: "Вход по ссылке — Самоход", referrer: "no-referrer" };
+export const metadata = { title: "Вход по ссылке — Самоход", referrer: "same-origin" };
 export const dynamic = "force-dynamic";
 
 /** Страница из письма «Вход по ссылке»: вход — по кнопке (POST), чтобы почтовые сканеры не тратили ссылку */

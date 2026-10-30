@@ -13,6 +13,22 @@ export type ExtrasBiz = { showSettings?: unknown } & Pick<Business, "name" | "ni
   orgId?: string | null;
 };
 
+/**
+ * Адрес без города и индекса: «г. Москва, ул. Тверская, 10» → «ул. Тверская, 10» — город в объявлениях и так пишем
+ * отдельно, иначе выходит «Маникюр — Москва, Москва».
+ */
+export function addressWithoutCity(address: string | null | undefined, city: string | null | undefined): string | null {
+  const c = String(city ?? "").trim().toLowerCase().replace(/ё/g, "е");
+  const parts = String(address ?? "").split(/\s*,\s*/).map((x) => x.trim()).filter(Boolean);
+  const isCity = (x: string) => {
+    const t = x.toLowerCase().replace(/ё/g, "е").replace(/^(г\.|г|город)\s*/, "").trim();
+    return /^\d{6}$/.test(t) || t === "россия" || (c && t === c);
+  };
+  while (parts.length > 1 && isCity(parts[0])) parts.shift();
+  const out = parts.join(", ");
+  return out || null;
+}
+
 /** Уточнения из плана (их можно отредактировать в мастере) идут первыми, затем факты из анкеты */
 export function withPlanCallouts<T extends { callouts: string[] }>(x: T, planned: string[] | undefined): T {
   const list = [...(planned ?? []), ...x.callouts].map((c) => cleanText(c)).filter((c) => c && c.length <= 25);
@@ -142,7 +158,11 @@ export function factCallouts(b: Pick<ExtrasBiz, "advantages" | "offer" | "whatsa
     if (!a) continue;
     add(a);
     // «Покрытие держится 3–4 недели» → «Держится 3–4 недели»
-    if (clean(a).length > 25) add(clean(a).replace(/^[А-ЯЁA-Z][а-яёa-z]+\s+/, "").replace(/^./, (c) => c.toUpperCase()));
+    // Остаток не должен начинаться с союза или предлога: «Маникюр и педикюр в 4 руки» → не «И педикюр в 4 руки»
+    if (clean(a).length > 25) {
+      const rest = clean(a).replace(/^[А-ЯЁA-Z][а-яёa-z]+\s+/, "");
+      if (rest !== clean(a) && !/^(и|или|а|но|да|в|во|на|с|со|для|по|от|до|из|к|ко|у|о|об|за|без|при|под|над|через)\s/i.test(rest)) add(rest.replace(/^./, (c) => c.toUpperCase()));
+    }
   }
   if (b.offer) add(withoutSuperlatives(b.offer));
   add("Онлайн-запись");
@@ -268,7 +288,7 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
     o.text,
     ...adv.slice(0, 3),
     b.offer ? `${cap(withoutSuperlatives(b.offer))}.` : null,
-    b.address ? `Ждём вас: ${b.city}, ${b.address}.` : null,
+    b.address ? `Ждём вас: ${b.city}, ${addressWithoutCity(b.address, b.city)}.` : null,
     "Запишитесь онлайн — это займёт минуту.",
   ];
   // Длинный текст VK: без повторов — каждое предложение один раз
@@ -289,7 +309,7 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
   }
 
   const n = nicheById(b.niche);
-  const about = cut(`${clean(b.name)} — ${n.label.toLowerCase()} в городе ${b.city}${b.address ? `, ${b.address}` : ""}.`, 115);
+  const about = cut(`${clean(b.name)} — ${n.label.toLowerCase()} в городе ${b.city}${b.address ? `, ${addressWithoutCity(b.address, b.city)}` : ""}.`, 115);
 
   return {
     callouts: factCallouts(b, medical),
@@ -503,7 +523,8 @@ export function responsiveAssets(b: ExtrasBiz, ad: { title: string; title2?: str
       : null;
   const p = fmtPrice(clean((svcRow ?? (o.service ? null : services[0]))?.price ?? ""));
   const name = clean(b.name);
-  const street = b.address ? clean(b.address.split(/[,—–]/)[0]) : null;
+  const address = addressWithoutCity(b.address, b.city);
+  const street = address ? clean(address.split(/[,—–]/)[0]) : null;
   const where = street ? `${b.city}, ${street}` : b.city;
   const medical = isMedical(b);
   const adv = (b.advantages ?? []).map(withoutSuperlatives).filter((x) => x && !hasClaims(x, medical));
@@ -557,7 +578,7 @@ export function responsiveAssets(b: ExtrasBiz, ad: { title: string; title2?: str
       return sp ? `${clean(s.name)} — ${sp}` : null;
     });
   const pool = {
-    lead: [title, title2 && `${title.replace(/[.!]$/, "")}. ${title2}`, title2 && !norm(title2).includes(norm(svc)) && `${svc}: ${low(title2)}`],
+    lead: [title, title2 && `${title.replace(/[.!]$/, "")}. ${title2}`, title2 && !norm(title2).includes(norm(svc)) && !/цен|₽|\bруб/i.test(title2) && `${svc}: ${low(title2)}`],
     price: [p && `${svc} — ${p}`, p && `${svc} — ${p}, ${b.city}`, ...siblings],
     place: [street ? `${svc} — ${b.city}, ${street}` : `${svc} — ${b.city}`, hours && `${svc} — ${hours}`, `${svc} — онлайн-запись`],
     brand: [`${name}: ${low(svc)}`, `${svc} в ${name}`],

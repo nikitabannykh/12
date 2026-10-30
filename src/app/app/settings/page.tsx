@@ -3,6 +3,8 @@ import { VkPixelSetup } from "@/components/VkPixelSetup";
 import { ShowSettingsEditor } from "@/components/ShowSettingsEditor";
 import { LandingEditor } from "@/components/LandingEditor";
 import { MetricaCounterPicker } from "@/components/MetricaCounterPicker";
+import { SiteConnect } from "@/components/SiteConnect";
+import { siteTrackingStatus } from "@/lib/engine/site-tracking";
 import { pageUrl, type LandingSettings } from "@/lib/engine/landing";
 import { timeTargeting } from "@/lib/engine/extras";
 import { vkRadiusFor } from "@/lib/platforms/vk-formats";
@@ -28,12 +30,20 @@ import { nicheById } from "@/lib/niches";
 import { appUrl, pl, rub } from "@/lib/util";
 import { businessLinks, linkKey, shortLink, LINK_LABEL } from "@/lib/links";
 
+/** Адрес для связи: из MAIL_FROM («"Самоход" <hello@…>» или просто адрес), иначе null — как на странице политики */
+function contactEmail(): string | null {
+  const m = (process.env.MAIL_FROM ?? "").match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/);
+  return m ? m[0] : null;
+}
+
 export default async function Settings() {
   const user = await requireUser();
   const b = await getBusinessForUser(user.id);
   if (!b) redirect("/app/start");
   const accounts = await accountsFor(user.id);
   const snippet = trackingSnippet({ counterId: b.counterId, publicKey: b.publicKey, appUrl: appUrl() });
+  const trackerLine = trackingSnippet({ counterId: b.counterId, publicKey: b.publicKey, appUrl: appUrl(), trackerOnly: true });
+  const site = b.siteUrl ? await siteTrackingStatus(b.id) : null;
   const landing = `${appUrl()}/p/${b.publicKey}`;
   const channels = channelsFor(accounts).map((c) => c.channel);
   const notify = await getNotify(b.id);
@@ -153,26 +163,26 @@ export default async function Settings() {
         <p className="hint mt-4 max-w-2xl">Новые кабинеты используются для следующего запуска. Пополнение баланса — в самих кабинетах Директа и VK Рекламы. Маркировку рекламы площадки делают автоматически, если в кабинете заполнены данные рекламодателя.</p>
       </section>
 
-      <section id="counter" className="card p-5 sm:p-7 scroll-mt-6">
-        <h2 className="text-lg font-bold">Подсчёт обращений</h2>
+      <section id="site" className="card p-5 sm:p-7 scroll-mt-6">
+        {/* старые ссылки (#counter) ведут сюда же */}
+        <span id="counter" className="block scroll-mt-6" aria-hidden />
+        <h2 className="text-lg font-bold">Подключение сайта</h2>
         {b.siteUrl ? (
           <>
-            <p className="text-muted mt-1 leading-relaxed max-w-2xl">
-              Вставьте этот код на все страницы сайта {b.siteUrl.replace(/^https?:\/\//, "")} — перед закрывающим тегом <code className="bg-paper px-1 rounded">&lt;/head&gt;</code>. Если сайт на Tilda, Taplink или WordPress — это поле «Код в head» в настройках сайта.
+            <p className="hint mt-1 mb-5 max-w-2xl">
+              {site?.needed
+                ? `Реклама ведёт на ${b.siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}. Чтобы робот видел заявки, звонки и переходы в мессенджеры с сайта и учил на них Директ, поставьте на сайт наш код — это 5 минут.`
+                : "Сейчас реклама ведёт не на сайт, но код пригодится, если переключите её на сайт: тогда заявки с него будут считаться сразу."}
             </p>
-            <pre className="mt-4 bg-ink text-white/90 text-xs leading-relaxed rounded-xl p-4 overflow-x-auto max-h-64">{snippet}</pre>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <CopyButton text={snippet} label="Скопировать код" />
-              {b.counterId ? <span className="text-sm text-muted">Счётчик Метрики № {b.counterId}, цели: обращение, заявка, звонок, мессенджер</span> : <span className="text-sm text-muted">Счётчик Метрики создадим при запуске в Директе</span>}
-            </div>
-            <p className="hint mt-3 max-w-2xl">Код сам замечает заявки из форм, клики по номеру телефона и переходы в WhatsApp и Telegram — и понимает, из какого объявления пришёл человек.</p>
-            <div className="mt-5 pt-5 border-t border-line">
-              <p className="text-sm text-muted mb-3 max-w-2xl">Робот смотрит в Метрике, сколько людей после клика действительно изучили сайт, а сколько сразу ушли. Если на сайте уже стоит ваш счётчик, лучше выбрать его — так не нужен второй счётчик, а история визитов сохранится. Тогда в коде выше оставьте только строку скрипта Самохода, если код Метрики на сайте уже есть.</p>
+            <SiteConnect snippet={snippet} trackerLine={trackerLine} siteUrl={b.siteUrl} counterId={b.counterId ?? null} initial={site} contactEmail={contactEmail()} />
+            <div className="mt-6 pt-5 border-t border-line">
+              <div className="font-semibold">Счётчик Метрики</div>
+              <p className="text-sm text-muted mt-1 mb-3 max-w-2xl">Робот смотрит в Метрике, сколько людей после клика действительно изучили сайт, а сколько сразу ушли. Если на сайте уже стоит ваш счётчик, лучше выбрать его — так не нужен второй счётчик, а история визитов сохранится. Тогда на сайт достаточно добавить строку Самохода.</p>
               <MetricaCounterPicker current={b.counterId ?? null} hasYandex={accounts.some((a) => a.platform === "yandex")} />
             </div>
           </>
         ) : (
-          <p className="text-muted mt-1 leading-relaxed max-w-2xl">Объявления ведут на вашу страницу записи — обращения с неё считаются автоматически, ничего ставить не нужно.</p>
+          <p className="text-muted mt-1 leading-relaxed max-w-2xl">Объявления ведут на вашу страницу записи — обращения с неё считаются автоматически, ничего ставить не нужно. Есть свой сайт? <Link href="/app/start#links" className="font-semibold text-ink-2 underline underline-offset-2">Добавьте ссылку</Link> — здесь появится код для него.</p>
         )}
       </section>
 

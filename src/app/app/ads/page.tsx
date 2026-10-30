@@ -896,8 +896,8 @@ function CampaignPill({ s, ch, short = false }: { s?: { stopped: string | null; 
   if (s?.stopped) return <span className="pill bg-paper text-muted">{short ? "Пауза — вы" : "На паузе — вы остановили"}</span>;
   if (s && s.learningLeft > 0)
     return (
-      <span className="pill bg-info-soft text-ink-2" title={`Обучение после запуска длится до ${pl(LEARNING_DAYS[ch] ?? 14, "дня", "дней", "дней")}, после изменения бюджета — до 7`}>
-        <GraduationCap size={13} /> {short ? `обучается, ${pl(s.learningLeft, "день", "дня", "дней")}` : `обучается — не трогаем ${pl(s.learningLeft, "день", "дня", "дней")}`}
+      <span className="pill bg-info-soft text-ink-2" title={`Обучение после запуска длится до ${pl(LEARNING_DAYS[ch] ?? 14, "дня", "дней", "дней")}, после изменения бюджета — до 7. В это время робот не меняет стратегию, ставки и лимит кампании; объявления и аудитории проверяет как обычно`}>
+        <GraduationCap size={13} /> {short ? `обучается, ${pl(s.learningLeft, "день", "дня", "дней")}` : `обучается ещё ${pl(s.learningLeft, "день", "дня", "дней")}`}
       </span>
     );
   return <span className="pill bg-good-soft text-good">Идёт</span>;

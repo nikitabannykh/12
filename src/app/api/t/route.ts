@@ -3,6 +3,7 @@ import { getDb, schema } from "@/lib/db";
 import { uid } from "@/lib/util";
 import { attribute, hit, ipKey, signFirstTouch, within } from "@/lib/ratelimit";
 import { metrikaIds } from "@/lib/platforms/metrica";
+import { eventHost, recordSiteEvent, recordSiteSeen } from "@/lib/engine/site-tracking";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" };
 /** Больше стольких обращений с трекера на бизнес за час — помечаем «похоже на спам» */
@@ -16,7 +17,10 @@ export async function OPTIONS() {
 /**
  * Приём событий от трекера на сайте владельца.
  *  - kind=visit: первый заход по рекламной ссылке → возвращаем подписанные utm-метки (first touch);
+ *  - kind=ping: сигнал «код стоит на сайте» (раз в сутки на браузер или при проверке ?pz_check=1) — для настроек;
  *  - kind=form|phone|messenger: обращение. Имя и телефон здесь не принимаем и не храним.
+ *    via=booking — переход в онлайн-запись (DIKIDI, YCLIENTS…), засчитывается как заявка (form).
+ * Последнее событие с сайта владельца запоминаем (lib/engine/site-tracking) — его видно в «Подключении сайта».
  */
 export async function POST(req: Request) {
   try {
@@ -27,8 +31,17 @@ export async function POST(req: Request) {
     const [b] = await db.select({ id: schema.businesses.id, publicKey: schema.businesses.publicKey }).from(schema.businesses).where(eq(schema.businesses.publicKey, String(d.key || "").slice(0, 64)));
     if (!b) return empty();
 
+    const host = eventHost(req, d.host);
+    if (d.kind === "ping") {
+      if (await within([{ key: ipKey("ping", req), limit: 10, windowSec: 600 }, { key: `ping:biz:${b.id}`, limit: 120, windowSec: 3600 }])) {
+        await recordSiteSeen(b.id, host, { force: Boolean(d.check), ym: Boolean(d.ym) });
+      }
+      return empty();
+    }
+
     if (d.kind === "visit") {
       if (!(await within([{ key: ipKey("visit", req), limit: 30, windowSec: 600 }]))) return empty();
+      await recordSiteEvent(b.id, "visit", host).catch(() => {});
       const ft = await signFirstTouch(b, { source: d.source, campaign: d.campaign, ad: d.ad });
       return Response.json({ ft }, { headers: cors });
     }
@@ -43,6 +56,9 @@ export async function POST(req: Request) {
       { key: `t:biz:${b.id}`, limit: 300, windowSec: 3600 },
     ]);
     if (!allowed) return empty();
+    const booking = kind === "form" && d.via === "booking";
+    // «Последнее событие с сайта» — и для повторов (владелец проверяет установку, кликая сам)
+    await recordSiteEvent(b.id, booking ? "booking" : kind, host).catch(() => {});
     // Один человек — одно обращение одного типа за 30 минут
     const recent = await db.select({ id: schema.leads.id }).from(schema.leads).where(and(eq(schema.leads.businessId, b.id), eq(schema.leads.visitorId, vid), eq(schema.leads.kind, kind), gte(schema.leads.createdAt, new Date(Date.now() - 30 * 60e3))));
     if (recent.length) return empty();

@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { and, eq } from "drizzle-orm";
 import { appUrl, errorText, uid } from "@/lib/util";
-import { getUser } from "@/lib/auth";
+import { emailGate, getUser } from "@/lib/auth";
 import { safeBack, withQuery } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
@@ -21,6 +21,9 @@ export async function GET(req: NextRequest) {
   jar.delete("pz_ya_state");
   const back = safeBack(saved.back);
   const go = (q: string) => NextResponse.redirect(`${appUrl()}${withQuery(back, q)}`);
+  // Кабинет — только к аккаунту с подтверждённой почтой (если почта на сервере настроена)
+  const gate = await emailGate(user);
+  if (gate) return go(`error=${encodeURIComponent(gate)}`);
 
   const err = req.nextUrl.searchParams.get("error");
   if (err) return go(`error=${encodeURIComponent(err === "access_denied" ? "Вы отменили доступ к Яндексу" : `Яндекс не выдал доступ (${err.replace(/[^a-z_]/gi, "").slice(0, 40)}). Попробуйте ещё раз.`)}`);

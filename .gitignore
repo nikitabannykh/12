@@ -6,3 +6,7 @@ node_modules
 *.tsbuildinfo
 next-env.d.ts
 .vercel
+
+*.log
+.DS_Store
+tsconfig.tsbuildinfo

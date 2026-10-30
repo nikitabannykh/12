@@ -15,8 +15,12 @@ import { appUrl } from "./util";
  */
 export const mailConfigured = () => Boolean(process.env.SMTP_URL?.trim());
 
-/** Локальный запуск: можно печатать ссылки из писем в консоль, если SMTP не настроен */
-export const devMail = () => process.env.NODE_ENV !== "production" || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(appUrl());
+/**
+ * Разработка (next dev): можно печатать ссылки из писем в консоль, если SMTP не настроен.
+ * В production-сборке — никогда, даже с APP_URL=localhost: ссылки входа и сброса пароля в логах — это доступ к аккаунтам
+ * (логи читает хостинг, CI, соседние сервисы). Для проверки писем без почтового сервера — SMTP_URL=json://.
+ */
+export const devMail = () => process.env.NODE_ENV !== "production";
 
 let cached: { url: string; t: Transporter } | null = null;
 function transport(): Transporter {

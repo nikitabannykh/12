@@ -1,6 +1,7 @@
 import "server-only";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import * as schema from "./schema";
+import { createHash } from "crypto";
 import { MIGRATION_SQL } from "./migrate";
 
 export type DB = PgDatabase<PgQueryResultHKT, typeof schema>;
@@ -47,6 +48,46 @@ async function sslFor(url: string): Promise<false | "require" | SslObject | unde
   return host === "localhost" || host === "127.0.0.1" || host === "::1" ? false : "require";
 }
 
+/**
+ * Версия схемы — отпечаток текста миграции. Хранится в kv `schema:version`: совпал — DDL не запускаем
+ * (раньше ~70 команд CREATE/ALTER с блокировкой ACCESS EXCLUSIVE выполнялись на каждом холодном старте).
+ * Поменяли MIGRATION_SQL — отпечаток другой, миграция пройдёт один раз.
+ */
+export const SCHEMA_VERSION = createHash("sha256").update(MIGRATION_SQL).digest("hex").slice(0, 16);
+const VERSION_SQL = `SELECT value #>> '{}' AS v FROM kv WHERE key = 'schema:version'`;
+const SAVE_VERSION_SQL = `INSERT INTO kv(key, value, updated_at) VALUES ('schema:version', to_jsonb('${SCHEMA_VERSION}'::text), now())
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+/** Номер advisory-блокировки миграции (любое постоянное число) */
+const MIGRATION_LOCK = 7_316_202_610;
+
+type PgClient = import("postgres").Sql;
+
+async function migratePostgres(client: PgClient) {
+  const current = async (q: PgClient | import("postgres").TransactionSql) =>
+    ((await q.unsafe(VERSION_SQL).catch(() => [])) as unknown as { v?: string }[])[0]?.v ?? null;
+  if ((await current(client)) === SCHEMA_VERSION) return;
+  // Одна транзакция: несколько экземпляров стартуют одновременно — мигрирует один, остальные ждут его и выходят.
+  // lock_timeout — после advisory-блокировки: DDL не ждёт таблицу дольше 5 с (иначе висели бы все запросы к ней),
+  // упало — getDb повторит при следующем запросе
+  await client.begin(async (tx) => {
+    await tx.unsafe(`SELECT pg_advisory_xact_lock(${MIGRATION_LOCK})`);
+    if ((await tx.unsafe(`SELECT to_regclass('public.kv') IS NOT NULL AS ok`))[0]?.ok && (await current(tx)) === SCHEMA_VERSION) return;
+    await tx.unsafe(`SET LOCAL lock_timeout = '5s'`);
+    await tx.unsafe(MIGRATION_SQL);
+    await tx.unsafe(SAVE_VERSION_SQL);
+  });
+  console.log(`db: схема обновлена до версии ${SCHEMA_VERSION}`);
+}
+
+async function migratePglite(client: import("@electric-sql/pglite").PGlite) {
+  const got = await client.query<{ v: string }>(VERSION_SQL).catch(() => null);
+  if (got?.rows[0]?.v === SCHEMA_VERSION) return;
+  await client.transaction(async (tx) => {
+    await tx.exec(MIGRATION_SQL);
+    await tx.exec(SAVE_VERSION_SQL);
+  });
+}
+
 async function create(): Promise<DB> {
   const url = (process.env.DATABASE_URL || process.env.POSTGRES_URL)?.trim();
   if (url) {
@@ -55,7 +96,7 @@ async function create(): Promise<DB> {
     // prepare:false — совместимо с пулерами (Neon, Supabase, PgBouncer, Odyssey в Yandex Managed PostgreSQL)
     const ssl = await sslFor(url);
     const client = postgres(url, { prepare: false, max: Number(process.env.PG_POOL_MAX) || 5, ...(ssl === undefined ? {} : { ssl }) });
-    await client.unsafe(MIGRATION_SQL);
+    await migratePostgres(client);
     return drizzle(client, { schema }) as unknown as DB;
   }
   const { PGlite } = await import("@electric-sql/pglite");
@@ -65,7 +106,7 @@ async function create(): Promise<DB> {
   const { mkdirSync } = await import("fs");
   mkdirSync(dir, { recursive: true });
   const client = new PGlite(dir);
-  await client.exec(MIGRATION_SQL);
+  await migratePglite(client);
   return drizzle(client, { schema }) as unknown as DB;
 }
 

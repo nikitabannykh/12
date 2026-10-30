@@ -1,9 +1,11 @@
 import { isLaunched, uid } from "@/lib/util";
 import { route, json, fail, needBusiness } from "@/lib/api";
+import { useQuota } from "@/lib/ratelimit";
 import { DIRECT_ADS_PER_GROUP, isDirectChannel, updatePlan, type LaunchPlan, type PlanAd } from "@/lib/engine/launch";
 import { rewriteAd, tidyText, validateAdText } from "@/lib/ai/copy";
 import { formatOf } from "@/lib/channels";
 import { isMedical } from "@/lib/niches";
+import { marks, type AdText } from "../marks";
 
 export const maxDuration = 60;
 const MAX_ADS = 12;
@@ -13,7 +15,7 @@ const bad = (message: string, status = 400) => Object.assign(new Error(message),
  * Новое объявление в группе до запуска: своё (title/text) или вариант от робота с новым подходом.
  * Картинку берём у объявлений группы (по кругу) — новых генераций и ожидания нет.
  */
-export const POST = route(async ({ business, req }) => {
+export const POST = route(async ({ user, business, req }) => {
   needBusiness(business);
   if (isLaunched(business.status)) return fail("Реклама уже запущена — новые объявления добавляются на странице «Реклама»");
   const plan = business.launchPlan as LaunchPlan | null;
@@ -34,16 +36,21 @@ export const POST = route(async ({ business, req }) => {
     if (errs.length) return fail(errs.join(" "));
   } else {
     const base = g.ads[0] ?? { angle: "price", title: g.service ?? g.name, title2: null, text: "" };
+    const over = await useQuota("variant", user);
+    if (over) return fail(over, 429);
     const wish = String(body.wish ?? "").trim().slice(0, 300);
+    // Не повторяем ни объявления группы, ни исходные варианты робота, которые владелец уже поправил
+    const avoid = [...g.ads, ...g.ads.map((a) => marks(a).original).filter((x): x is AdText => !!x)];
     const r = await rewriteAd(business, {
       channel: fmt,
       base,
       tried: [...new Set(g.ads.map((a) => a.angle))],
       reason: wish ? `Владелец хочет ещё вариант: ${wish}` : "Владелец хочет больше вариантов для сравнения",
       service: ch.channel === "search" ? g.service ?? g.name : undefined,
+      avoid,
     });
-    // Не повторяем уже существующий текст
-    if (g.ads.some((a) => a.title === r.title && a.text === r.text)) return fail("Новых идей для этой группы пока нет — напишите объявление сами");
+    const key = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+    if (avoid.some((a) => key(a.title) === key(r.title) || key(a.text) === key(r.text))) return fail("Новых идей для этой группы пока нет — напишите объявление сами");
     draft = { angle: r.angle, title: r.title, title2: r.title2 ?? null, text: r.text };
   }
 

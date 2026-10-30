@@ -140,7 +140,7 @@ export async function runAll(deadlineMs = 50_000, concurrency = 3) {
   const last = new Map(jobs.map((j) => [j.businessId, j.lastRunAt?.getTime() ?? 0]));
   list.sort((a, b) => (last.get(a.id) ?? 0) - (last.get(b.id) ?? 0));
 
-  const done: { id: string; log: string[]; ms: number }[] = [];
+  const done: { id: string; log: string[]; ms: number; ok: boolean }[] = [];
   let next = 0;
   let slowest = 15_000;
   const worker = async () => {
@@ -157,9 +157,10 @@ export async function runAll(deadlineMs = 50_000, concurrency = 3) {
       const r = await runBusiness(id).then((x) => ({ ...x, log: [...pre, ...x.log] })).catch((e) => ({ ok: false, log: [...pre, errorText(e)] }));
       const ms = Date.now() - t0;
       slowest = Math.max(slowest, ms);
-      done.push({ id, log: r.log, ms });
+      done.push({ id, log: r.log, ms, ok: r.ok !== false });
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));
-  return { processed: done.length, total: list.length, done };
+  // processed/total/failed — сводка для расписания (без данных бизнесов); done — подробности для отладки
+  return { processed: done.length, total: list.length, failed: done.filter((d) => !d.ok).length, ms: Date.now() - started, done };
 }

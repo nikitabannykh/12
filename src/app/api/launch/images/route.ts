@@ -1,15 +1,19 @@
 import { isLaunched } from "@/lib/util";
 import { route, json, fail, needBusiness } from "@/lib/api";
 import { prepareImages, saveImagesStep, type LaunchPlan } from "@/lib/engine/launch";
+import { useQuota } from "@/lib/ratelimit";
 
 export const maxDuration = 60;
 
-export const POST = route(async ({ business }) => {
+export const POST = route(async ({ user, business }) => {
   needBusiness(business);
   if (isLaunched(business.status)) return fail("Реклама уже запущена");
   const plan = business.launchPlan as LaunchPlan | null;
   if (!plan) return fail("Сначала подготовьте объявления");
   if (plan.launch) return fail("Запуск уже начат — дождитесь окончания или продолжите его", 409);
+  // Каждая порция (~20 с работы YandexART) — единица дневной квоты
+  const over = await useQuota("images", user);
+  if (over) return fail(over, 429);
   // Не больше ~40 секунд за вызов (лимит функции — 60): если не успели, клиент вызовет ещё раз и мы продолжим
   // Порция ~20 секунд: одна картинка с большим фото рисуется до нескольких секунд, оставляем запас до лимита в 60
   const r = await prepareImages(business, plan, Date.now() + 20_000);
