@@ -16,7 +16,7 @@ function TargetPicker({ value, onChange, siteUrl, pageUrl, allowAuto, autoLabel,
   const opts: { v: LandingMode; label: string; hint: string; disabled?: boolean }[] = [
     ...(allowAuto ? [{ v: "auto" as const, label: autoLabel ?? "Как для всех", hint: "" }] : []),
     { v: "page", label: "Страница записи", hint: "Наша страница с формой записи и кнопками связи. Заявки считаются сами." },
-    { v: "site", label: siteUrl ? `Сайт — ${siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}` : "Сайт (не указан)", hint: "Заявки считаются, если на сайте стоит наш код счётчика (он в «Настройках»).", disabled: !siteUrl },
+    { v: "site", label: siteUrl ? `Сайт — ${siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}` : "Сайт (не указан)", hint: "Заявки считаются, если на сайте стоит наш код — статус и инструкция ниже, в «Подключение сайта».", disabled: !siteUrl },
     { v: "link", label: "Другая ссылка", hint: "Онлайн-запись (YCLIENTS, DIKIDI), Taplink, нужная страница сайта, WhatsApp или Telegram. Заявки там мы не видим — считаем переходы; записи отмечайте в «Статистике»." },
   ];
   const url = value.mode === "link" ? value.url ?? "" : "";

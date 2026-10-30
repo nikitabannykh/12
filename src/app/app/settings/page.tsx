@@ -4,6 +4,7 @@ import { ShowSettingsEditor } from "@/components/ShowSettingsEditor";
 import { LandingEditor } from "@/components/LandingEditor";
 import { MetricaCounterPicker } from "@/components/MetricaCounterPicker";
 import { SiteConnect } from "@/components/SiteConnect";
+import { SiteSetupList, siteSummary } from "@/components/SiteSetup";
 import { siteTrackingStatus } from "@/lib/engine/site-tracking";
 import { pageUrl, type LandingSettings } from "@/lib/engine/landing";
 import { timeTargeting } from "@/lib/engine/extras";
@@ -83,6 +84,9 @@ export default async function Settings() {
           <div>
             <h2 className="text-lg font-bold">Ссылки на бизнес</h2>
             <p className="hint mt-1 max-w-2xl">Сайт, карточки в Яндекс Картах и 2ГИС, онлайн-запись и соцсети — из них заполняется описание. Объявления ведут на {b.siteUrl ? "сайт" : "вашу страницу записи"}.</p>
+            {site && site.needed ? (
+              <a href="#site" className={`mt-2 inline-flex items-center gap-1.5 text-sm font-semibold underline underline-offset-2 ${siteSummary(site).done ? "text-good" : "text-warn"}`}>{siteSummary(site).title} →</a>
+            ) : null}
           </div>
           <Link href="/app/start#links" className="btn btn-ghost btn-sm">{links.length ? "Изменить" : "Добавить ссылки"}</Link>
         </div>
@@ -174,6 +178,12 @@ export default async function Settings() {
                 ? `Реклама ведёт на ${b.siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}. Чтобы робот видел заявки, звонки и переходы в мессенджеры с сайта и учил на них Директ, поставьте на сайт наш код — это 5 минут.`
                 : "Сейчас реклама ведёт не на сайт, но код пригодится, если переключите её на сайт: тогда заявки с него будут считаться сразу."}
             </p>
+            {site ? (
+              <div className="mb-6 rounded-2xl bg-paper p-4 sm:p-5">
+                <div className="font-semibold mb-3">{siteSummary(site).done ? siteSummary(site).title : "Что осталось сделать"}</div>
+                <SiteSetupList status={site} />
+              </div>
+            ) : null}
             <SiteConnect snippet={snippet} trackerLine={trackerLine} siteUrl={b.siteUrl} counterId={b.counterId ?? null} initial={site} contactEmail={contactEmail()} />
             <div className="mt-6 pt-5 border-t border-line">
               <div className="font-semibold">Счётчик Метрики</div>

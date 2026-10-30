@@ -13,6 +13,8 @@ import { getDb, schema } from "@/lib/db";
 import { ActionButton } from "@/components/client";
 import { ChangeItem } from "@/components/ChangeItem";
 import { ServingIssues, servingIssues } from "@/components/ServingIssues";
+import { SiteSetupBanner } from "@/components/SiteSetup";
+import { siteTrackingStatus } from "@/lib/engine/site-tracking";
 import { isMedical } from "@/lib/niches";
 import { DaysChart, Delta } from "@/components/charts";
 import { ClientsWeek } from "@/components/ClientsWeek";
@@ -49,10 +51,8 @@ export default async function Dashboard() {
     .from(schema.ads)
     .where(and(eq(schema.ads.businessId, b.id), inArray(schema.ads.status, ["moderation", "rejected", "active"])));
   const monthCost = (await db.select({ cost: schema.statsDaily.cost }).from(schema.statsDaily).where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, monthStartDay(r.now))))).reduce((s, x) => s + x.cost, 0);
-  // Реклама ведёт на сайт (хотя бы в одном канале) — только тогда обращения зависят от кода счётчика на сайте
-  const toSite = Boolean(b.siteUrl) && camps.some((x) => landingFor(b, x.channel).kind === "site");
-  const tracked = await db.select({ id: schema.leads.id }).from(schema.leads).where(eq(schema.leads.businessId, b.id)).limit(1);
   const health = await healthCheck(b);
+  const site = b.siteUrl ? await siteTrackingStatus(b.id) : null;
   // Что робот сделал за 30 дней — те же три рычага, что на лендинге
   const monthAgo = new Date(r.now.getTime() - 30 * 86400_000);
   const recent = (await db.select({ kind: schema.changes.kind, details: schema.changes.details, revertedAt: schema.changes.revertedAt }).from(schema.changes)
@@ -205,6 +205,7 @@ export default async function Dashboard() {
         </StopBanner>
       ) : null}
 
+      {site && site.needed ? <SiteSetupBanner status={site} /> : null}
       {lowBalance.filter((x) => x.daysLeft !== 0 || x.demo).map((x) => (
         <StopBanner key={x.accountId} tone={x.daysLeft === 0 ? "bad" : "warn"} icon="wallet" title={x.daysLeft === 0 ? "Кончились деньги в рекламном кабинете" : "Скоро кончатся деньги в рекламном кабинете"} text={`${balanceText(x)}${x.demo ? " В демо пополнение происходит само." : " Пополнение — в самом кабинете площадки."} Пока денег мало, робот не поднимает недельные лимиты — расход ниже плана из-за остатка, а не из-за площадки.`}>
           {TOPUP_URL[x.platform] && !x.demo ? <a href={TOPUP_URL[x.platform]} target="_blank" rel="noreferrer" className="btn btn-primary btn-sm">Пополнить <ExternalLink size={14} /></a> : null}
@@ -282,7 +283,7 @@ export default async function Dashboard() {
       </section>
 
       {/* Требует внимания */}
-      {broken.length || needMark || rejected || (toSite && !tracked.length && c.cost > 0) ? (
+      {broken.length || needMark || rejected ? (
         <section className="grid gap-3">
           {broken.map((a) => (
             <div key={a.id} className="rounded-xl bg-bad-soft text-bad p-4 flex flex-wrap gap-3 items-start">
@@ -298,11 +299,7 @@ export default async function Dashboard() {
               Робот перепишет {rejected === 1 ? "его" : "их"} при следующей проверке — или поправьте сами в разделе <Link href="/app/ads" className="underline">«Реклама»</Link>.
             </div>
           ) : null}
-          {toSite && !tracked.length && c.cost > 0 ? (
-            <div className="rounded-xl bg-info-soft p-4 text-sm leading-relaxed">
-              <b>Обращения с сайта пока не приходят.</b> Проверьте, что код счётчика стоит на всех страницах сайта — без него мы видим клики, но не видим записи. <Link href="/app/settings#counter" className="underline">Код счётчика</Link>
-            </div>
-          ) : null}
+
         </section>
       ) : null}
 

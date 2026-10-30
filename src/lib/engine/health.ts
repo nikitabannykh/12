@@ -119,7 +119,7 @@ export async function healthCheck(b: Business): Promise<Health> {
       hint: !counterOk
         ? "Счётчик Метрики с целью «обращение» не настроен — Директ не может учиться на заявках."
         : "Рекламе есть расход, а обращений с сайта ни одного — похоже, код счётчика не стоит на сайте.",
-      fix: { href: "/app/settings#counter", label: "Код счётчика" },
+      fix: { href: "/app/settings#site", label: "Подключение сайта" },
       weight: 15,
     });
   } else if (usesDirect) {
@@ -129,7 +129,7 @@ export async function healthCheck(b: Business): Promise<Health> {
       title: "Счётчик и цель на странице записи",
     todo: "Нет счётчика Метрики",
       hint: "Счётчик Метрики не создан — Директ показывает рекламу по кликам, а не по заявкам. Создадим при следующем запуске в Директе.",
-      fix: { href: "/app/settings#counter", label: "Подробнее" },
+      fix: { href: "/app/settings#site", label: "Подробнее" },
       weight: 15,
     });
   }
