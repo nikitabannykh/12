@@ -152,3 +152,19 @@ export function forecastWithDemand(p: { monthly: number; niche: string; medical?
     leads: r([leads[0] + (other?.leads[0] ?? 0), leads[1] + (other?.leads[1] ?? 0)]),
   };
 }
+
+/**
+ * Сколько нужно в месяц, чтобы поиск забрал почти весь спрос: середина достижимых кликов (спрос × ctr) по средней
+ * цене клика — это доля поиска; общий бюджет — она, делённая на долю поиска в раскладке. Округляем вверх до 1 000 ₽.
+ * Оценка на допущениях FORECAST, как и прогноз.
+ */
+export function recommendedBudget(p: { demand: number; niche: string; medical?: boolean; regionIds?: number[]; searchShare: number; minMonthly: number }) {
+  const a = forecastAssumptions(p.niche, p.medical, p.regionIds);
+  const clicks = (p.demand * (a.ctr[0] + a.ctr[1])) / 2;
+  const cpc = (a.cpc[0] + a.cpc[1]) / 2;
+  const search = clicks * cpc;
+  const share = p.searchShare > 0 ? p.searchShare : 1;
+  const monthly = Math.min(MAX_MONTHLY, Math.max(p.minMonthly, Math.ceil(search / share / 1000) * 1000));
+  return { monthly, search: Math.round(search), clicks: Math.round(clicks), cpc: Math.round(cpc) };
+}
+

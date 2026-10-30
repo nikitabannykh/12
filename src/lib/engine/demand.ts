@@ -56,9 +56,17 @@ export type DemandJob = {
   lockUntil: number;
   /** Ошибку 31 (5 отчётов) лечили уборкой чужих готовых отчётов — один раз за сбор */
   cleaned?: boolean;
+  /** Последняя настоящая ошибка источника — для понятной причины владельцу и диагностики */
+  lastError?: DemandError | null;
+  /** Сырые ответы v4 по методам (первые 500 символов) — диагностика */
+  raw?: Record<string, string>;
+  /** Неудачный сбор: когда можно начать заново (мс epoch) */
+  retryAt?: number;
   startedAt: string;
   updatedAt: string;
 };
+
+export type DemandError = { source: Source; method: string; code: number | null; message: string; sample?: string | null; at: string };
 
 export type DemandView = {
   status: "running" | "done" | "unavailable";
@@ -70,6 +78,8 @@ export type DemandView = {
   progress: { done: number; total: number };
   summary: DemandSummary | null;
   note: string | null;
+  /** Диагностика для владельца бизнеса (его собственная задача): последняя ошибка и сырые ответы API */
+  debug?: { lastError: DemandError | null; raw: Record<string, string>; sources: Source[]; failed: string[]; reports: { id: number; at: string; phrases: number }[]; retryAt: string | null; startedAt: string; updatedAt: string };
 };
 
 const JOB_KEY = (businessId: string) => `demand:${businessId}`;
@@ -85,6 +95,8 @@ const TAILS_KEEP = 40;
 const LOCK_MS = 50_000;
 /** Неудачная попытка сбора: через сколько пробуем заново */
 const RETRY_UNAVAILABLE_MS = 3600e3;
+/** Все фразы упали с непонятной ошибкой — можно перезапустить почти сразу (после исправления/выкладки) */
+const RETRY_FAILED_MS = 2 * 60e3;
 
 const now = () => new Date().toISOString();
 const trim = (r: WordstatPhrase): WordstatPhrase => ({ phrase: r.phrase, shows: r.shows, searchedWith: r.searchedWith.slice(0, TAILS_KEEP) });
@@ -229,6 +241,16 @@ function view(job: DemandJob | null, b: Business, fallbackNote?: string | null):
     // Пока идёт сбор, итог не показываем: частичная сумма занижала бы спрос
     summary: has && job.status !== "running" ? summarizeDemand(job.groups, job.results, job.negatives) : null,
     note: job.note,
+    debug: {
+      lastError: job.lastError ?? null,
+      raw: job.raw ?? {},
+      sources: job.sources,
+      failed: job.failed,
+      reports: job.reports.map((r) => ({ id: r.id, at: r.at, phrases: r.phrases.length })),
+      retryAt: job.retryAt ? new Date(job.retryAt).toISOString() : null,
+      startedAt: job.startedAt,
+      updatedAt: job.updatedAt,
+    },
   };
 }
 
@@ -259,6 +281,20 @@ function dropSource(job: DemandJob, src: Source, why: string) {
   console.warn("wordstat source off", src, why);
 }
 
+const SOURCE_NAME: Record<Source, string> = { direct: "Wordstat Директа", cloud: "Wordstat в Yandex Cloud", demo: "Демо-Wordstat" };
+
+const sampleOf = (e: unknown) => {
+  const d = e instanceof PlatformError ? (e.detail as { sample?: string } | undefined) : undefined;
+  return typeof d?.sample === "string" ? d.sample.slice(0, 300) : null;
+};
+
+/** Запоминаем ошибку источника (любую — и PlatformError, и неожиданную) */
+function record(job: DemandJob, source: Source, method: string, e: unknown, sample?: string | null) {
+  const code = v4Code(e);
+  job.lastError = { source, method, code: Number.isFinite(code) ? code : null, message: errorText(e).slice(0, 300), sample: sample ?? sampleOf(e), at: now() };
+  console.warn("wordstat error", source, method, job.lastError.code, job.lastError.message);
+}
+
 async function stepDemo(job: DemandJob, accounts: AdAccount[]) {
   const demo = accounts.find((a) => a.platform === "demo");
   if (!demo) return dropSource(job, "demo", "Демо-кабинет не подключён.");
@@ -282,92 +318,166 @@ async function stepCloud(job: DemandJob, deadline: number) {
       if (s.status === "fulfilled") {
         store(job, s.value, "cloud", batch[i]);
         await writeCache(job.regionIds, { ...s.value, phrase: batch[i] }, "cloud");
-      } else if (s.reason instanceof CloudWordstatError && s.reason.fatal) {
-        return dropSource(job, "cloud", `Wordstat в Yandex Cloud недоступен: ${s.reason.message}`);
-      } else fail(job, batch[i]);
+      } else {
+        record(job, "cloud", "wordstat/topRequests", s.reason);
+        if (s.reason instanceof CloudWordstatError && s.reason.fatal) return dropSource(job, "cloud", `Wordstat в Yandex Cloud не ответил: ${s.reason.message}`);
+        fail(job, batch[i]);
+      }
     }
   }
 }
 
 const v4Code = (e: unknown) => (e instanceof PlatformError && e.detail && typeof e.detail === "object" ? Number((e.detail as { error_code?: number }).error_code) : NaN);
+/**
+ * Коды v4, при которых повторять бессмысленно: 53 — авторизация, 54 — нет прав, 58 — приложению не дан доступ,
+ * 513 — пользователь не подключён к API; 152 — не хватает баллов, 506/509 — превышены лимиты.
+ */
+const V4_FATAL = new Set([53, 54, 58, 513, 152, 506, 509]);
+const directFatal = (e: unknown) => V4_FATAL.has(v4Code(e)) || /лимит|limit/i.test(errorText(e));
+/** Отчёт со статусом Pending дольше — считаем зависшим */
+const REPORT_STUCK_MS = 10 * 60e3;
+/** Статус отчёта неизвестен (список пришёл в другом виде) — пробуем читать его так долго */
+const REPORT_UNKNOWN_MS = 3 * 60e3;
+
+/** Строки отчёта → фразы запроса: по ключу фразы, остальные — по порядку (Яндекс может нормализовать написание) */
+export function matchRows(asked: string[], rows: WordstatPhrase[]): (WordstatPhrase | null)[] {
+  const used = new Set<number>();
+  const out = asked.map((p) => {
+    const i = rows.findIndex((r, j) => !used.has(j) && phraseKey(r.phrase) === phraseKey(p));
+    if (i < 0) return null;
+    used.add(i);
+    return rows[i];
+  });
+  const rest = rows.map((r, j) => (used.has(j) ? null : { r, j })).filter((x): x is { r: WordstatPhrase; j: number } => !!x);
+  if (rows.length === asked.length) {
+    // Та же длина — порядок строк совпадает с порядком фраз
+    return out.map((m, i) => m ?? (used.has(i) ? null : rows[i]));
+  }
+  return out.map((m) => m ?? rest.shift()?.r ?? null);
+}
 
 async function stepDirect(job: DemandJob, accounts: AdAccount[], deadline: number, save: () => Promise<boolean>) {
   const acc = accounts.find((a) => a.platform === "yandex" && a.status === "ok");
   if (!acc) return dropSource(job, "direct", "Кабинет Яндекс Директа не подключён.");
   const client = (await clientFor(acc)) as YandexDirect;
   job.accountId = acc.id;
-  for (;;) {
-    // 1) Готовые отчёты — читаем и удаляем
-    if (job.reports.length) {
-      let list: { id: number; status: string }[];
-      try {
-        list = await client.wordstatList();
-      } catch (e) {
-        if ([53, 58, 152, 513].includes(v4Code(e))) return dropSource(job, "direct", `Wordstat Директа недоступен: ${errorText(e)}`);
-        list = [];
-      }
-      for (const rep of [...job.reports]) {
-        const st = list.find((r) => r.id === rep.id)?.status;
-        if (st === "Pending") continue;
-        if (st === "Done") {
-          try {
-            const rows = await client.wordstatGet(rep.id);
-            for (const p of rep.phrases) {
-              const row = rows.find((r) => phraseKey(r.phrase) === phraseKey(p));
-              if (row) {
-                store(job, row, "direct", p);
-                await writeCache(job.regionIds, { ...row, phrase: p }, "direct");
-              } else fail(job, p);
-            }
-          } catch {
+  const keepRaw = () => { job.raw = { ...(job.raw ?? {}), ...(client.v4Raw ?? {}) }; };
+  const off = (method: string, e: unknown) => {
+    record(job, "direct", method, e);
+    dropSource(job, "direct", `Wordstat Директа не ответил: ${errorText(e)}`);
+  };
+  try {
+    for (;;) {
+      // 1) Готовые отчёты — читаем и удаляем
+      if (job.reports.length) {
+        let list: { id: number; status: string }[] | null = null;
+        try {
+          list = await client.wordstatList();
+        } catch (e) {
+          if (directFatal(e)) return off("GetWordstatReportList", e);
+          record(job, "direct", "GetWordstatReportList", e);
+        }
+        for (const rep of [...job.reports]) {
+          const age = Date.now() - new Date(rep.at).getTime();
+          const st = list?.find((r) => String(r.id) === String(rep.id))?.status ?? null;
+          if (st === "Pending" && age < REPORT_STUCK_MS) continue;
+          let done = false;
+          if (st === "Failed" || st === "Pending") {
+            record(job, "direct", "GetWordstatReportList", new Error(st === "Failed" ? `отчёт Wordstat ${rep.id} не сформировался (Failed)` : `отчёт Wordstat ${rep.id} готовится дольше 10 минут`), job.raw?.GetWordstatReportList ?? client.v4Raw.GetWordstatReportList);
             for (const p of rep.phrases) fail(job, p);
+            done = true;
+          } else if (st !== "Done" && age < 15_000) {
+            continue; // статус неизвестен — дадим отчёту время, потом попробуем прочитать напрямую
+          } else {
+            // Done или статус неизвестен (список в другом виде): читаем отчёт
+            let rows: WordstatPhrase[] | null = null;
+            try {
+              rows = await client.wordstatGet(rep.id);
+            } catch (e) {
+              if (directFatal(e)) return off("GetWordstatReport", e);
+              record(job, "direct", "GetWordstatReport", e, client.v4Raw.GetWordstatReport);
+              if (st !== "Done" && age < REPORT_UNKNOWN_MS) continue;
+            }
+            if (rows?.length) {
+              const matched = matchRows(rep.phrases, rows);
+              const missed: string[] = [];
+              for (let i = 0; i < rep.phrases.length; i++) {
+                const p = rep.phrases[i], row = matched[i];
+                if (row) {
+                  store(job, row, "direct", p);
+                  await writeCache(job.regionIds, { ...row, phrase: p }, "direct");
+                } else {
+                  missed.push(p);
+                  fail(job, p);
+                }
+              }
+              if (missed.length) record(job, "direct", "GetWordstatReport", new Error(`в отчёте нет строк для ${missed.length} из ${rep.phrases.length} фраз («${missed[0]}»)`), client.v4Raw.GetWordstatReport);
+              done = true;
+            } else {
+              if (rows) record(job, "direct", "GetWordstatReport", new Error(`отчёт ${rep.id} пришёл без строк — неожиданный формат ответа`), client.v4Raw.GetWordstatReport);
+              if (st !== "Done" && age < REPORT_UNKNOWN_MS) continue;
+              for (const p of rep.phrases) fail(job, p);
+              done = true;
+            }
           }
-        } else {
-          // Failed или отчёта нет (удалён, истёк через 5 ч) — фразы вернутся в очередь, но не больше 2 попыток
-          for (const p of rep.phrases) fail(job, p);
-          if (!list.length) continue; // список не получили — не знаем, что с отчётом: подождём
+          if (done) {
+            await client.wordstatDelete(rep.id).catch((e) => record(job, "direct", "DeleteWordstatReport", e));
+            job.reports = job.reports.filter((r) => r.id !== rep.id);
+            keepRaw();
+            await save();
+          }
         }
-        await client.wordstatDelete(rep.id).catch(() => {});
-        job.reports = job.reports.filter((r) => r.id !== rep.id);
-        await save();
       }
-    }
-    // 2) Новые отчёты: до 4 одновременно, по 10 фраз; фразы, что уже в отчётах, не дублируем
-    const inFlight = new Set(job.reports.flatMap((r) => r.phrases.map(phraseKey)));
-    let waiting = job.queue.filter((p) => !inFlight.has(phraseKey(p)));
-    while (job.reports.length < DIRECT_PARALLEL && waiting.length && Date.now() < deadline - 6_000) {
-      const batch = waiting.slice(0, 10);
-      const used = await directDaily(acc.id);
-      if (used + batch.length > DIRECT_DAILY_SAFE) {
-        if (!job.reports.length) return dropSource(job, "direct", "Дневной лимит Wordstat в Директе исчерпан — досчитаем спрос завтра.");
-        break;
-      }
-      try {
-        const id = await client.wordstatCreate(batch, job.regionIds);
-        await directDaily(acc.id, batch.length);
-        job.reports.push({ id, phrases: batch, at: now() });
-        waiting = waiting.slice(batch.length);
-        // ID отчёта сохраняем сразу: оборвись функция — следующий вызов его прочитает и удалит
-        if (!(await save())) return;
-      } catch (e) {
-        const code = v4Code(e);
-        if (code === 31 && !job.cleaned) {
-          // 5 отчётов уже лежат (наши брошенные или созданные вручную) — убираем готовые и неудачные, кроме своих
-          job.cleaned = true;
-          const mine = new Set(job.reports.map((r) => r.id));
-          for (const r of await client.wordstatList().catch(() => [])) if (!mine.has(r.id) && r.status !== "Pending") await client.wordstatDelete(r.id).catch(() => {});
-          continue;
+      // 2) Новые отчёты: до 4 одновременно, по 10 фраз; фразы, что уже в отчётах, не дублируем
+      const inFlight = new Set(job.reports.flatMap((r) => r.phrases.map(phraseKey)));
+      let waiting = job.queue.filter((p) => !inFlight.has(phraseKey(p)));
+      while (job.reports.length < DIRECT_PARALLEL && waiting.length && Date.now() < deadline - 6_000) {
+        const batch = waiting.slice(0, 10);
+        const used = await directDaily(acc.id);
+        if (used + batch.length > DIRECT_DAILY_SAFE) {
+          if (!job.reports.length) {
+            dropSource(job, "direct", "Дневной лимит Wordstat в Директе исчерпан — досчитаем спрос завтра.");
+            job.retryAt = Date.now() + RETRY_UNAVAILABLE_MS;
+            return;
+          }
+          break;
         }
-        if (code === 31) break; // подождём, пока освободятся
-        if ([53, 58, 152, 513].includes(code) || /лимит|limit/i.test(errorText(e))) return dropSource(job, "direct", `Wordstat Директа недоступен: ${errorText(e)}`);
-        for (const p of batch) fail(job, p);
-        waiting = waiting.slice(batch.length);
+        try {
+          const id = await client.wordstatCreate(batch, job.regionIds);
+          await directDaily(acc.id, batch.length);
+          job.reports.push({ id, phrases: batch, at: now() });
+          waiting = waiting.slice(batch.length);
+          keepRaw();
+          // ID отчёта сохраняем сразу: оборвись функция — следующий вызов его прочитает и удалит
+          if (!(await save())) return;
+        } catch (e) {
+          const code = v4Code(e);
+          if (code === 31 && !job.cleaned) {
+            // 5 отчётов уже лежат (наши брошенные или созданные вручную) — убираем готовые и неудачные, кроме своих
+            job.cleaned = true;
+            record(job, "direct", "CreateNewWordstatReport", e);
+            const mine = new Set(job.reports.map((r) => String(r.id)));
+            for (const r of await client.wordstatList().catch(() => [])) if (!mine.has(String(r.id)) && r.status !== "Pending") await client.wordstatDelete(r.id).catch(() => {});
+            continue;
+          }
+          if (code === 31) {
+            record(job, "direct", "CreateNewWordstatReport", e);
+            break; // подождём, пока освободятся
+          }
+          if (directFatal(e)) return off("CreateNewWordstatReport", e);
+          // Неизвестная ошибка (в том числе не PlatformError) — запоминаем, фразы получат ещё попытку
+          record(job, "direct", "CreateNewWordstatReport", e, client.v4Raw.CreateNewWordstatReport);
+          for (const p of batch) fail(job, p);
+          waiting = waiting.slice(batch.length);
+        }
       }
+      if (!job.reports.length && !job.queue.length) return;
+      if (!job.reports.length && !waiting.length) return;
+      if (Date.now() > deadline - 5_000) return;
+      await sleep(3_000);
     }
-    if (!job.reports.length && !job.queue.length) return;
-    if (!job.reports.length && !waiting.length) return;
-    if (Date.now() > deadline - 5_000) return;
-    await sleep(3_000);
+  } finally {
+    keepRaw();
   }
 }
 
@@ -385,7 +495,7 @@ export async function demandState(b: Business, accounts: AdAccount[], opts: { ad
   const ctx = await context(b, accounts);
   const fresh = await newJob(b, ctx);
   const age = job ? Date.now() - new Date(job.startedAt).getTime() : Infinity;
-  const stale = !job || job.key !== fresh.key || age > CACHE_TTL_DAYS * 864e5 || (job.status === "unavailable" && Date.now() - new Date(job.updatedAt).getTime() > RETRY_UNAVAILABLE_MS);
+  const stale = !job || job.key !== fresh.key || age > CACHE_TTL_DAYS * 864e5 || (job.status === "unavailable" && Date.now() > (job.retryAt ?? new Date(job.updatedAt).getTime() + (job.failed.length ? RETRY_FAILED_MS : RETRY_UNAVAILABLE_MS)));
   if (stale) {
     // Отчёты брошенной задачи Директа не ждём — освобождаем место (у пользователя их не больше 5)
     if (job?.reports.length && ctx.yandex) {
@@ -410,7 +520,8 @@ export async function demandState(b: Business, accounts: AdAccount[], opts: { ad
         else if (src === "cloud") await stepCloud(job, deadline);
         else await stepDirect(job, accounts, deadline, save);
       } catch (e) {
-        dropSource(job, src, `Wordstat недоступен: ${errorText(e)}`);
+        record(job, src, "step", e);
+        dropSource(job, src, `${SOURCE_NAME[src]} не ответил: ${errorText(e)}`);
       }
       // Источник ничего не сделал и не отключился — значит, ждёт (отчёты, время): выходим до следующего вызова
       if (job.sources.length === before && src !== "demo") break;
@@ -421,7 +532,15 @@ export async function demandState(b: Business, accounts: AdAccount[], opts: { ad
       job.queue = [];
     }
     if (job.status === "done" && !job.failed.length && job.note && job.sources.length) job.note = null;
-    if (job.status === "done" && job.failed.length) job.note ??= `По ${job.failed.length} из ${job.total} фраз Wordstat не ответил — спрос может быть занижен.`;
+    if (job.status === "done" && job.failed.length) job.note ??= `По ${job.failed.length} из ${job.total} фраз Wordstat не ответил — спрос может быть занижен.${job.lastError ? ` Причина: ${job.lastError.message}` : ""}`;
+    if (job.status === "unavailable") {
+      const le = job.lastError;
+      // Причина — всегда: из отключения источника или из последней ошибки
+      if (!job.note) job.note = le ? `${SOURCE_NAME[le.source]} не ответил: ${le.message}` : "Wordstat не вернул данных ни по одной фразе.";
+      else if (le && !job.note.includes(le.message) && !/лимит/i.test(job.note)) job.note = `${job.note} (${le.method}: ${le.message})`;
+      // Непонятная ошибка по всем фразам — даём перезапустить почти сразу; лимиты — через час
+      job.retryAt ??= Date.now() + (le && !V4_FATAL.has(le.code ?? -1) ? RETRY_FAILED_MS : RETRY_UNAVAILABLE_MS);
+    }
   } finally {
     job.lockUntil = 0;
     await save().catch(() => false);

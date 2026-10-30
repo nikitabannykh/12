@@ -18,7 +18,8 @@ import { LandingEditor } from "./LandingEditor";
 import { landingFor, type LandingSettings } from "@/lib/engine/landing";
 import type { ShowSettings } from "@/lib/engine/show";
 import type { ExtrasBiz } from "@/lib/engine/extras";
-import { allocate, forecastWithDemand, minMonthlyFor, type Range } from "@/lib/engine/budget";
+import { allocate, forecastWithDemand, minMonthlyFor, recommendedBudget, type Range } from "@/lib/engine/budget";
+import { LAYER_ITEM } from "@/lib/niches";
 import type { DemandView } from "@/lib/engine/demand";
 import type { LaunchPlan, PlanAd, PublishStep } from "@/lib/engine/launch";
 import type { Channel } from "@/lib/platforms/types";
@@ -155,7 +156,23 @@ export function LaunchWizard(p: Props) {
   const minBudget = minMonthlyFor(channels.length ? channels : ["search"]);
   const hasAccounts = usable.length > 0;
   const demandReady = demand?.status === "done" && demand.summary ? demand.summary.total : null;
-  const fc = forecastWithDemand({ monthly: budget, niche: p.business.niche, medical: demand?.medical ?? p.business.medical, regionIds: demand?.regionIds, allocation: alloc.allocation, demand: demandReady });
+  const medical = demand?.medical ?? p.business.medical;
+  const fc = forecastWithDemand({ monthly: budget, niche: p.business.niche, medical, regionIds: demand?.regionIds, allocation: alloc.allocation, demand: demandReady });
+  // Рекомендованный бюджет по спросу: доля поиска зависит от бюджета (при малом часть каналов отключается) — уточняем раз
+  const rec = (() => {
+    if (demandReady === null || !demandReady) return null;
+    const avail = channels.length ? channels : (["search"] as Channel[]);
+    if (!avail.includes("search")) return null;
+    const shareAt = (m: number) => allocate(m, avail).allocation.find((x) => x.channel === "search")?.share ?? 1;
+    const base = { demand: demandReady, niche: p.business.niche, medical, regionIds: demand?.regionIds, minMonthly: minBudget };
+    const r1 = recommendedBudget({ ...base, searchShare: shareAt(budget) });
+    const r2 = recommendedBudget({ ...base, searchShare: shareAt(r1.monthly) });
+    return { ...r2, share: shareAt(r2.monthly) };
+  })();
+  const [allGroups, setAllGroups] = useState(false);
+  // Группы спроса: сначала услуги и аудитории (они в итоге), потом смежные и проблемы
+  const LAYER_ORDER = ["service", "audience", "adjacent", "problem"];
+  const demandGroups = demand?.summary ? [...demand.summary.groups].sort((a, b) => LAYER_ORDER.indexOf(a.layer) - LAYER_ORDER.indexOf(b.layer)) : [];
 
   // Сбор спроса: каждый POST продвигает его (до ~40 с), пока не готово. Не блокирует страницу; кабинет поменялся — заново
   const accKey = usable.map((a) => `${a.id}:${a.status}`).join(",");
@@ -412,6 +429,65 @@ export function LaunchWizard(p: Props) {
         ) : null}
       </Section>
 
+      <Section id="demand" title="Спрос и запросы" done={demand?.status === "done"} active={hasAccounts} note={hasAccounts ? undefined : "После кабинета"}>
+        {!hasAccounts ? (
+          <p className="text-muted leading-relaxed text-sm">Подключите кабинет — соберём по Wordstat, сколько людей ищут ваши услуги в вашем городе, и только потом посчитаем бюджет и прогноз.</p>
+        ) : !demand || demand.status === "running" ? (
+          <div className="grid gap-2" aria-live="polite">
+            <p className="font-semibold inline-flex items-center gap-2"><Loader2 size={16} className="spin shrink-0" /> Собираем запросы и спрос по Wordstat…</p>
+            {demand?.progress.total ? (
+              <div className="max-w-md">
+                <div className="h-1.5 rounded-full bg-line overflow-hidden"><div className="h-full bg-ink rounded-full transition-all" style={{ width: `${Math.round((demand.progress.done / Math.max(demand.progress.total, 1)) * 100)}%` }} /></div>
+                <div className="text-xs text-muted mt-1">{demand.progress.done} из {demand.progress.total} {plural(demand.progress.total, "фразы", "фраз", "фраз")} · отчёты Яндекса готовятся до минуты</div>
+              </div>
+            ) : null}
+            <p className="text-sm text-muted leading-relaxed max-w-2xl">Сначала узнаём, сколько людей ищут ваши услуги и какими словами, — по этим данным считаем бюджет и прогноз ниже.</p>
+          </div>
+        ) : demand.status === "done" && demand.summary ? (
+          <div className="grid gap-4" aria-live="polite">
+            <div>
+              <div className="text-sm text-ink-2">Спрос {demand.cityIn}</div>
+              <div className="mt-0.5"><span className="text-3xl font-extrabold">~{approx(demand.summary.total)}</span> <span className="font-semibold">{plural(round2(demand.summary.total), "запрос", "запроса", "запросов")} в месяц</span></div>
+              <p className="text-xs text-ink-2 mt-1 leading-relaxed max-w-2xl">
+                {demand.source === "demo" ? <><b className="font-semibold">Демо-данные</b> — с кабинетом Директа здесь будет Wordstat.</> : <><b className="font-semibold text-good">Данные Wordstat</b> за прошлый месяц.</>}{" "}
+                В итоге — только запросы об услугах, без «фото», «обучения» и других нецелевых; запросы о проблемах и смежных специалистах показаны отдельно и в итог не входят.
+              </p>
+              {demand.note ? <p className="text-xs text-muted mt-1">{demand.note}</p> : null}
+            </div>
+            <ul className="grid gap-2 sm:grid-cols-2">
+              {(allGroups ? demandGroups : demandGroups.slice(0, 6)).map((g, i) => (
+                <li key={i} className="rounded-xl border border-line p-3 min-w-0">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <div className="font-semibold min-w-0 [overflow-wrap:anywhere]">{g.name}</div>
+                    <div className="text-sm font-semibold whitespace-nowrap">{g.demand === null ? <span className="text-faint font-normal">нет данных</span> : `~${approx(g.demand)} в мес.`}</div>
+                  </div>
+                  {g.layer !== "service" ? <div className="text-xs text-muted">{LAYER_ITEM[g.layer]}{g.layer === "problem" || g.layer === "adjacent" ? " · не входит в итог" : ""}</div> : null}
+                  {g.top.length ? (
+                    <ul className="mt-1.5 grid gap-0.5 text-xs text-ink-2">
+                      {g.top.map((t) => (
+                        <li key={t.phrase} className="flex justify-between gap-3"><span className="min-w-0 truncate">{t.phrase}</span><span className="whitespace-nowrap text-muted">{fmt(t.shows)}</span></li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+            {demand.summary.groups.length > 6 ? (
+              <button type="button" className="btn btn-ghost btn-sm justify-self-start" onClick={() => setAllGroups(!allGroups)}>{allGroups ? "Свернуть" : `Показать все группы (${demand.summary.groups.length})`}</button>
+            ) : null}
+          </div>
+        ) : (
+          <div className="rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2" aria-live="polite">
+            <TriangleAlert size={16} className="shrink-0 mt-0.5" />
+            <div className="grid gap-1">
+              <b>Спрос по Wordstat получить не удалось.</b>
+              <span>{demand.note ?? "Wordstat не вернул данных."}</span>
+              <span className="text-ink-2">Запросы подберём по вашим услугам, а прогноз в бюджете ниже — грубая оценка по нише.</span>
+            </div>
+          </div>
+        )}
+      </Section>
+
       <Section id="budget" title="Бюджет в месяц" done={false} active={hasAccounts} note={hasAccounts ? undefined : "После кабинета"}>
         <div className="grid lg:grid-cols-[minmax(0,1fr)_20rem] gap-6">
           <div>
@@ -451,17 +527,25 @@ export function LaunchWizard(p: Props) {
             {hasAccounts && (!demand || demand.status === "running") ? (
               <div className="text-sm text-ink-2 flex items-center gap-2 pb-3 border-b border-ink/10">
                 <Loader2 size={14} className="spin shrink-0" />
-                <span>Считаем спрос по Wordstat…{demand?.progress.total ? ` ${demand.progress.done} из ${demand.progress.total} фраз` : ""}</span>
+                <span>Ждём спрос по Wordstat — пока грубая оценка</span>
               </div>
             ) : demandReady !== null && demand ? (
-              <div className="pb-3 border-b border-ink/10">
-                <div className="text-sm text-ink-2">Спрос {demand.cityIn}</div>
-                <div className="mt-0.5"><span className="text-2xl font-extrabold">~{approx(demandReady)}</span> <span className="font-semibold">{plural(round2(demandReady), "запрос", "запроса", "запросов")} в месяц</span></div>
-                <div className="text-xs text-ink-2 mt-1 leading-relaxed">
-                  {demand.source === "demo" ? <><b className="font-semibold">Демо-данные</b> — с кабинетом Директа здесь будет Wordstat.</> : <><b className="font-semibold text-good">Данные Wordstat</b> за прошлый месяц.</>}{" "}
-                  Только запросы об услугах, без «фото», «обучения» и других нецелевых.
+              <div className="pb-3 border-b border-ink/10 grid gap-2">
+                <div className="text-sm text-ink-2">
+                  Спрос {demand.cityIn}: <b className="text-ink">~{approx(demandReady)}</b> {plural(round2(demandReady), "запрос", "запроса", "запросов")} в месяц{" "}
+                  <span className="text-xs">({demand.source === "demo" ? "демо-данные" : "Wordstat"})</span>
                 </div>
-                {demand.note ? <div className="text-xs text-muted mt-1">{demand.note}</div> : null}
+                {rec && Math.abs(rec.monthly - budget) / Math.max(budget, 1) > 0.1 ? (
+                  <div className="rounded-lg bg-white/70 p-3 grid gap-2">
+                    <div className="text-sm leading-snug">
+                      Чтобы забрать почти весь спрос на поиске, хватит <b className="whitespace-nowrap">~{fmt(rec.monthly)} ₽</b> в месяц{rec.monthly < budget ? " — сейчас поиску выделено больше, чем он потратит" : ""}.
+                    </div>
+                    <div className="text-xs text-ink-2 leading-relaxed">~{fmt(rec.clicks)} {plural(rec.clicks, "клик", "клика", "кликов")} по ~{fmt(rec.cpc)} ₽ ≈ {approx(rec.search)} ₽ на поиск — его доля {Math.round(rec.share * 100)}% бюджета. Оценка.</div>
+                    <button type="button" className="btn btn-primary btn-sm justify-self-start" onClick={() => saveBudget(rec.monthly)} disabled={!hasAccounts}>Поставить {fmt(rec.monthly)} ₽</button>
+                  </div>
+                ) : rec ? (
+                  <div className="text-xs text-good font-semibold">Бюджет подходит под спрос: поиск заберёт почти весь спрос.</div>
+                ) : null}
               </div>
             ) : null}
             <div>

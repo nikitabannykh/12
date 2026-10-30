@@ -36,12 +36,13 @@ export function parseWordstatInfo(r: any): WordstatPhrase {
       .map((x: any) => ({ phrase: String(x?.Phrase ?? x?.phrase ?? "").trim(), shows: Math.max(0, Number(x?.Shows ?? x?.shows ?? 0) || 0) }))
       .filter((x) => x.phrase);
   const phrase = String(r?.Phrase ?? r?.phrase ?? "").trim();
-  const searchedWith = items(r?.SearchedWith);
-  // Первая строка SearchedWith — сама фраза со всеми запросами; если её нет (формат поменялся) — берём самую частую
+  const searchedWith = items(r?.SearchedWith ?? r?.searchedWith);
+  // Всего запросов — строка SearchedWith с самой фразой (Яндекс может нормализовать её написание), иначе первая строка:
+  // она и есть фраза целиком; пустой список — 0
   const norm = (s: string) => s.toLowerCase().replace(/ё/g, "е").replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
   const self = searchedWith.find((x) => norm(x.phrase) === norm(phrase));
-  const shows = self?.shows ?? Math.max(0, ...searchedWith.map((x) => x.shows));
-  return { phrase, shows, searchedWith };
+  const shows = self?.shows ?? searchedWith[0]?.shows ?? 0;
+  return { phrase: phrase || searchedWith[0]?.phrase || "", shows, searchedWith };
 }
 
 const MICRO = 1_000_000;
@@ -173,6 +174,59 @@ const notDraft = (e: { Code: number; Message: string; Details?: string }) =>
 /** Ошибка API Директа (json.error) — запрос отклонён целиком; иначе транспорт (сеть, таймаут, не-JSON) и исход неизвестен */
 const isApiError = (e: unknown) => e instanceof PlatformError && !!e.detail && typeof e.detail === "object" && "error_code" in (e.detail as object);
 
+
+/**
+ * ID объявлений, ключевых фраз и т. п. в Директе бывают 19-значными (1925601344670434674) — больше 2^53:
+ * обычный JSON.parse/Number их искажает, и Директ отвечает «Объект не найден». Длинные целые из ответа читаем
+ * строками, а в запрос отправляем как есть (BigInt → цифры без кавычек).
+ */
+export function bigParse(text: string): any {
+  // Проходим текст, помня, внутри ли мы строки: длинные числа вне строк оборачиваем в кавычки
+  let out = "", i = 0, inStr = false;
+  while (i < text.length) {
+    const ch = text[i];
+    if (inStr) {
+      out += ch;
+      if (ch === "\\") { out += text[i + 1] ?? ""; i += 2; continue; }
+      if (ch === '"') inStr = false;
+      i++;
+      continue;
+    }
+    if (ch === '"') { inStr = true; out += ch; i++; continue; }
+    if (ch === "-" || (ch >= "0" && ch <= "9")) {
+      let j = i + 1;
+      while (j < text.length && /[0-9.eE+-]/.test(text[j])) j++;
+      const num = text.slice(i, j);
+      out += /^-?\d{16,}$/.test(num) ? `"${num}"` : num;
+      i = j;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return JSON.parse(out);
+}
+export function bigStringify(x: unknown): string {
+  // BigInt и строки из одних цифр длиной от 16 (ID, прочитанные bigParse) уходят числом, как ждёт Директ
+  return JSON.stringify(x, (_k, v) => (typeof v === "bigint" || (typeof v === "string" && /^\d{16,}$/.test(v)) ? `__BIGINT__${v}` : v)).replace(/"__BIGINT__(-?\d+)"/g, "$1");
+}
+/** ID Директа для запроса: длинный — BigInt (без потери точности), короткий — число */
+export const did = (x: unknown): number => {
+  const t = String(x ?? "").trim();
+  return (/^-?\d{16,}$/.test(t) ? BigInt(t) : Number(t)) as unknown as number;
+};
+
+/** Праздники: показываем в обычные часы (Директ требует StartHour/EndHour, если не останавливать показы в праздники) */
+export function holidaysFrom(schedule: string[]) {
+  let from = 24, to = 0;
+  for (const row of schedule) {
+    const coef = row.split(",").slice(1).map(Number);
+    coef.forEach((c, h) => { if (c > 0) { from = Math.min(from, h); to = Math.max(to, h + 1); } });
+  }
+  if (from >= to) { from = 0; to = 24; }
+  return { SuspendOnHolidays: "NO", BidPercent: 100, StartHour: from, EndHour: to };
+}
+
 export class YandexDirect implements PlatformClient, WordstatReports {
   platform = "yandex" as const;
   constructor(private token: string, private clientLogin?: string) {}
@@ -192,12 +246,12 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     const res = await fetch(`${API()}/${service}`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ method, params }),
+      body: bigStringify({ method, params }),
     });
     const text = await res.text();
     let json: any;
     try {
-      json = JSON.parse(text);
+      json = bigParse(text);
     } catch {
       throw new PlatformError("yandex", `Директ ответил не JSON (${res.status})`, text.slice(0, 500));
     }
@@ -292,7 +346,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
         if (built.length) {
           try {
             const res = await this.call("ads", "add", {
-              Ads: built.map(({ b }) => ({ AdGroupId: Number(groupExt), ResponsiveAd: { ...b.ad, ...Object.fromEntries(b.optional.map(([k, , v]) => [k, v])) } })),
+              Ads: built.map(({ b }) => ({ AdGroupId: did(groupExt), ResponsiveAd: { ...b.ad, ...Object.fromEntries(b.optional.map(([k, , v]) => [k, v])) } })),
             });
             batch = (res.AddResults ?? []) as DirectItemResult[];
           } catch (e) {
@@ -333,10 +387,10 @@ export class YandexDirect implements PlatformClient, WordstatReports {
    * среди объявлений группы, которых мы ещё не знаем. Результат — в формате AddResults (нет совпадения — пустой элемент).
    */
   private async findCreated(groupExt: string, ads: AdSpec[], knownIds: Set<string>): Promise<DirectItemResult[]> {
-    const res = await this.call("ads", "get", { SelectionCriteria: { AdGroupIds: [Number(groupExt)] }, FieldNames: ["Id"], ResponsiveAdFieldNames: ["Titles"] });
+    const res = await this.call("ads", "get", { SelectionCriteria: { AdGroupIds: [did(groupExt)] }, FieldNames: ["Id"], ResponsiveAdFieldNames: ["Titles"] });
     const pool = ((res?.Ads ?? []) as any[])
       .filter((a) => !knownIds.has(String(a.Id)))
-      .map((a) => ({ id: Number(a.Id), title: String((a.ResponsiveAd?.Titles?.Items ?? a.ResponsiveAd?.Titles ?? [])[0] ?? "") }));
+      .map((a) => ({ id: did(a.Id), title: String((a.ResponsiveAd?.Titles?.Items ?? a.ResponsiveAd?.Titles ?? [])[0] ?? "") }));
     return ads.map((ad) => {
       const i = pool.findIndex((x) => x.title === ad.title.trim());
       return i < 0 ? {} : { Id: pool.splice(i, 1)[0].id };
@@ -360,14 +414,14 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   /** Черновики — на модерацию (sync: объявление осталось DRAFT, например прошлая отправка не прошла) */
   async moderateAds(adExts: string[]): Promise<string[]> {
     if (!adExts.length) return [];
-    return (await this.moderate(adExts.map(Number))).warnings;
+    return (await this.moderate(adExts.map(did))).warnings;
   }
 
   /** Включение после запуска: черновики объявлений — на модерацию */
   async activateCampaign(_campaignExt: string, adExts: string[]) {
-    const { bad, warnings } = await this.moderate(adExts.map(Number));
+    const { bad, warnings } = await this.moderate(adExts.map(did));
     if (bad.length && bad.length === adExts.length) {
-      throw new PlatformError("yandex", `Отправка на модерацию: ${bad[0].Errors![0].Message}`, bad[0].Errors);
+      throw new PlatformError("yandex", `Отправка на модерацию: ${bad[0].Errors![0].Message}${bad[0].Errors![0].Details ? ` — ${bad[0].Errors![0].Details}` : ""}`, bad[0].Errors);
     }
     // Часть не ушла — оставшиеся черновиками sync отправит повторно
     for (const w of warnings) console.warn(`[yandex] ${w}`);
@@ -375,7 +429,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
 
   /** Удаляем недосозданную кампанию; если Директ не даёт (уже были показы) — останавливаем */
   async removeCampaign(campaignExt: string) {
-    const sel = { SelectionCriteria: { Ids: [Number(campaignExt)] } };
+    const sel = { SelectionCriteria: { Ids: [did(campaignExt)] } };
     try {
       const res = await this.call("campaigns", "delete", sel);
       this.items(res.DeleteResults, "Удаление кампании");
@@ -463,7 +517,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
         label: "расписание показов по часам работы",
         apply: (c) => {
           c.TimeZone = tt.timeZone;
-          c.TimeTargeting = { Schedule: { Items: tt.schedule }, ConsiderWorkingWeekends: tt.considerWorkingWeekends ? "YES" : "NO", HolidaysSchedule: { SuspendOnHolidays: "NO" } };
+          c.TimeTargeting = { Schedule: { Items: tt.schedule }, ConsiderWorkingWeekends: tt.considerWorkingWeekends ? "YES" : "NO", HolidaysSchedule: holidaysFrom(tt.schedule) };
         },
       });
     }
@@ -511,13 +565,13 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   private async setDemographics(campaignExt: string, list: DemographicsAdjustment[]): Promise<string[]> {
     try {
       const got = await this.call("bidmodifiers", "get", {
-        SelectionCriteria: { CampaignIds: [Number(campaignExt)], Levels: ["CAMPAIGN"], Types: ["DEMOGRAPHICS_ADJUSTMENT"] },
+        SelectionCriteria: { CampaignIds: [did(campaignExt)], Levels: ["CAMPAIGN"], Types: ["DEMOGRAPHICS_ADJUSTMENT"] },
         FieldNames: ["Id", "Type"],
       }).catch(() => null);
       const ids = ((got?.BidModifiers ?? []) as { Id: number }[]).map((x) => x.Id);
       if (ids.length) await this.call("bidmodifiers", "delete", { SelectionCriteria: { Ids: ids } });
       if (!list.length) return [];
-      await this.call("bidmodifiers", "add", { BidModifiers: [{ CampaignId: Number(campaignExt), DemographicsAdjustments: list }] });
+      await this.call("bidmodifiers", "add", { BidModifiers: [{ CampaignId: did(campaignExt), DemographicsAdjustments: list }] });
       return [];
     } catch (e) {
       return [`Возраст и пол: Директ не принял корректировки — ${(e as Error).message}`];
@@ -533,9 +587,9 @@ export class YandexDirect implements PlatformClient, WordstatReports {
       try {
         await this.call("campaigns", "update", {
           Campaigns: [{
-            Id: Number(campaignExt),
+            Id: did(campaignExt),
             ...(tt ? { TimeZone: tt.timeZone } : {}),
-            TimeTargeting: { Schedule: { Items: tt?.schedule ?? all }, ConsiderWorkingWeekends: tt?.considerWorkingWeekends ? "YES" : "NO", HolidaysSchedule: { SuspendOnHolidays: "NO" } },
+            TimeTargeting: { Schedule: { Items: tt?.schedule ?? all }, ConsiderWorkingWeekends: tt?.considerWorkingWeekends ? "YES" : "NO", HolidaysSchedule: holidaysFrom(tt?.schedule ?? all) },
           }],
         });
       } catch (e) {
@@ -545,7 +599,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     const groups = t.groups.filter((g) => g.regionIds.length);
     for (let i = 0; i < groups.length; i += 1000) {
       try {
-        await this.call("adgroups", "update", { AdGroups: groups.slice(i, i + 1000).map((g) => ({ Id: Number(g.groupExt), RegionIds: g.regionIds })) });
+        await this.call("adgroups", "update", { AdGroups: groups.slice(i, i + 1000).map((g) => ({ Id: did(g.groupExt), RegionIds: g.regionIds })) });
       } catch (e) {
         warnings.push(`Регион: ${(e as Error).message}`);
       }
@@ -587,7 +641,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
    * (https://yandex.ru/dev/direct/doc/ru/audiencetargets/add; при автостратегии ставка не нужна, приоритет — обычный).
    */
   private async createGroup(campaignExt: string, g: Pick<GroupSpec, "name" | "regionIds" | "keywords" | "autotargeting" | "retargetingId" | "negatives">, channel: Channel, warnings: string[]) {
-    const group: Record<string, unknown> = { Name: g.name.slice(0, 255), CampaignId: Number(campaignExt), RegionIds: g.regionIds, UnifiedAdGroup: { OfferRetargeting: "NO" } };
+    const group: Record<string, unknown> = { Name: g.name.slice(0, 255), CampaignId: did(campaignExt), RegionIds: g.regionIds, UnifiedAdGroup: { OfferRetargeting: "NO" } };
     // Минус-слова группы (кросс-минусовка): AdGroupAddItem.NegativeKeywords, до 4096 символов вместе (adgroups/add).
     // Не приняли — создаём группу без них: группа важнее
     const neg = groupNegatives(g.negatives ?? []);
@@ -608,13 +662,13 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     const [gi] = this.items(gr.AddResults, `Группа «${g.name}»`, warnings);
     const groupExt = String(gi.Id);
     if (g.retargetingId) {
-      const ar = await this.call("audiencetargets", "add", { AudienceTargets: [{ AdGroupId: Number(groupExt), RetargetingListId: Number(g.retargetingId), StrategyPriority: "NORMAL" }] });
+      const ar = await this.call("audiencetargets", "add", { AudienceTargets: [{ AdGroupId: did(groupExt), RetargetingListId: did(g.retargetingId), StrategyPriority: "NORMAL" }] });
       this.items(ar.AddResults, `Аудитория группы «${g.name}»`, warnings);
       return groupExt;
     }
     const keywords = [...new Set(g.keywords.map((k) => k.trim()).filter(Boolean))].slice(0, 200);
-    const items: Record<string, unknown>[] = keywords.map((Keyword) => ({ Keyword, AdGroupId: Number(groupExt) }));
-    if (g.autotargeting) items.push({ Keyword: "---autotargeting", AdGroupId: Number(groupExt), AutotargetingSettings: autotargetingSettings(channel) });
+    const items: Record<string, unknown>[] = keywords.map((Keyword) => ({ Keyword, AdGroupId: did(groupExt) }));
+    if (g.autotargeting) items.push({ Keyword: "---autotargeting", AdGroupId: did(groupExt), AutotargetingSettings: autotargetingSettings(channel) });
     if (items.length) {
       try {
         const kr = await this.call("keywords", "add", { Keywords: items });
@@ -623,7 +677,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
           const it = items[i];
           if (it.AutotargetingSettings) {
             // Настройки категорий не приняты — включаем автотаргетинг как раньше, со всеми категориями
-            const retry = await this.call("keywords", "add", { Keywords: [{ Keyword: "---autotargeting", AdGroupId: Number(groupExt) }] }).catch(() => null);
+            const retry = await this.call("keywords", "add", { Keywords: [{ Keyword: "---autotargeting", AdGroupId: did(groupExt) }] }).catch(() => null);
             warnings.push(`Автотаргетинг группы «${g.name}»: Директ не принял исключение конкурентов и широких запросов — ${r.Errors[0].Message}${retry ? "; включили со всеми категориями" : ""}`);
           } else warnings.push(`Фраза «${it.Keyword}» не добавлена: ${r.Errors[0].Message}`);
         }
@@ -659,7 +713,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   async deduplicateKeywords(items: { id: number; keyword: string }[]): Promise<{ update: { id: number; keyword: string }[]; remove: number[] }> {
     const res = await this.call("keywordsresearch", "deduplicate", { Keywords: items.map((x) => ({ Id: x.id, Keyword: x.keyword })), Operation: ["MERGE_DUPLICATES"] });
     return {
-      update: ((res?.Update ?? []) as { Id: number; Keyword: string }[]).map((u) => ({ id: Number(u.Id), keyword: u.Keyword })),
+      update: ((res?.Update ?? []) as { Id: number; Keyword: string }[]).map((u) => ({ id: did(u.Id), keyword: u.Keyword })),
       remove: ((res?.Delete?.Ids ?? []) as number[]).map(Number),
     };
   }
@@ -671,6 +725,9 @@ export class YandexDirect implements PlatformClient, WordstatReports {
    * {"data": …} или {"error_code", "error_str", "error_detail"}. Ошибки — PlatformError с detail.error_code
    * (31 — уже 5 отчётов, 152 — не хватает баллов, 53 — токен не подходит).
    */
+  /** Последние сырые ответы v4 по методам (первые 500 символов) — для диагностики сбора спроса */
+  v4Raw: Record<string, string> = {};
+
   async callV4<T = any>(method: string, param?: unknown): Promise<T> {
     const body: Record<string, unknown> = { method, token: this.token, locale: "ru" };
     if (param !== undefined) body.param = param;
@@ -678,41 +735,54 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     try {
       res = await fetch(V4(), { method: "POST", headers: { "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
     } catch (e) {
-      throw new PlatformError("yandex", `Директ v4: нет ответа (${(e as Error).name})`);
+      this.v4Raw[method] = `(нет ответа: ${(e as Error).name}: ${(e as Error).message})`.slice(0, 500);
+      throw new PlatformError("yandex", `Директ v4 ${method}: нет ответа (${(e as Error).name})`);
     }
     const text = await res.text();
+    // Токен в ответах не встречается, но на всякий случай вырезаем его из образца
+    this.v4Raw[method] = `HTTP ${res.status}: ${text.split(this.token).join("***").slice(0, 500)}`;
     let json: any;
     try {
       json = JSON.parse(text);
     } catch {
-      throw new PlatformError("yandex", `Директ v4 ответил не JSON (${res.status})`, text.slice(0, 300));
+      throw new PlatformError("yandex", `Директ v4 ${method} ответил не JSON (HTTP ${res.status})`, { sample: text.slice(0, 300) });
     }
-    if (json && json.error_code !== undefined && json.error_code !== null) {
-      const err = new PlatformError("yandex", `Директ v4 ${method}: ${json.error_str ?? "ошибка"}${json.error_detail ? ` — ${json.error_detail}` : ""} (код ${json.error_code})`, { error_code: Number(json.error_code), error_str: json.error_str, error_detail: json.error_detail });
+    // Ошибка v4 — на верхнем уровне ({error_code, error_str, error_detail}); на всякий случай смотрим и в error/data
+    const errObj = json?.error_code !== undefined && json?.error_code !== null ? json : json?.error && typeof json.error === "object" ? json.error : null;
+    if (errObj) {
+      const code = Number(errObj.error_code ?? errObj.code);
+      const str = errObj.error_str ?? errObj.error_string ?? errObj.message ?? "ошибка";
+      const detail = errObj.error_detail ?? errObj.detail;
+      const err = new PlatformError("yandex", `Директ v4 ${method}: ${str}${detail ? ` — ${detail}` : ""} (код ${Number.isFinite(code) ? code : "?"})`, { error_code: code, error_str: str, error_detail: detail });
       err.httpStatus = res.status;
       throw err;
     }
-    return json?.data as T;
+    if (!res.ok) throw new PlatformError("yandex", `Директ v4 ${method}: HTTP ${res.status}`, { sample: text.slice(0, 300) });
+    return (json && typeof json === "object" && "data" in json ? json.data : json) as T;
   }
 
   /** CreateNewWordstatReport: до 10 фраз, регионы GeoID. Возвращает ID отчёта */
   async wordstatCreate(phrases: string[], regionIds: number[]): Promise<number> {
-    const id = await this.callV4<number>("CreateNewWordstatReport", { Phrases: phrases.slice(0, 10), GeoID: regionIds.filter((r) => r) });
-    const n = Number(id);
-    if (!Number.isFinite(n) || n <= 0) throw new PlatformError("yandex", "Директ v4: не вернул номер отчёта Wordstat", id);
+    const data = await this.callV4<any>("CreateNewWordstatReport", { Phrases: phrases.slice(0, 10), GeoID: regionIds.filter((r) => r) });
+    const n = Number(typeof data === "object" && data ? data.ReportID ?? data.ReportId ?? data.Id ?? data.id : data);
+    if (!Number.isFinite(n) || n <= 0) throw new PlatformError("yandex", "Директ v4 CreateNewWordstatReport: в ответе нет номера отчёта", { sample: JSON.stringify(data)?.slice(0, 300) });
     return n;
   }
 
   /** GetWordstatReportList: до 5 отчётов пользователя со статусом Done | Pending | Failed */
   async wordstatList(): Promise<{ id: number; status: string }[]> {
-    const list = await this.callV4<any[]>("GetWordstatReportList");
-    return (Array.isArray(list) ? list : []).map((r) => ({ id: Number(r?.ReportID ?? r?.ReportId ?? r?.Id), status: String(r?.StatusReport ?? r?.Status ?? "") }));
+    const data = await this.callV4<any>("GetWordstatReportList");
+    const list = Array.isArray(data) ? data : Array.isArray(data?.Reports) ? data.Reports : Array.isArray(data?.reports) ? data.reports : [];
+    return list
+      .map((r: any) => ({ id: Number(r?.ReportID ?? r?.ReportId ?? r?.reportID ?? r?.Id ?? r?.id), status: String(r?.StatusReport ?? r?.Status ?? r?.status ?? "") }))
+      .filter((r: { id: number }) => Number.isFinite(r.id));
   }
 
   /** GetWordstatReport: по каждой фразе отчёта — SearchedWith [{Phrase, Shows}] (Shows — запросов за прошлый месяц) */
   async wordstatGet(reportId: number): Promise<WordstatPhrase[]> {
-    const data = await this.callV4<any[]>("GetWordstatReport", reportId);
-    return (Array.isArray(data) ? data : []).map((r) => parseWordstatInfo(r));
+    const data = await this.callV4<any>("GetWordstatReport", reportId);
+    const rows = Array.isArray(data) ? data : Array.isArray(data?.Report) ? data.Report : Array.isArray(data?.Phrases) ? data.Phrases : data && typeof data === "object" && (data.Phrase || data.SearchedWith) ? [data] : [];
+    return rows.map((r: any) => parseWordstatInfo(r));
   }
 
   async wordstatDelete(reportId: number): Promise<void> {
@@ -727,7 +797,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
       const id = await this.wordstatCreate(phrases.slice(i, i + 10), regionIds);
       try {
         for (;;) {
-          const st = (await this.wordstatList()).find((r) => r.id === id)?.status;
+          const st = (await this.wordstatList()).find((r) => String(r.id) === String(id))?.status;
           if (st === "Done") break;
           if (st === "Failed" || !st) throw new PlatformError("yandex", "Директ v4: отчёт Wordstat не сформировался");
           if (Date.now() + 3000 > until) throw new PlatformError("yandex", "Директ v4: отчёт Wordstat не успел сформироваться");
@@ -758,9 +828,9 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   async businessProfile(orgId: string | number) {
     const key = String(orgId);
     if (this.businessCache.has(key)) return this.businessCache.get(key)!;
-    const res = await this.call("businesses", "get", { SelectionCriteria: { Ids: [Number(orgId)] }, FieldNames: ["Id", "Name", "Address", "ProfileUrl", "IsPublished"] });
+    const res = await this.call("businesses", "get", { SelectionCriteria: { Ids: [did(orgId)] }, FieldNames: ["Id", "Name", "Address", "ProfileUrl", "IsPublished"] });
     const b = (res?.Businesses ?? []).find((x: any) => String(x.Id) === key) ?? (res?.Businesses ?? [])[0];
-    const out = b ? { id: Number(b.Id), name: String(b.Name ?? ""), isPublished: b.IsPublished === "YES", address: b.Address ?? null, profileUrl: b.ProfileUrl ?? null } : null;
+    const out = b ? { id: did(b.Id), name: String(b.Name ?? ""), isPublished: b.IsPublished === "YES", address: b.Address ?? null, profileUrl: b.ProfileUrl ?? null } : null;
     this.businessCache.set(key, out);
     return out;
   }
@@ -820,7 +890,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     if (hashes.length) body.AdImageHashes = hashes;
     if (extIds.length) body.AdExtensionIds = extIds;
     if (sitelinkSetId) body.SitelinkSetId = sitelinkSetId;
-    if (ad.marking) body.ErirAdDescription = ad.marking.slice(0, 255);
+    // ErirAdDescription Директ больше не принимает («Параметр устарел»): маркировку своей рекламы он делает сам
     // Необязательные поля: если Директ отклонит объявление, убираем их по одному (сначала профиль организации),
     // чтобы из-за одного поля не терять остальные
     const optional: [string, string, unknown][] = [];
@@ -838,7 +908,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
       const extra = Object.fromEntries(optional.map(([k, , v]) => [k, v]));
       let err: unknown = null;
       try {
-        res = await this.call("ads", "add", { Ads: [{ AdGroupId: Number(groupExt), ResponsiveAd: { ...b.ad, ...extra } }] });
+        res = await this.call("ads", "add", { Ads: [{ AdGroupId: did(groupExt), ResponsiveAd: { ...b.ad, ...extra } }] });
         const e = (res.AddResults as DirectItemResult[] | undefined)?.[0]?.Errors?.[0];
         if (e) err = new Error(`${e.Message}${e.Details ? ` — ${e.Details}` : ""}`);
       } catch (e) {
@@ -858,7 +928,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     const businessId = await this.linkableBusiness(ctx.orgId, warnings);
     const b = await this.buildResponsiveAd(ad, warnings, businessId);
     const adExt = await this.addBuilt(groupExt, ad, b, warnings);
-    if (moderate) warnings.push(...(await this.moderate([Number(adExt)])).warnings);
+    if (moderate) warnings.push(...(await this.moderate([did(adExt)])).warnings);
     return { adExt, imageRef: b.imageRef };
   }
 
@@ -869,7 +939,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   /** В архив (ads.archive): освобождает место среди 3 неархивных объявлений группы */
   async archiveAds(adExts: string[]) {
     if (!adExts.length) return;
-    const res = await this.call("ads", "archive", { SelectionCriteria: { Ids: adExts.map(Number) } });
+    const res = await this.call("ads", "archive", { SelectionCriteria: { Ids: adExts.map(did) } });
     for (const r of (res?.ArchiveResults ?? []) as DirectItemResult[]) {
       if (r.Errors?.length && !/архив|archiv/i.test(r.Errors[0].Message + (r.Errors[0].Details ?? ""))) {
         throw new PlatformError("yandex", `Архивирование объявления: ${r.Errors[0].Message}`, r.Errors);
@@ -880,19 +950,19 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   /** ads.delete: Директ удаляет только объявления без статистики (черновики, отклонённые без показов) */
   async deleteAds(adExts: string[]) {
     if (!adExts.length) return [];
-    const res = await this.call("ads", "delete", { SelectionCriteria: { Ids: adExts.map(Number) } });
+    const res = await this.call("ads", "delete", { SelectionCriteria: { Ids: adExts.map(did) } });
     return ((res?.DeleteResults ?? []) as DirectItemResult[]).map((r, i) => (r.Id && !r.Errors?.length ? String(r.Id ?? adExts[i]) : null)).filter((x): x is string => !!x);
   }
 
   async setCampaignActive(campaignExt: string, active: boolean) {
-    await this.call("campaigns", active ? "resume" : "suspend", { SelectionCriteria: { Ids: [Number(campaignExt)] } });
+    await this.call("campaigns", active ? "resume" : "suspend", { SelectionCriteria: { Ids: [did(campaignExt)] } });
   }
 
   async setAdsActive(adExts: string[], active: boolean) {
     if (!adExts.length) return;
     if (active) {
       // Архивное объявление (робот освобождал место в группе) сначала достаём из архива — иначе resume его не включит
-      const got = await this.call("ads", "get", { SelectionCriteria: { Ids: adExts.map(Number) }, FieldNames: ["Id", "State"] }).catch(() => null);
+      const got = await this.call("ads", "get", { SelectionCriteria: { Ids: adExts.map(did) }, FieldNames: ["Id", "State"] }).catch(() => null);
       const archived = ((got?.Ads ?? []) as { Id: number; State: string }[]).filter((a) => a.State === "ARCHIVED").map((a) => a.Id);
       if (archived.length) {
         const ur = await this.call("ads", "unarchive", { SelectionCriteria: { Ids: archived } });
@@ -901,7 +971,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
         }
       }
     }
-    const res = await this.call("ads", active ? "resume" : "suspend", { SelectionCriteria: { Ids: adExts.map(Number) } });
+    const res = await this.call("ads", active ? "resume" : "suspend", { SelectionCriteria: { Ids: adExts.map(did) } });
     const results = (active ? res.ResumeResults : res.SuspendResults) as DirectItemResult[] | undefined;
     // Повторная остановка уже остановленного объявления — не ошибка
     for (const r of results ?? []) {
@@ -913,14 +983,14 @@ export class YandexDirect implements PlatformClient, WordstatReports {
 
   async setBudget(campaignExt: string, p: { channel: Channel; weeklyBudget: number; strategy: Strategy; goalId?: number | null; bidCeiling?: number | null }) {
     const res = await this.call("campaigns", "update", {
-      Campaigns: [{ Id: Number(campaignExt), UnifiedCampaign: { BiddingStrategy: this.strategy(p.channel, p.weeklyBudget, p.strategy, p.goalId, p.bidCeiling) } }],
+      Campaigns: [{ Id: did(campaignExt), UnifiedCampaign: { BiddingStrategy: this.strategy(p.channel, p.weeklyBudget, p.strategy, p.goalId, p.bidCeiling) } }],
     });
     this.items(res.UpdateResults, "Бюджет кампании");
   }
 
   async setNegativeKeywords(campaignExt: string, words: string[]) {
     const res = await this.call("campaigns", "update", {
-      Campaigns: [{ Id: Number(campaignExt), NegativeKeywords: words.length ? { Items: words.slice(0, 1000) } : null }],
+      Campaigns: [{ Id: did(campaignExt), NegativeKeywords: words.length ? { Items: words.slice(0, 1000) } : null }],
     });
     this.items(res.UpdateResults, "Минус-слова");
   }
@@ -950,7 +1020,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   async updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string; titles?: string[]; texts?: string[] }) {
     let titles = t.titles, texts = t.texts;
     if (!titles || !texts) {
-      const cur = await this.call("ads", "get", { SelectionCriteria: { Ids: [Number(adExt)] }, FieldNames: ["Id"], ResponsiveAdFieldNames: ["Titles", "Texts"] }).catch(() => null);
+      const cur = await this.call("ads", "get", { SelectionCriteria: { Ids: [did(adExt)] }, FieldNames: ["Id"], ResponsiveAdFieldNames: ["Titles", "Texts"] }).catch(() => null);
       const ra = cur?.Ads?.[0]?.ResponsiveAd;
       const oldTitles: string[] = ra?.Titles?.Items ?? ra?.Titles ?? [];
       const oldTexts: string[] = ra?.Texts?.Items ?? ra?.Texts ?? [];
@@ -959,10 +1029,10 @@ export class YandexDirect implements PlatformClient, WordstatReports {
       texts ??= oldTexts.slice(1);
     }
     const r = responsiveTexts({ title: t.title, title2: t.title2, text: t.text, titles, texts });
-    const res = await this.call("ads", "update", { Ads: [{ Id: Number(adExt), ResponsiveAd: { Titles: r.titles, Texts: r.texts } }] });
+    const res = await this.call("ads", "update", { Ads: [{ Id: did(adExt), ResponsiveAd: { Titles: r.titles, Texts: r.texts } }] });
     this.items(res.UpdateResults, "Текст объявления");
     // Текст уже изменён — ошибку отправки не бросаем (черновик sync отправит повторно), но и не глотаем молча
-    for (const w of (await this.moderate([Number(adExt)])).warnings) console.warn(`[yandex] ${w}`);
+    for (const w of (await this.moderate([did(adExt)])).warnings) console.warn(`[yandex] ${w}`);
   }
 
   /** Реальное состояние кампаний: State ON — показывается; иначе причина из StatusClarification (деньги, модерация) */
@@ -1084,7 +1154,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     const all: any[] = [];
     for (let offset = 0, p = 0; p < 10; p++) {
       const res = await this.call("keywordbids", "get", {
-        SelectionCriteria: { CampaignIds: [Number(campaignExt)] },
+        SelectionCriteria: { CampaignIds: [did(campaignExt)] },
         FieldNames: ["KeywordId", "AdGroupId", "ServingStatus"],
         SearchFieldNames: ["Bid", "AuctionBids"],
         Page: { Limit: 2000, Offset: offset },
@@ -1166,7 +1236,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
 
   /** Запрещённые площадки кампании (campaigns.get → ExcludedSites) */
   async getExcludedSites(campaignExt: string): Promise<string[]> {
-    const res = await this.call("campaigns", "get", { SelectionCriteria: { Ids: [Number(campaignExt)] }, FieldNames: ["Id", "ExcludedSites"] });
+    const res = await this.call("campaigns", "get", { SelectionCriteria: { Ids: [did(campaignExt)] }, FieldNames: ["Id", "ExcludedSites"] });
     return ((res?.Campaigns?.[0]?.ExcludedSites?.Items ?? []) as string[]).map(String);
   }
 
@@ -1174,7 +1244,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   async setExcludedSites(campaignExt: string, sites: string[]) {
     if (sites.length > MAX_EXCLUDED_SITES) throw new PlatformError("yandex", `Директ принимает не больше ${MAX_EXCLUDED_SITES} запрещённых площадок в кампании`);
     const res = await this.call("campaigns", "update", {
-      Campaigns: [{ Id: Number(campaignExt), ExcludedSites: sites.length ? { Items: sites } : null }],
+      Campaigns: [{ Id: did(campaignExt), ExcludedSites: sites.length ? { Items: sites } : null }],
     });
     this.items(res.UpdateResults, "Запрещённые площадки");
   }
@@ -1188,12 +1258,12 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     const unified: Record<string, unknown> = { CounterIds: { Items: counterIds.slice(0, 100) } };
     if (goalId) unified.PriorityGoals = { Items: [{ GoalId: goalId, Value: micros(1000), Operation: "SET" }] };
     try {
-      const res = await this.call("campaigns", "update", { Campaigns: [{ Id: Number(campaignExt), UnifiedCampaign: unified }] });
+      const res = await this.call("campaigns", "update", { Campaigns: [{ Id: did(campaignExt), UnifiedCampaign: unified }] });
       this.items(res.UpdateResults, "Счётчик Метрики", warnings);
     } catch (e) {
       if (!goalId) throw e;
       warnings.push(`Ключевая цель не принята (${(e as Error).message}) — привязали только счётчик`);
-      const res = await this.call("campaigns", "update", { Campaigns: [{ Id: Number(campaignExt), UnifiedCampaign: { CounterIds: unified.CounterIds } }] });
+      const res = await this.call("campaigns", "update", { Campaigns: [{ Id: did(campaignExt), UnifiedCampaign: { CounterIds: unified.CounterIds } }] });
       this.items(res.UpdateResults, "Счётчик Метрики", warnings);
     }
     return warnings;

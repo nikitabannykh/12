@@ -79,7 +79,7 @@ export type DemandSummary = {
   total: number;
   /** То же без вычета нецелевых — для пояснения */
   raw: number;
-  groups: { name: string; layer: Layer; demand: number | null }[];
+  groups: { name: string; layer: Layer; demand: number | null; top: { phrase: string; shows: number }[] }[];
   /** Сколько фраз с данными (из всех семян) */
   phrases: number;
   seeds: number;
@@ -98,7 +98,18 @@ const lookup = (results: Record<string, WordstatPhrase>, p: string) => results[p
 export function summarizeDemand(seedGroups: DemandSeedGroup[], results: Record<string, WordstatPhrase>, negatives: string[]): DemandSummary {
   const groups = seedGroups.map((g) => {
     const vals = g.seeds.map((s) => lookup(results, s)).filter((r): r is WordstatPhrase => !!r).map((r) => targetedShows(r, negatives));
-    return { name: g.name, layer: g.layer, demand: vals.length ? Math.max(...vals) : null };
+    // Самые частые целевые запросы группы (с самой фразой-семенем) — показать владельцу, что именно ищут
+    const seen = new Set<string>();
+    const top = g.seeds
+      .map((s) => lookup(results, s))
+      .filter((r): r is WordstatPhrase => !!r)
+      .flatMap((r) => r.searchedWith)
+      .filter((t) => t.shows > 0 && !offTarget(t.phrase, negatives))
+      .sort((a, b) => b.shows - a.shows)
+      .filter((t) => (seen.has(phraseKey(t.phrase)) ? false : (seen.add(phraseKey(t.phrase)), true)))
+      .slice(0, 3)
+      .map((t) => ({ phrase: displayKeyword(t.phrase), shows: t.shows }));
+    return { name: g.name, layer: g.layer, demand: vals.length ? Math.max(...vals) : null, top };
   });
   const seeds = new Map<string, { r: WordstatPhrase; words: string[] }>();
   for (const g of seedGroups) {
