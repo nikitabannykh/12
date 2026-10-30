@@ -198,7 +198,7 @@ export default async function Dashboard() {
           <a href="https://direct.yandex.ru/" target="_blank" rel="noreferrer" className="btn btn-primary btn-sm">Открыть Директ <ExternalLink size={14} /></a>
           <a href="https://yandex.ru/support/tooltips-direct/moderation-warning-data-forms.html" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm bg-white">Как отправить</a>
         </StopBanner>
-      ) : blockedAds.length ? (
+      ) : blockedAds.length && !platformStopped.length ? (
         <StopBanner tone="warn" title="Часть объявлений не показывается" text={`Модерацию прошли, но ${pl(blockedAds.length, "объявление сейчас не показывается", "объявления сейчас не показываются", "объявлений сейчас не показываются")}. Причина — у каждого объявления в разделе «Реклама».`}>
           <Link href="/app/ads" className="btn btn-ghost btn-sm bg-white">Смотреть объявления</Link>
         </StopBanner>

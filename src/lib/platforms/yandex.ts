@@ -1070,7 +1070,19 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     const out: Record<string, AdState> = {};
     for (let i = 0; i < adExts.length; i += 1000) {
       const chunk = adExts.slice(i, i + 1000).map(did);
-      const res = await this.call("ads", "get", { SelectionCriteria: { Ids: chunk }, FieldNames: ["Id", "State", "Status", "StatusClarification"] });
+      const res = await this.call("ads", "get", { SelectionCriteria: { Ids: chunk }, FieldNames: ["Id", "AdGroupId", "State", "Status", "StatusClarification"] });
+      // Ограничения показа по законодательству (медицина и т. п.): Директ пишет их не у объявления, а у группы —
+      // RestrictedRegionIds. Закрыты все регионы группы → показов нет, пока не проверят документы (лицензию)
+      const groupIds = [...new Set(((res.Ads ?? []) as { AdGroupId?: unknown }[]).map((a) => String(a.AdGroupId ?? "")).filter(Boolean))];
+      const restricted = new Set<string>();
+      for (let g = 0; g < groupIds.length; g += 1000) {
+        const gr = await this.call("adgroups", "get", { SelectionCriteria: { Ids: groupIds.slice(g, g + 1000).map(did) }, FieldNames: ["Id", "RegionIds", "RestrictedRegionIds"] }).catch(() => null);
+        for (const x of (gr?.AdGroups ?? []) as { Id: unknown; RegionIds?: number[]; RestrictedRegionIds?: { Items?: number[] } | number[] | null }[]) {
+          const rr = Array.isArray(x.RestrictedRegionIds) ? x.RestrictedRegionIds : x.RestrictedRegionIds?.Items ?? [];
+          const regions = (x.RegionIds ?? []).filter((r) => Number(r) > 0);
+          if (rr.length && (!regions.length || regions.every((r) => rr.map(String).includes(String(r))))) restricted.add(String(x.Id));
+        }
+      }
       for (const a of res.Ads ?? []) {
         // State: ON — показывается; SUSPENDED — остановлено владельцем (suspend); OFF — не показывается по другой причине
         // (черновик, модерация, отклонено, кампания остановлена или нет денег); OFF_BY_MONITORING — сайт недоступен;
@@ -1093,9 +1105,10 @@ export class YandexDirect implements PlatformClient, WordstatReports {
           // Модерацию прошло, но показов нет. Причину берём из пояснения Директа; «Не показывается: …» — признак для интерфейса
           status = "active";
           const why = String(a.StatusClarification ?? "");
+          const docs = restricted.has(String(a.AdGroupId ?? "")) || /документ|лиценз|регион/i.test(why);
           note = a.State === "OFF_BY_MONITORING" ? "Не показывается: сайт недоступен (мониторинг Директа)"
-            : /документ|лиценз|регион/i.test(why) ? `Не показывается: Директ просит документы (для медицинских услуг — лицензию). Отправьте их в кабинете Директа: объявление → «Отправить документы»${why ? `. Директ: «${why}»` : ""}`
-            : `Не показывается: ${why || "кампания остановлена или на счёте нет денег"}`;
+            : docs ? "Не показывается: Директ просит документы — показы в регионе запрещены, пока не проверят лицензию. Отправьте её в кабинете Директа: объявление → «Отправить документы»"
+            : `Не показывается: ${why && !/^принят/i.test(why) ? why : "кампания сейчас не показывается — причина в статусе кампании"}`;
         }
         out[String(a.Id)] = { status, note };
       }
