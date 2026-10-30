@@ -12,6 +12,7 @@ import { recentChanges } from "@/lib/engine/ops";
 import { getDb, schema } from "@/lib/db";
 import { ActionButton } from "@/components/client";
 import { ChangeItem } from "@/components/ChangeItem";
+import { ModerationCheck } from "@/components/ModerationCheck";
 import { DaysChart, Delta } from "@/components/charts";
 import { ClientsWeek } from "@/components/ClientsWeek";
 import { CHANNEL_NAME } from "@/lib/platforms";
@@ -148,9 +149,30 @@ export default async function Dashboard() {
           <Link href="/app/settings" className="btn btn-ghost btn-sm bg-white">Настройки</Link>
         </StopBanner>
       ))}
-      {!stopped.length && !active && moderation ? (
-        <StopBanner tone="info" title="Объявления на модерации" text="Площадки проверяют объявления — обычно в течение суток. Показы начнутся сразу после проверки, ничего делать не нужно." />
-      ) : null}
+      {moderation ? <ModerationCheck /> : null}
+      {moderation || rejected ? (() => {
+        const total = moderation + active + rejected;
+        const noMoney = health.balances.some((x) => x.daysLeft === 0 && !x.demo);
+        return (
+          <section className={`card p-5 sm:p-6 ${rejected ? "border-warn/40" : ""}`} aria-live="polite">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-lg font-bold">
+                {moderation ? "Модерация: " : "Модерация закончилась: "}прошли {active} из {total}{rejected ? `, отклонено ${rejected}` : ""}
+              </h2>
+              {moderation ? <span className="text-sm text-muted">на проверке ещё {pl(moderation, "объявление", "объявления", "объявлений")}</span> : null}
+            </div>
+            <div className="mt-3 h-2.5 rounded-full bg-paper overflow-hidden flex" aria-hidden>
+              <span className="h-full bg-good" style={{ width: `${(active / Math.max(1, total)) * 100}%` }} />
+              <span className="h-full bg-bad" style={{ width: `${(rejected / Math.max(1, total)) * 100}%` }} />
+            </div>
+            <p className="text-sm text-ink-2 mt-3 leading-relaxed">
+              {moderation ? "Площадки обычно проверяют объявления в течение суток. Статусы обновляются, когда вы открываете кабинет (не чаще раза в 10 минут), и каждое утро. " : ""}
+              {rejected ? <>Что делать с отклонёнными: робот перепишет их при следующей проверке, причина и подсказки — в разделе <Link href="/app/ads" className="underline">«Реклама»</Link>. </> : null}
+              {noMoney ? "Показы начнутся, когда пополните рекламный кабинет." : !moderation && !rejected ? "" : "Прошедшие проверку объявления показываются сразу."}
+            </p>
+          </section>
+        );
+      })() : null}
 
       {lowBalance.map((x) => (
         <StopBanner key={x.accountId} tone={x.daysLeft === 0 ? "bad" : "warn"} icon="wallet" title={x.daysLeft === 0 ? "Кончились деньги в рекламном кабинете" : "Скоро кончатся деньги в рекламном кабинете"} text={`${balanceText(x)}${x.demo ? " В демо пополнение происходит само." : " Пополнение — в самом кабинете площадки."} Пока денег мало, робот не поднимает недельные лимиты — расход ниже плана из-за остатка, а не из-за площадки.`}>

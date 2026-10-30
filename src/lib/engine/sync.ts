@@ -31,7 +31,9 @@ function isAuthError(e: unknown) {
  * включённой (не удалась уборка после прерванного запуска) — её расход должен попасть в stats_daily,
  * иначе защита бюджета его не увидит.
  */
-export async function syncBusiness(b: Business) {
+/** only: "states" — только статусы модерации (быстро: для проверки при открытии кабинета, без отчётов) */
+export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) {
+  const statesOnly = opts.only === "states";
   const db = await getDb();
   const camps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["active", "paused", "error", "creating", "ready"])));
   const errors: string[] = [];
@@ -75,7 +77,7 @@ export async function syncBusiness(b: Business) {
     const campByExt = new Map(list.map((c) => [c.externalId!, c]));
 
     // Статистика
-    await step("Статистика", async () => {
+    if (!statesOnly) await step("Статистика", async () => {
       const goalIds = Object.values(b.goalIds ?? {}).length ? [b.goalIds.lead].filter(Boolean) as number[] : [];
       const rows = await client.getStats(list.map((c) => c.externalId!), from, to, goalIds);
       // Обращения с нашего счётчика по объявлениям (utm_content = ID объявления на площадке).
@@ -118,7 +120,7 @@ export async function syncBusiness(b: Business) {
     });
 
     // Аукцион на поиске: сколько стоит каждое место в выдаче (раз в сутки)
-    if (client.getAuction) {
+    if (client.getAuction && !statesOnly) {
       const getAuction = client.getAuction.bind(client);
       await step("Аукцион", async () => {
         const groups = await db.select().from(schema.adGroups).where(inArray(schema.adGroups.campaignId, list.map((c) => c.id)));
@@ -140,7 +142,7 @@ export async function syncBusiness(b: Business) {
     }
 
     // Идёт ли показ на самом деле: включённая кампания может стоять (нет денег, модерация, лимит)
-    if (client.getCampaignDelivery) {
+    if (client.getCampaignDelivery && !statesOnly) {
       const getDelivery = client.getCampaignDelivery.bind(client);
       await step("Состояние показа", async () => {
         const active = list.filter((c) => c.status === "active" && c.externalId);
