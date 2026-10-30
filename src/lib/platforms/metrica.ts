@@ -100,6 +100,152 @@ export async function metricaVisitors(token: string, counterId: number, from: st
   }
 }
 
+// ─── Reporting API: визиты из рекламы ─────────────────────────────────────
+
+/**
+ * Ошибка Reporting API с причиной: scope — у токена нет прав на статистику (нужен metrika:read — подключить Яндекс заново),
+ * counter — счётчик не найден или не принадлежит этому аккаунту, quota — исчерпан лимит запросов (повторим позже),
+ * bad_request — Метрика не знает группировку/метрику (например, разбивку Директа), api — прочее.
+ */
+export type MetricaErrorCode = "scope" | "counter" | "quota" | "bad_request" | "api";
+export class MetricaError extends Error {
+  constructor(public code: MetricaErrorCode, message: string, public httpStatus?: number) {
+    super(message);
+  }
+}
+
+const STAT_URL = () => (process.env.METRIKA_STAT_URL || "https://api-metrika.yandex.net/stat/v1").replace(/\/$/, "");
+/**
+ * Модель атрибуции в названиях группировок (ym:s:<attribution>DirectClickOrder и т. п.). По умолчанию last — источник
+ * самого визита: так визит из объявления считается за этим объявлением, а повторный заход из закладок — нет.
+ */
+const ATTR = () => (process.env.METRIKA_ATTRIBUTION || "last").replace(/[^a-z_]/gi, "") || "last";
+const PAGE = 10_000;
+const MAX_ROWS = 60_000;
+
+function metricaError(status: number, j: any): MetricaError {
+  const e = j?.errors?.[0] ?? {};
+  const msg = String(e.message || j?.message || `HTTP ${status}`);
+  const type = String(e.error_type || "");
+  if (status === 429 || /quota/i.test(type) || /quota|лимит запросов/i.test(msg)) return new MetricaError("quota", `Метрика: исчерпан лимит запросов (${msg})`, status);
+  if (status === 401 || status === 403 || /access|scope|token|доступ/i.test(type)) return new MetricaError("scope", `Метрика: нет доступа к статистике (${msg})`, status);
+  if (status === 404) return new MetricaError("counter", `Метрика: счётчик не найден (${msg})`, status);
+  if (status === 400) return new MetricaError("bad_request", `Метрика: ${msg}`, status);
+  return new MetricaError("api", `Метрика: ${msg}`, status);
+}
+
+type Dim = { name: string | null; id: string | null };
+type RawRow = { dims: Dim[]; metrics: number[] };
+
+/** Запрос к /stat/v1/data постранично (offset в Метрике начинается с 1) */
+async function statRows(token: string, params: Record<string, string>): Promise<RawRow[]> {
+  const out: RawRow[] = [];
+  for (let offset = 1; out.length < MAX_ROWS; offset += PAGE) {
+    const q = new URLSearchParams({ ...params, limit: String(PAGE), offset: String(offset), accuracy: "full" });
+    let res: Response;
+    try {
+      res = await fetch(`${STAT_URL()}/data?${q}`, { headers: { Authorization: `OAuth ${token}` } });
+    } catch (e) {
+      throw new MetricaError("api", `Метрика не ответила: ${(e as Error).message}`);
+    }
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw metricaError(res.status, j);
+    const rows = (j?.data ?? []) as { dimensions?: any[]; metrics?: number[] }[];
+    for (const r of rows) {
+      out.push({
+        dims: (r.dimensions ?? []).map((d) => ({ name: d?.name != null ? String(d.name) : null, id: d?.direct_id != null ? String(d.direct_id) : d?.id != null ? String(d.id) : null })),
+        metrics: (r.metrics ?? []).map((m) => Number(m) || 0),
+      });
+    }
+    const total = Number(j?.total_rows ?? 0);
+    if (!rows.length || offset + PAGE > total) break;
+  }
+  return out;
+}
+
+/** Цели, достижения которых забираем: ключ → ID цели (обращение и «Записался») */
+export type MetricaGoals = Partial<Record<"lead" | "booked", number>>;
+
+const BASE_METRICS = ["ym:s:visits", "ym:s:bounceRate", "ym:s:avgVisitDurationSeconds", "ym:s:pageDepth"];
+
+function metricsFor(goals: MetricaGoals) {
+  const keys = (Object.entries(goals).filter(([, id]) => Number(id) > 0) as [string, number][]).slice(0, 5);
+  return { names: [...BASE_METRICS, ...keys.map(([, id]) => `ym:s:goal${id}reaches`)].join(","), keys: keys.map(([k]) => k) };
+}
+
+/** Визиты, отказы, длительность и цели одной строки отчёта */
+export type MetricaNumbers = { visits: number; bounces: number; durationSum: number; pageviews: number; goals: Record<string, number> };
+function numbers(m: number[], keys: string[]): MetricaNumbers {
+  const visits = Math.round(m[0] ?? 0);
+  const goals: Record<string, number> = {};
+  keys.forEach((k, i) => (goals[k] = Math.round(m[4 + i] ?? 0)));
+  return {
+    visits,
+    // bounceRate — в процентах
+    bounces: Math.min(visits, Math.round((visits * (m[1] ?? 0)) / 100)),
+    durationSum: Math.round(visits * (m[2] ?? 0)),
+    pageviews: Math.round(visits * (m[3] ?? 0) * 10) / 10,
+    goals,
+  };
+}
+
+/** Строка по дням: кампания / объявление / фраза — как их отдала Метрика (ID площадки или значения UTM-меток) */
+export type MetricaDayRow = MetricaNumbers & { day: string; via: "direct" | "utm"; utmSource?: string; campaignKey: string; adKey: string; phrase: string };
+
+/**
+ * Визиты из Директа по дням с разбивкой «кампания → объявление → условие показа (фраза)» — данные Директа в Метрике
+ * (ym:s:<attribution>DirectClickOrder / DirectClickBanner / DirectPhraseOrCond). Работает, если счётчик привязан к кампании.
+ */
+export async function metricaDirectDaily(token: string, counterId: number, from: string, to: string, goals: MetricaGoals): Promise<MetricaDayRow[]> {
+  const a = ATTR();
+  const m = metricsFor(goals);
+  const rows = await statRows(token, {
+    ids: String(counterId), date1: from, date2: to, metrics: m.names,
+    dimensions: ["ym:s:date", `ym:s:${a}DirectClickOrder`, `ym:s:${a}DirectClickBanner`, `ym:s:${a}DirectPhraseOrCond`].join(","),
+  });
+  return rows
+    .filter((r) => r.dims[1]?.id || r.dims[1]?.name)
+    .map((r) => ({
+      day: String(r.dims[0]?.name ?? ""), via: "direct" as const,
+      campaignKey: r.dims[1]?.id ?? r.dims[1]?.name ?? "", adKey: r.dims[2]?.id ?? "", phrase: r.dims[3]?.name ?? "",
+      ...numbers(r.metrics, m.keys),
+    }));
+}
+
+/**
+ * Запасной путь и VK: визиты по UTM-меткам наших ссылок (withUtm): utm_source = yandex | vk, utm_campaign — ID кампании,
+ * utm_content — ID объявления, utm_term — ключевая фраза (только Директ).
+ */
+export async function metricaUtmDaily(token: string, counterId: number, from: string, to: string, goals: MetricaGoals): Promise<MetricaDayRow[]> {
+  const a = ATTR();
+  const m = metricsFor(goals);
+  const rows = await statRows(token, {
+    ids: String(counterId), date1: from, date2: to, metrics: m.names,
+    dimensions: ["ym:s:date", `ym:s:${a}UTMSource`, `ym:s:${a}UTMCampaign`, `ym:s:${a}UTMContent`, `ym:s:${a}UTMTerm`].join(","),
+    filters: `ym:s:${a}UTMSource=.('yandex','vk')`,
+  });
+  return rows.map((r) => ({
+    day: String(r.dims[0]?.name ?? ""), via: "utm" as const, utmSource: String(r.dims[1]?.name ?? ""),
+    campaignKey: String(r.dims[2]?.name ?? ""), adKey: String(r.dims[3]?.name ?? ""), phrase: String(r.dims[4]?.name ?? ""),
+    ...numbers(r.metrics, m.keys),
+  }));
+}
+
+/** Срез за период: кампания × площадка РСЯ (site) или кампания × поисковый запрос (query) */
+export type MetricaSliceRow = MetricaNumbers & { campaignKey: string; key: string };
+
+export async function metricaDirectSlices(token: string, counterId: number, from: string, to: string, goals: MetricaGoals, kind: "site" | "query"): Promise<MetricaSliceRow[]> {
+  const a = ATTR();
+  const m = metricsFor(goals);
+  const rows = await statRows(token, {
+    ids: String(counterId), date1: from, date2: to, metrics: m.names,
+    dimensions: [`ym:s:${a}DirectClickOrder`, kind === "site" ? `ym:s:${a}DirectPlatform` : `ym:s:${a}DirectSearchPhrase`].join(","),
+  });
+  return rows
+    .filter((r) => (r.dims[0]?.id || r.dims[0]?.name) && r.dims[1]?.name)
+    .map((r) => ({ campaignKey: r.dims[0]?.id ?? r.dims[0]?.name ?? "", key: String(r.dims[1]?.name ?? ""), ...numbers(r.metrics, m.keys) }));
+}
+
 /** ClientID Метрики и yclid Директа — только цифры (до 25), иначе не храним. Нужны для офлайн-конверсий «Записался». */
 export function metrikaIds(d: { cid?: unknown; yclid?: unknown }) {
   const ok = (v: unknown) => (typeof v === "string" || typeof v === "number") && /^\d{1,25}$/.test(String(v)) ? String(v) : null;

@@ -2,6 +2,7 @@ import "server-only";
 import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import { syncBusiness, syncOfflineConversions } from "./sync";
+import { syncMetrica } from "./metrica-sync";
 import { checkBalances } from "./balance";
 import { optimizeBusiness } from "./optimizer";
 import { accountsFor, launchStalled, publishStep, type LaunchPlan } from "./launch";
@@ -63,6 +64,9 @@ export async function runBusiness(businessId: string, opts: { optimize?: boolean
     // Баланс кабинетов и офлайн-конверсии «Записался» в Метрику — их ошибки не мешают роботу
     const bal = await checkBalances(b).catch((e) => ({ balances: [], errors: [errorText(e)] }));
     log.push(...bal.errors);
+    // Визиты и отказы из Метрики — для решений робота, когда обращений мало. Сбой не мешает остальному
+    const mt = await syncMetrica(b).catch((e) => ({ log: [`Метрика: ${errorText(e)}`] }));
+    log.push(...mt.log);
     const off = await syncOfflineConversions(b).catch((e) => ({ uploaded: 0, error: errorText(e) }));
     if (off.error) log.push(`офлайн-конверсии: ${off.error}`);
     else if (off.uploaded) log.push(`офлайн-конверсии: загружено в Метрику ${off.uploaded}`);

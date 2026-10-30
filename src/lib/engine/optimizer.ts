@@ -26,6 +26,11 @@ import { vkAdContext } from "./regions";
 import type { AdSpec, Channel, PlatformClient } from "../platforms/types";
 import { formatOf, isRetarget, waitingAudience } from "../channels";
 import { retargetStep } from "./retarget";
+import { addQ, bounceRate, PROXY, proxyCompare, proxyVerdict, proxyVetoes, QUERY_RULE, qualityOf, SITE_RULE, zeroQ, type ProxyResult, type QStat } from "./quality";
+import { phraseKeyOf, sliceKey } from "./metrica-sync";
+import { geoTerms, phraseKey, stem } from "./semantics";
+import { MAX_EXCLUDED_SITES } from "../platforms/yandex";
+import type { QueryRow } from "../platforms/types";
 
 /**
  * Робот-оптимизатор. Работает по расписанию (каждые несколько часов) и принимает решения
@@ -79,6 +84,14 @@ type Ctx = {
   won: Experiment[];
   /** Свои фото владельца (не ИИ), старые первыми — робот предпочитает их иллюстрациям */
   ownPhotos: string[];
+  /** Метрика: визиты и отказы по объявлениям и фразам (по дням), срезы по площадкам и запросам (за 30 дней) */
+  metrica: {
+    any: boolean;
+    byAd: Map<string, { day: string; q: QStat }[]>;
+    phrases: Map<string, { phrase: string; day: string; q: QStat; leadGoal: boolean }[]>;
+    /** `${campaignId}|site|${площадка}` и `${campaignId}|query|${запрос}` */
+    slices: Map<string, QStat>;
+  };
   /**
    * Осторожный режим: статистику какого-то кабинета не удалось обновить (например, истёк токен VK), и расход за последние
    * дни может быть не виден. Защита бюджета тогда только снижает лимиты и ставит на паузу — ничего не поднимает и не включает.
@@ -88,6 +101,11 @@ type Ctx = {
 
 function sumAd(cx: Ctx, adId: string, since?: string): S {
   return (cx.statByAd.get(adId) ?? []).filter((r) => !since || r.day >= since).reduce((acc, r) => add(acc, r.s), zero());
+}
+
+/** Визиты и отказы объявления по Метрике с даты since */
+function qAd(cx: Ctx, adId: string, since?: string): QStat {
+  return (cx.metrica.byAd.get(adId) ?? []).filter((r) => !since || r.day >= since).reduce((acc, r) => addQ(acc, r.q), zeroQ());
 }
 
 function adLabel(ad: Ad) {
@@ -150,7 +168,19 @@ async function load(b: Business): Promise<Ctx> {
   const images = new Map(imgRows.map((r) => [r.id, { layout: r.layout, photoId: r.prompt && r.prompt.startsWith("img_") ? r.prompt : null, width: r.width, height: r.height }]));
   const tvRows = stats.filter((r) => r.tvWeighted > 0).map((r) => ({ campaignId: r.campaignId, day: String(r.day), impressions: r.impressions, tvWeighted: r.tvWeighted }));
   const ownPhotos = await ownerPhotoIds(b.id);
-  return { b, now, campaigns, groups, ads, experiments, statByAd, tvRows, log: [], newAds: 0, protected: prot, ownerStatus, history, firstDay, images, won: [], ownPhotos, safe: false };
+  // Метрика (engine/metrica-sync): нет данных — робот работает как раньше, по кликам и обращениям
+  const mrows = await db.select().from(schema.metricaDaily).where(and(eq(schema.metricaDaily.businessId, b.id), gte(schema.metricaDaily.day, since)));
+  const byAd = new Map<string, { day: string; q: QStat }[]>();
+  const phrases = new Map<string, { phrase: string; day: string; q: QStat; leadGoal: boolean }[]>();
+  for (const r of mrows) {
+    const q = { visits: r.visits, bounces: r.bounces, leads: r.leads };
+    if (r.adId) byAd.set(r.adId, [...(byAd.get(r.adId) ?? []), { day: String(r.day), q }]);
+    if (r.phrase) phrases.set(r.campaignId, [...(phrases.get(r.campaignId) ?? []), { phrase: r.phrase, day: String(r.day), q, leadGoal: "lead" in (r.goals ?? {}) }]);
+  }
+  const srows = await db.select().from(schema.metricaSlices).where(eq(schema.metricaSlices.businessId, b.id));
+  const slices = new Map(srows.map((r) => [`${r.campaignId}|${r.kind}|${r.key}`, { visits: r.visits, bounces: r.bounces, leads: r.leads }]));
+  const metrica = { any: mrows.length > 0 || srows.length > 0, byAd, phrases, slices };
+  return { b, now, campaigns, groups, ads, experiments, statByAd, tvRows, log: [], newAds: 0, protected: prot, ownerStatus, history, firstDay, images, won: [], ownPhotos, safe: false, metrica };
 }
 
 /** Объявление сейчас участвует в идущем тесте (поле experimentId после теста не учитываем) */
@@ -834,30 +864,54 @@ async function resolveExperiments(cx: Ctx) {
       cx.log.push(`Тест ${ex.id}: ничья — мало показов`);
       continue;
     }
-    // Если заявок достаточно — сравниваем по заявкам на клик, иначе по CTR
+    // Если заявок достаточно — сравниваем по заявкам на клик. Если мало — по качеству визитов из Метрики
+    // (визиты без отказа на переход), когда переходов достаточно и сигнал уверенный; иначе — по кликабельности (CTR).
+    // Качество визитов никогда не перебивает обращения: при обратной картине по обращениям оно не используется.
     const byConv = sc.conversions + sv.conversions >= 10;
-    const p = byConv ? probBetter(sv.conversions, sv.clicks, sc.conversions, sc.clicks) : probBetter(sv.clicks, sv.impressions, sc.clicks, sc.impressions);
-    const metric = byConv ? "заявок на 100 переходов" : "кликов на 100 показов";
-    const rate = (s: S) => (byConv ? (s.clicks ? (s.conversions / s.clicks) * 100 : 0) : ctr(s) * 100);
+    const qv = qAd(cx, variant.id, since), qc = qAd(cx, control.id, since);
+    const px: ProxyResult | null = byConv ? null : proxyCompare({ clicks: sv.clicks, conversions: sv.conversions, q: qv }, { clicks: sc.clicks, conversions: sc.conversions, q: qc });
+    const pxVerdict = px ? proxyVerdict(px) : null;
+    const mode: "conv" | "proxy" | "ctr" = byConv ? "conv" : pxVerdict ? "proxy" : "ctr";
+    const p = mode === "conv" ? probBetter(sv.conversions, sv.clicks, sc.conversions, sc.clicks) : mode === "proxy" ? px!.p : probBetter(sv.clicks, sv.impressions, sc.clicks, sc.impressions);
+    const metric = mode === "conv" ? "заявок на 100 переходов" : mode === "proxy" ? "качественных визитов на 100 переходов" : "кликов на 100 показов";
+    const rV = mode === "conv" ? (sv.clicks ? (sv.conversions / sv.clicks) * 100 : 0) : mode === "proxy" ? px!.rateV * 100 : ctr(sv) * 100;
+    const rC = mode === "conv" ? (sc.clicks ? (sc.conversions / sc.clicks) * 100 : 0) : mode === "proxy" ? px!.rateC * 100 : ctr(sc) * 100;
     const fmt = (x: number) => x.toFixed(1).replace(".", ",");
     const hyp = ex.hypothesis.replace(/\.$/, "");
     let status: "won" | "lost" | "draw" | null = null;
-    if (p >= 0.9) status = "won";
+    if (mode === "proxy") status = pxVerdict;
+    else if (p >= 0.9) status = "won";
     else if (p <= 0.1) status = "lost";
     else if (ageDays >= MAX_TEST_DAYS) status = "draw";
+    // Кликабельность выбрала победителя, а по Метрике уверенно наоборот: люди с «победителя» чаще сразу уходят — ждём
+    if (mode === "ctr" && (status === "won" || status === "lost") && proxyVetoes(px, status)) {
+      if (ageDays < MAX_TEST_DAYS) {
+        cx.log.push(`Тест ${ex.id}: по кликабельности ${status === "won" ? "новый" : "прежний"} вариант лучше, а по качеству визитов — наоборот; ждём данных`);
+        continue;
+      }
+      status = "draw";
+    }
     if (!status) continue;
 
     // При равенстве оставляем прежний вариант
-    const loser = status === "won" ? control : status === "lost" ? variant : rate(sv) > rate(sc) ? control : variant;
+    const loser = status === "won" ? control : status === "lost" ? variant : rV > rC ? control : variant;
     const winner = loser.id === control.id ? variant : control;
+    const days = Math.max(1, Math.round(ageDays));
+    const proxyWhy = mode === "proxy"
+      ? `Обращений пока мало (${sv.conversions + sc.conversions} на оба варианта), поэтому сравнили, сколько людей после клика действительно смотрели сайт (по Метрике — визиты без отказа). За ${pl(days, "день", "дня", "дней")}: качественных визитов ${pct(px!.rateV, 0)} против ${pct(px!.rateC, 0)} у прежнего варианта (${pl(sv.clicks, "переход", "перехода", "переходов")} и ${num(sc.clicks)}), вероятность, что новый лучше, — ${Math.round(p * 100)}%.`
+      : "";
     const result =
-      status === "won"
-        ? `Гипотеза подтвердилась: новый вариант даёт ${fmt(rate(sv))} ${metric} против ${fmt(rate(sc))} (вероятность, что он лучше, — ${Math.round(p * 100)}%).`
-        : status === "lost"
-          ? `Гипотеза не подтвердилась: новый вариант даёт ${fmt(rate(sv))} ${metric} против ${fmt(rate(sc))}. Оставили прежний.`
-          : `За ${pl(MAX_TEST_DAYS, "день", "дня", "дней")} явного победителя нет (${fmt(rate(sv))} против ${fmt(rate(sc))} ${metric}). Оставили тот, что немного лучше.`;
+      mode === "proxy"
+        ? status === "won"
+          ? `Гипотеза подтвердилась по качеству визитов. ${proxyWhy}`
+          : `Гипотеза не подтвердилась: ${proxyWhy.charAt(0).toLowerCase()}${proxyWhy.slice(1)} Оставили прежний.`
+        : status === "won"
+          ? `Гипотеза подтвердилась: новый вариант даёт ${fmt(rV)} ${metric} против ${fmt(rC)} (вероятность, что он лучше, — ${Math.round(p * 100)}%).`
+          : status === "lost"
+            ? `Гипотеза не подтвердилась: новый вариант даёт ${fmt(rV)} ${metric} против ${fmt(rC)}. Оставили прежний.`
+            : `За ${pl(MAX_TEST_DAYS, "день", "дня", "дней")} явного победителя нет (${fmt(rV)} против ${fmt(rC)} ${metric}). Оставили тот, что немного лучше.`;
     await act(
-      { businessId: cx.b.id, actor: "robot", kind: "test_end", title: `Тест завершён: ${status === "won" ? "новый вариант лучше" : status === "lost" ? "старый вариант лучше" : "ничья"}`, reason: `Проверяли: ${hyp}. ${result} ${loser.title === winner.title && ex.kind === "creative" ? `Отключили вариант с ${loser.id === ex.variantId ? "новой" : "прежней"} картинкой, работает вариант с ${winner.id === ex.variantId ? "новой" : "прежней"}.` : `Отключили ${adLabel(loser)}, работает ${adLabel(winner)}.`}`, details: { experimentId: ex.id, p, control: sc, variant: sv } },
+      { businessId: cx.b.id, actor: "robot", kind: "test_end", title: `Тест завершён: ${status === "won" ? "новый вариант лучше" : status === "lost" ? "старый вариант лучше" : "ничья"}`, reason: `Проверяли: ${hyp}. ${result} ${loser.title === winner.title && ex.kind === "creative" ? `Отключили вариант с ${loser.id === ex.variantId ? "новой" : "прежней"} картинкой, работает вариант с ${winner.id === ex.variantId ? "новой" : "прежней"}.` : `Отключили ${adLabel(loser)}, работает ${adLabel(winner)}.`}`, details: { experimentId: ex.id, p, mode, control: sc, variant: sv, ...(mode === "proxy" ? { quality: { control: qc, variant: qv } } : {}) } },
       [{ op: "adStatus", adId: loser.id, status: "paused" }],
     );
     await endExperiment(cx, ex, status, result);
@@ -1184,26 +1238,207 @@ async function addNegatives(cx: Ctx) {
       const [acc] = await db.select().from(schema.adAccounts).where(eq(schema.adAccounts.id, camp.accountId));
       const client = await clientFor(acc);
       if (!client.getSearchQueries) continue;
-      const rows = await client.getSearchQueries([camp.externalId!], isoDay(addDays(cx.now, -14)), isoDay(cx.now));
+      const goalIds = cx.b.goalIds?.lead ? [cx.b.goalIds.lead] : [];
+      const rows = await client.getSearchQueries([camp.externalId!], isoDay(addDays(cx.now, -14)), isoDay(cx.now), goalIds);
       const wasteful = rows.filter((r) => r.clicks > 0).sort((a, b) => b.cost - a.cost);
       const found = await pickNegativeWords(cx.b, wasteful.map((r) => r.query), camp.negativeKeywords ?? []);
-      if (!found.length) continue;
       // Минус-слово, которое заблокировало бы нашу же ключевую фразу, не добавляем
       const own = cx.groups.filter((g) => g.campaignId === camp.id).flatMap((g) => g.keywords ?? []);
       const words = found.map((f) => f.word).filter((w) => !own.some((k) => conflicts(w, k))).slice(0, 25);
-      if (!words.length) continue;
-      const waste = wasteful.filter((r) => words.some((w) => r.query.toLowerCase().includes(w))).reduce((s, r) => s + r.cost, 0);
-      await act(
-        { businessId: cx.b.id, actor: "robot", kind: "negatives", title: `Убрали показы по ${pl(words.length, "нецелевому запросу", "нецелевым запросам", "нецелевым запросам")}`, reason: `Посмотрели, что люди искали перед кликом. Часть запросов — не про ваших клиентов: например, «${found[0].example}»${found[1] ? `, «${found[1].example}»` : ""}. ${waste > 0 ? `За 2 недели на такие клики ушло ${rub(waste)}. ` : ""}Добавили минус-слова: ${words.join(", ")}.`, details: { words, examples: found.slice(0, 10) } },
-        [{ op: "addNegatives", campaignId: camp.id, words }],
-      );
-      camp.negativeKeywords = [...new Set([...(camp.negativeKeywords ?? []), ...words])];
-      cx.log.push(`Минус-слова: ${words.length}`);
+      if (words.length) {
+        const waste = wasteful.filter((r) => words.some((w) => r.query.toLowerCase().includes(w))).reduce((s, r) => s + r.cost, 0);
+        await act(
+          { businessId: cx.b.id, actor: "robot", kind: "negatives", title: `Убрали показы по ${pl(words.length, "нецелевому запросу", "нецелевым запросам", "нецелевым запросам")}`, reason: `Посмотрели, что люди искали перед кликом. Часть запросов — не про ваших клиентов: например, «${found[0].example}»${found[1] ? `, «${found[1].example}»` : ""}. ${waste > 0 ? `За 2 недели на такие клики ушло ${rub(waste)}. ` : ""}Добавили минус-слова: ${words.join(", ")}.`, details: { words, examples: found.slice(0, 10) } },
+          [{ op: "addNegatives", campaignId: camp.id, words }],
+        );
+        camp.negativeKeywords = [...new Set([...(camp.negativeKeywords ?? []), ...words])];
+        cx.log.push(`Минус-слова: ${words.length}`);
+      }
+      // По данным: запросы с кликами и расходом, без обращений, а по Метрике — почти одни отказы
+      await dataNegatives(cx, camp, rows, own);
     } catch (e) {
       cx.log.push(`Минус-слова: ${errorText(e)}`);
     }
   }
   await markJob(cx, "negatives", "ok");
+}
+
+/** Слова запроса, которые не отличают целевой запрос от нецелевого: их не минусуем */
+const NEUTRAL_WORDS = new Set([
+  "рядом", "недорого", "дешево", "дешевле", "цена", "цены", "стоимость", "прайс", "запись", "записаться", "онлайн", "метро", "район", "улица",
+  "отзывы", "лучший", "лучшие", "хороший", "салон", "студия", "мастер", "сколько", "стоит", "где", "круглосуточно", "срочно", "сегодня",
+  "для", "без", "при", "про", "над", "под", "или", "как", "что", "это", "вечером", "утром", "выходные",
+]);
+const queryWords = (q: string) => q.toLowerCase().replace(/ё/g, "е").split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !/^\d+$/.test(w));
+
+/**
+ * Минус-слова по данным: запросы, по которым за 2 недели были клики и расход, но ни одного обращения, а по Метрике
+ * почти все визиты — отказы. Минусуем одно слово, которое отличает такой запрос: не слово наших ключевых фраз, не город
+ * и район, не «цена/рядом/запись» и не слово из запросов, по которым люди обращаются или смотрят сайт.
+ */
+async function dataNegatives(cx: Ctx, camp: Campaign, rows: QueryRow[], own: string[]) {
+  if (!cx.metrica.any || !rows.length) return;
+  const sq = (r: QueryRow) => cx.metrica.slices.get(`${camp.id}|query|${sliceKey("query", r.query)}`);
+  const ownStems = new Set(own.flatMap((k) => queryWords(phraseKeyOf(k))).map(stem));
+  const geo = geoTerms(cx.b);
+  const geoStems = new Set([...geo.city, ...geo.local].flatMap(queryWords).map(stem));
+  const negStems = new Set((camp.negativeKeywords ?? []).flatMap(queryWords).map(stem));
+  // Слова «хороших» запросов: были обращения или люди смотрели сайт — их не трогаем ни в каком виде
+  const goodStems = new Set(
+    rows
+      .filter((r) => (r.conversions ?? 0) > 0 || (sq(r)?.leads ?? 0) > 0 || ((sq(r)?.visits ?? 0) >= QUERY_RULE.minVisits && 1 - bounceRate(sq(r)!) >= 0.5))
+      .flatMap((r) => queryWords(r.query))
+      .map(stem),
+  );
+  const byWord = new Map<string, { clicks: number; cost: number; q: QStat; examples: string[] }>();
+  for (const r of rows) {
+    if (r.clicks < QUERY_RULE.minClicks || r.cost < QUERY_RULE.minCost || (r.conversions ?? 0) > 0) continue;
+    // Запрос уже отсечён минус-словом (в том числе добавленным только что по правилам)
+    if (queryWords(r.query).some((w) => negStems.has(stem(w)))) continue;
+    const q = sq(r);
+    if (!q || q.visits < QUERY_RULE.minVisits || q.leads > 0 || qualityOf(q) / q.visits > QUERY_RULE.maxQuality) continue;
+    const cand = queryWords(r.query)
+      .filter((w) => !NEUTRAL_WORDS.has(w))
+      .filter((w) => { const st = stem(w); return !ownStems.has(st) && !geoStems.has(st) && !negStems.has(st) && !goodStems.has(st); })
+      .filter((w) => !own.some((k) => conflicts(w, k)))
+      .sort((a, b) => b.length - a.length);
+    const w = cand[0];
+    if (!w) continue;
+    const cur = byWord.get(w) ?? { clicks: 0, cost: 0, q: zeroQ(), examples: [] };
+    cur.clicks += r.clicks;
+    cur.cost += r.cost;
+    cur.q = addQ(cur.q, q);
+    if (cur.examples.length < 2) cur.examples.push(r.query);
+    byWord.set(w, cur);
+  }
+  const top = [...byWord.entries()].sort((a, b) => b[1].cost - a[1].cost).slice(0, QUERY_RULE.perRun);
+  if (!top.length) return;
+  const words = top.map(([w]) => w);
+  const lines = top.slice(0, 5).map(([, x]) => `«${x.examples[0]}» — ${pl(x.clicks, "клик", "клика", "кликов")}, ${rub(x.cost)}, отказов ${pct(bounceRate(x.q), 0)}`).join("; ");
+  const waste = top.reduce((sum, [, x]) => sum + x.cost, 0);
+  await act(
+    {
+      businessId: cx.b.id, actor: "robot", kind: "negatives",
+      title: `Минус-слова по данным Метрики: ${pl(words.length, "запрос", "запроса", "запросов")} без обращений`,
+      reason: `За 2 недели по этим запросам были клики, но ни одного обращения, а Метрика показывает, что почти все пришедшие сразу уходили со страницы: ${lines}. Всего на них ушло ${rub(waste)}. Добавили минус-слова: ${words.join(", ")}. Слова из запросов, по которым люди обращаются или смотрят сайт, не тронуты.`,
+      details: { words, source: "metrica", examples: top.map(([w, x]) => ({ word: w, queries: x.examples, clicks: x.clicks, cost: Math.round(x.cost), visits: x.q.visits, bounces: x.q.bounces })) },
+    },
+    [{ op: "addNegatives", campaignId: camp.id, words }],
+  );
+  camp.negativeKeywords = [...new Set([...(camp.negativeKeywords ?? []), ...words])];
+  cx.log.push(`Минус-слова по Метрике: ${words.length}`);
+}
+
+// ─── 5б. Поиск: слабые ключевые фразы по качеству визитов ──────────────
+// Обращений по фразе мало, чтобы судить, — смотрим, приходят ли по ней люди, которым интересна страница.
+// Робот фразы не удаляет: отмечает слабую в истории с цифрами, решение — за владельцем.
+
+async function flagWeakPhrases(cx: Ctx) {
+  if (!cx.metrica.any || !(await jobDue(cx, "phrases", 70))) return;
+  const since = isoDay(addDays(cx.now, -30));
+  let flagged = 0;
+  // Одну и ту же фразу отмечаем не чаще раза в 60 дней (история робота в cx.history короче)
+  const db = await getDb();
+  const prevFlags = await db.select({ at: schema.changes.at, details: schema.changes.details }).from(schema.changes).where(and(eq(schema.changes.businessId, cx.b.id), eq(schema.changes.kind, "keywords"), gte(schema.changes.at, addDays(cx.now, -60))));
+  for (const camp of cx.campaigns.filter((c) => c.status === "active" && c.channel === "search" && !cx.protected.has(c.id))) {
+    const rows = (cx.metrica.phrases.get(camp.id) ?? []).filter((r) => r.day >= since);
+    // Без цели «обращение» в Метрике не знаем, были ли обращения по фразе, — не судим
+    if (!rows.some((r) => r.leadGoal)) continue;
+    const own = new Map<string, { g: AdGroup; kw: string }>();
+    for (const g of cx.groups.filter((x) => x.campaignId === camp.id && x.status === "active")) for (const k of g.keywords ?? []) own.set(phraseKey(k), { g, kw: phraseKeyOf(k) });
+    const by = new Map<string, QStat>();
+    for (const r of rows) by.set(r.phrase, addQ(by.get(r.phrase) ?? zeroQ(), r.q));
+    const total = [...by.values()].reduce(addQ, zeroQ());
+    for (const [phrase, q] of by) {
+      if (q.visits < PROXY.phraseMinVisits || q.leads > 0) continue;
+      const m = own.get(phraseKey(phrase));
+      if (!m || cx.protected.has(m.g.id)) continue;
+      const rest = { visits: total.visits - q.visits, bounces: total.bounces - q.bounces, leads: total.leads - q.leads };
+      if (rest.visits < PROXY.phraseMinVisits) continue;
+      const rateP = qualityOf(q) / q.visits, rateR = qualityOf(rest) / rest.visits;
+      if (rateR < rateP * PROXY.phraseRatio) continue;
+      const p = probBetter(qualityOf(rest), rest.visits, qualityOf(q), q.visits);
+      if (p < PROXY.phraseConfidence) continue;
+      const seen = prevFlags.some((h) => (h.details as { campaignId?: string })?.campaignId === camp.id && (h.details as { phrase?: string })?.phrase === m.kw);
+      if (seen) continue;
+      await logChange({
+        businessId: cx.b.id, actor: "robot", kind: "keywords",
+        title: `Слабая ключевая фраза «${m.kw}»`,
+        reason: `За 30 дней по фразе «${m.kw}» (группа «${m.g.name}») пришло ${pl(q.visits, "визит", "визита", "визитов")} и ни одного обращения, а качественных визитов — только ${pct(rateP, 0)}: остальные люди уходили со страницы почти сразу. По другим фразам кампании качественных визитов ${pct(rateR, 0)}${rest.leads ? `, и по ним были обращения (${num(rest.leads)})` : ""}. Разница не случайна (уверенность ${Math.min(99, Math.round(p * 100))}%). Похоже, по этой фразе приходят не те люди. Робот фразу не убирал — её можно уточнить или удалить в кабинете Директа. Если обращения по ней появятся, робот перестанет её отмечать.`,
+        details: { campaignId: camp.id, groupId: m.g.id, phrase: m.kw, quality: q, rest, p },
+      });
+      flagged++;
+      cx.log.push(`Слабая фраза: ${m.kw}`);
+    }
+  }
+  await markJob(cx, "phrases", flagged ? `отмечено ${flagged}` : "без изменений");
+}
+
+// ─── 5в. РСЯ: запрещаем площадки с кликами без качества ───────────────
+
+/** Сервисы Яндекса не запрещаем: Директ их не принимает в ExcludedSites или это поиск и Карты */
+const YANDEX_OWN = /(^|\.)(yandex\.[a-z]+|ya\.ru|dzen\.ru|kinopoisk\.ru|auto\.ru|avia\.yandex)$/i;
+
+async function excludePlacements(cx: Ctx) {
+  if (!(await jobDue(cx, "placements", 70))) return;
+  const from = isoDay(addDays(cx.now, -(SITE_RULE.days - 1))), to = isoDay(cx.now);
+  let did = 0;
+  for (const camp of cx.campaigns.filter((c) => c.status === "active" && c.channel === "network" && c.externalId && !cx.protected.has(c.id))) {
+    try {
+      const { client } = await clientOf(camp);
+      if (!client.getPlacements || !client.setExcludedSites) continue;
+      const rows = await client.getPlacements([camp.externalId!], from, to, cx.b.goalIds?.lead ? [cx.b.goalIds.lead] : []);
+      const bySite = new Map<string, { site: string; clicks: number; cost: number; conversions: number }>();
+      for (const r of rows) {
+        const site = sliceKey("site", r.placement);
+        const cur = bySite.get(site) ?? { site, clicks: 0, cost: 0, conversions: 0 };
+        cur.clicks += r.clicks;
+        cur.cost += r.cost;
+        cur.conversions += r.conversions;
+        bySite.set(site, cur);
+      }
+      const all = [...bySite.values()];
+      const tot = all.reduce((a, x) => ({ clicks: a.clicks + x.clicks, conversions: a.conversions + x.conversions }), { clicks: 0, conversions: 0 });
+      const cr = tot.clicks ? tot.conversions / tot.clicks : 0;
+      const current = client.getExcludedSites ? await client.getExcludedSites(camp.externalId!) : (((camp.meta as { excludedSites?: string[] }).excludedSites) ?? []);
+      const already = new Set(current.map((x) => x.toLowerCase()));
+      const cands = all
+        .filter((x) => !already.has(x.site) && !YANDEX_OWN.test(x.site) && x.clicks >= SITE_RULE.minClicks && x.conversions === 0)
+        .map((x) => ({ ...x, q: cx.metrica.slices.get(`${camp.id}|site|${x.site}`) ?? null }))
+        .filter((x) => (x.q?.leads ?? 0) === 0)
+        .filter((x) =>
+          x.q && x.q.visits >= SITE_RULE.minVisits
+            ? bounceRate(x.q) >= SITE_RULE.bounce
+            // Без Метрики по площадке — только при большом объёме: столько кликов, что при обычной конверсии кампании было бы ≥ 3 обращений
+            : x.clicks >= SITE_RULE.noMetricaClicks && cr * x.clicks >= 3,
+        )
+        .sort((a, b) => b.cost - a.cost);
+      const room = MAX_EXCLUDED_SITES - current.length;
+      if (cands.length && room <= 0) {
+        cx.log.push(`Площадки РСЯ: в «${camp.name}» уже ${MAX_EXCLUDED_SITES} запрещённых — больше Директ не принимает`);
+        continue;
+      }
+      const take = cands.slice(0, Math.min(room, SITE_RULE.perRun));
+      if (!take.length) continue;
+      const line = (x: (typeof take)[number]) => `${x.site} — ${pl(x.clicks, "клик", "клика", "кликов")}, ${rub(x.cost)}${x.q && x.q.visits ? `, отказов ${pct(bounceRate(x.q), 0)}` : ""}`;
+      const waste = take.reduce((a, x) => a + x.cost, 0);
+      const withQ = take.filter((x) => x.q && x.q.visits >= SITE_RULE.minVisits).length;
+      await act(
+        {
+          businessId: cx.b.id, actor: "robot", kind: "placements",
+          title: `Запретили показы на ${pl(take.length, "площадке", "площадках", "площадках")} РСЯ`,
+          reason: `За ${pl(SITE_RULE.days, "день", "дня", "дней")} эти сайты и приложения дали много кликов, но ни одного обращения${withQ ? ", а по Метрике почти все визиты с них — отказы: человек закрывает страницу в первые секунды (так бывает со случайными кликами в играх и приложениях)" : ` — при обычной для кампании доле обращений их было бы хотя бы 3`}: ${take.slice(0, 6).map(line).join("; ")}${take.length > 6 ? ` и ещё ${take.length - 6}` : ""}. Всего на них ушло ${rub(waste)}. Запретили показы на этих площадках — деньги пойдут туда, откуда приходят живые люди.`,
+          details: { campaignId: camp.id, sites: take.map((x) => ({ site: x.site, clicks: x.clicks, cost: Math.round(x.cost), visits: x.q?.visits ?? null, bounces: x.q?.bounces ?? null })) },
+        },
+        [{ op: "excludeSites", campaignId: camp.id, sites: take.map((x) => x.site) }],
+      );
+      did += take.length;
+      cx.log.push(`Площадки РСЯ: запрещено ${take.length}`);
+    } catch (e) {
+      cx.log.push(`Площадки РСЯ: ${errorText(e)}`);
+    }
+  }
+  await markJob(cx, "placements", did ? `запрещено ${did}` : "без изменений");
 }
 
 // ─── 6. Стратегия: клики → заявки ──────────────────────────────────────
@@ -1372,6 +1607,8 @@ export async function optimizeBusiness(b: Business, opts: { safe?: boolean } = {
     ["аудитории", optimizeAudiences],
     ["слои поиска", evaluateLayers],
     ["минус-слова", addNegatives],
+    ["ключевые фразы", flagWeakPhrases],
+    ["площадки РСЯ", excludePlacements],
     ["стратегия", switchStrategy],
     ["бюджет каналов", rebalance],
   ];

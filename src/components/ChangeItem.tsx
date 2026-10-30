@@ -17,7 +17,7 @@ export function when(d: Date) {
 
 const KIND: Record<string, string> = {
   launch: "Запуск", pause: "Отключение", resume: "Включение", budget: "Бюджет", ad_new: "Новое объявление", ad_text: "Текст",
-  negatives: "Минус-слова", test_start: "A/B-тест", test_end: "Итог теста", strategy: "Стратегия", revert: "Отмена", profile: "Описание", settings: "Настройки показа",
+  negatives: "Минус-слова", placements: "Площадки РСЯ", keywords: "Ключевые фразы", test_start: "A/B-тест", test_end: "Итог теста", strategy: "Стратегия", revert: "Отмена", profile: "Описание", settings: "Настройки показа",
 };
 
 /**

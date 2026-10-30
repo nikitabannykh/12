@@ -152,7 +152,11 @@ export type StatRow = {
 export type AuctionTier = { trafficVolume: number; bid: number; price: number };
 export type AuctionRow = { groupExt: string; keywords: number; tiers: AuctionTier[] };
 
-export type QueryRow = { campaignExt: string; query: string; impressions: number; clicks: number; cost: number };
+/** Поисковый запрос из отчёта площадки; conversions — по целям Метрики (если цели переданы), criterion — ключевая фраза */
+export type QueryRow = { campaignExt: string; query: string; impressions: number; clicks: number; cost: number; conversions?: number; criterion?: string };
+
+/** РСЯ: площадка (сайт или приложение), где показывалась реклама */
+export type PlacementRow = { campaignExt: string; placement: string; impressions: number; clicks: number; cost: number; conversions: number };
 
 /**
  * Wordstat по одной фразе: shows — запросов в месяц с этой фразой (широкое соответствие: все словоформы и запросы,
@@ -224,7 +228,14 @@ export interface PlatformClient {
   getAdStates(adExts: string[]): Promise<Record<string, AdState>>;
   getStats(campaignExts: string[], from: string, to: string, goalIds: number[]): Promise<StatRow[]>;
   getAuction?(campaignExt: string): Promise<AuctionRow[]>;
-  getSearchQueries?(campaignExts: string[], from: string, to: string): Promise<QueryRow[]>;
+  getSearchQueries?(campaignExts: string[], from: string, to: string, goalIds?: number[]): Promise<QueryRow[]>;
+  /** РСЯ: статистика по площадкам (Директ Reports, поле Placement) */
+  getPlacements?(campaignExts: string[], from: string, to: string, goalIds?: number[]): Promise<PlacementRow[]>;
+  /** Запрещённые площадки кампании (Директ ExcludedSites) */
+  getExcludedSites?(campaignExt: string): Promise<string[]>;
+  setExcludedSites?(campaignExt: string, sites: string[]): Promise<void>;
+  /** Счётчики Метрики кампании и приоритетная цель (владелец выбрал свой счётчик). Возвращает предупреждения */
+  setCounters?(campaignExt: string, counterIds: number[], goalId?: number | null): Promise<string[]>;
   /**
    * Спрос по фразам в регионах (Wordstat): на каждую фразу — запросов в месяц и что искали вместе с ней.
    * Синхронный вариант (демо; Директ — с ожиданием отчёта не дольше timeoutMs). Движок спроса для Директа

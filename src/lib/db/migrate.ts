@@ -260,4 +260,39 @@ ALTER TABLE businesses ADD COLUMN IF NOT EXISTS source_links jsonb NOT NULL DEFA
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS show_settings jsonb NOT NULL DEFAULT '{}';
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS landing jsonb NOT NULL DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS rate_limits_reset_at ON rate_limits(reset_at);
+
+CREATE TABLE IF NOT EXISTS metrica_daily (
+  id text PRIMARY KEY,
+  business_id text NOT NULL,
+  campaign_id text NOT NULL,
+  ad_id text NOT NULL DEFAULT '',
+  phrase text NOT NULL DEFAULT '',
+  day date NOT NULL,
+  source text NOT NULL,
+  visits integer NOT NULL DEFAULT 0,
+  bounces integer NOT NULL DEFAULT 0,
+  duration_sum real NOT NULL DEFAULT 0,
+  pageviews real NOT NULL DEFAULT 0,
+  leads integer NOT NULL DEFAULT 0,
+  goals jsonb NOT NULL DEFAULT '{}'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS metrica_daily_unique ON metrica_daily(campaign_id, ad_id, phrase, day);
+CREATE INDEX IF NOT EXISTS metrica_daily_business_day ON metrica_daily(business_id, day);
+
+CREATE TABLE IF NOT EXISTS metrica_slices (
+  id text PRIMARY KEY,
+  business_id text NOT NULL,
+  campaign_id text NOT NULL,
+  kind text NOT NULL,
+  key text NOT NULL,
+  visits integer NOT NULL DEFAULT 0,
+  bounces integer NOT NULL DEFAULT 0,
+  duration_sum real NOT NULL DEFAULT 0,
+  leads integer NOT NULL DEFAULT 0,
+  period_from date NOT NULL,
+  period_to date NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS metrica_slices_unique ON metrica_slices(campaign_id, kind, key);
+CREATE INDEX IF NOT EXISTS metrica_slices_business ON metrica_slices(business_id);
 `;

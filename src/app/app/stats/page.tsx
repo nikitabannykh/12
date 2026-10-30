@@ -4,7 +4,8 @@ import { redirect } from "next/navigation";
 import { desc, eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth";
 import { getBusinessForUser } from "@/lib/engine/launch";
-import { report, weeksForMarking } from "@/lib/engine/report";
+import { metricaVisits, report, weeksForMarking } from "@/lib/engine/report";
+import { METRICA_REASON_TEXT, metricaStatus } from "@/lib/engine/metrica-sync";
 import { getDb, schema } from "@/lib/db";
 import { DaysChart } from "@/components/charts";
 import { ClientsWeek } from "@/components/ClientsWeek";
@@ -15,6 +16,8 @@ import { LeadStatus } from "./LeadStatus";
 const KIND: Record<string, string> = { form: "Заявка", phone: "Звонок", messenger: "Мессенджер", suspect: "Заявка" };
 const SRC: Record<string, string> = { yandex: "Реклама в Яндексе", vk: "Реклама ВКонтакте", demo: "Реклама (демо)" };
 const CH: Record<string, string> = { ...CHANNEL_NAME, unknown: "Реклама, канал не определён" };
+/** Среднее время визита: «1 мин 05 с» */
+const dur = (sec: number) => (sec >= 60 ? `${Math.floor(sec / 60)} мин ${String(Math.round(sec % 60)).padStart(2, "0")} с` : `${Math.round(sec)} с`);
 
 export default async function Stats({ searchParams }: { searchParams: Promise<{ days?: string }> }) {
   const user = await requireUser();
@@ -28,6 +31,19 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
   const leads = await db.select().from(schema.leads).where(eq(schema.leads.businessId, b.id)).orderBy(desc(schema.leads.createdAt)).limit(30);
   const c = r.cur;
   const rows = Object.entries(r.byChannel);
+  const mstatus = await metricaStatus(b.id);
+  const mv = await metricaVisits(b, r.from, r.to);
+  const funnel = rows
+    .filter(([ch]) => ch !== "unknown")
+    .map(([ch, t]) => ({ ch, impressions: t.impressions, clicks: t.clicks, visits: mv.byChannel.get(ch)?.visits ?? 0, quality: mv.byChannel.get(ch)?.quality ?? 0, leads: t.leads }));
+  const hasVisits = mv.rows > 0;
+  const mNote = !mstatus
+    ? "Данные Метрики появятся после следующей проверки рекламы роботом."
+    : !mstatus.ok
+      ? mstatus.note || (mstatus.reason ? METRICA_REASON_TEXT[mstatus.reason] : "Метрика пока недоступна.")
+      : !hasVisits
+        ? "Метрика подключена, но визитов из рекламы за этот период в ней нет. Проверьте, что код счётчика стоит на всех страницах, куда ведёт реклама."
+        : null;
 
   return (
     <div className="grid gap-6">
@@ -134,6 +150,107 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
         ) : (
           <p className="text-muted mt-3">Данных пока нет — показы начнутся после модерации.</p>
         )}
+      </section>
+
+      <section id="funnel" className="card p-5 sm:p-7 scroll-mt-6">
+        <h2 className="text-lg font-bold">Путь клиента: от показа до обращения</h2>
+        <p className="hint mt-1 max-w-3xl">
+          Сколько людей дошло до каждого шага за {pl(days, "день", "дня", "дней")}. Визиты — по Яндекс Метрике: человек открыл страницу. Качественный визит — человек не ушёл сразу: посмотрел больше одной страницы или пробыл дольше 15 секунд. Робот смотрит на качественные визиты, когда обращений пока мало, чтобы судить.
+        </p>
+        {mstatus?.source === "demo" && hasVisits ? <p className="mt-3 text-sm text-warn">Демо-кабинет: визиты и отказы смоделированы, это не данные Метрики.</p> : null}
+        {mNote ? (
+          <div className="mt-4 rounded-xl bg-paper p-4 text-sm leading-relaxed max-w-3xl">
+            <b>Визитов из Метрики пока нет.</b> {mNote}
+            {mstatus?.reason === "scope" || mstatus?.reason === "no_account" ? <> <Link href="/app/settings" className="font-semibold underline underline-offset-2">Открыть настройки</Link></> : null}
+          </div>
+        ) : null}
+        {funnel.length ? (
+          <div className="mt-5 grid gap-6">
+            {funnel.map((f) => {
+              const steps = [
+                { label: "Показы", hint: "увидели объявление", v: f.impressions },
+                { label: "Клики", hint: "перешли по объявлению", v: f.clicks },
+                { label: "Визиты", hint: "открыли страницу", v: f.visits, metrica: true },
+                { label: "Качественные визиты", hint: "не ушли сразу", v: f.quality, metrica: true },
+                { label: "Обращения", hint: "заявка, звонок, сообщение", v: f.leads },
+              ];
+              return (
+                <div key={f.ch}>
+                  <div className="font-semibold">{CH[f.ch] ?? f.ch}</div>
+                  <ol className="mt-2 grid gap-2 sm:grid-cols-5">
+                    {steps.map((st, i) => {
+                      const prev = i > 0 ? steps[i - 1].v : 0;
+                      const share = i > 0 && prev > 0 ? st.v / prev : null;
+                      const empty = st.metrica && !hasVisits;
+                      return (
+                        <li key={st.label} className="rounded-xl bg-paper px-3.5 py-2.5 sm:py-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 sm:block">
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold leading-tight">{st.label}</div>
+                            <div className="text-xs text-muted leading-tight">{st.hint}</div>
+                          </div>
+                          <div className="text-right sm:text-left sm:mt-2">
+                            <div className="text-xl font-extrabold leading-tight">{empty ? "—" : num(st.v)}</div>
+                            <div className="text-xs text-muted">{empty || share === null ? (i === 0 ? "\u00a0" : "—") : `${share < 0.1 && share > 0 ? (share * 100).toFixed(1).replace(".", ",") : Math.round(share * 100)}% от «${steps[i - 1].label.toLowerCase()}»`}</div>
+                          </div>
+                          <div className="col-span-2 mt-2 h-1.5 rounded-full bg-line overflow-hidden" aria-hidden>
+                            <div className="h-full rounded-full bg-ink" style={{ width: `${empty ? 0 : i === 0 ? 100 : Math.max(share ? 2 : 0, Math.min(100, (share ?? 0) * 100))}%` }} />
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-muted mt-3">Данных пока нет — показы начнутся после модерации.</p>
+        )}
+        {mv.campaigns.length ? (
+          <div className="mt-7">
+            <h3 className="font-bold">Визиты по кампаниям</h3>
+            <ul className="mt-3 grid gap-3 sm:hidden">
+              {mv.campaigns.map((k) => (
+                <li key={k.id} className="rounded-xl border border-line p-4">
+                  <div className="font-semibold">{CH[k.channel] ?? k.channel}</div>
+                  <div className="text-xs text-faint truncate">{k.name}</div>
+                  <dl className="mt-2 grid grid-cols-3 gap-2 text-sm">
+                    <div><dt className="text-xs text-muted">Визиты</dt><dd className="font-semibold">{num(k.visits)}</dd></div>
+                    <div><dt className="text-xs text-muted">Отказы</dt><dd className="font-semibold">{k.visits ? `${Math.round((k.bounces / k.visits) * 100)}%` : "—"}</dd></div>
+                    <div><dt className="text-xs text-muted">Время</dt><dd className="font-semibold">{k.visits ? dur(k.durationSum / k.visits) : "—"}</dd></div>
+                  </dl>
+                </li>
+              ))}
+            </ul>
+            <div className="hidden sm:block mt-3 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-muted border-b border-line">
+                    <th className="py-2 pr-2 font-semibold">Кампания</th>
+                    <th className="py-2 px-2 font-semibold text-right">Клики</th>
+                    <th className="py-2 px-2 font-semibold text-right">Визиты</th>
+                    <th className="py-2 px-2 font-semibold text-right">Качественные</th>
+                    <th className="py-2 px-2 font-semibold text-right">Отказы</th>
+                    <th className="py-2 pl-2 font-semibold text-right">Среднее время на сайте</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mv.campaigns.map((k) => (
+                    <tr key={k.id} className="border-b border-line last:border-0">
+                      <td className="py-3 pr-2"><div className="font-semibold">{CH[k.channel] ?? k.channel}</div><div className="text-xs text-faint">{k.name}</div></td>
+                      <td className="py-3 px-2 text-right">{num(k.clicks)}</td>
+                      <td className="py-3 px-2 text-right">{num(k.visits)}</td>
+                      <td className="py-3 px-2 text-right">{num(k.visits - k.bounces)}</td>
+                      <td className="py-3 px-2 text-right">{k.visits ? `${Math.round((k.bounces / k.visits) * 100)}%` : "—"}</td>
+                      <td className="py-3 pl-2 text-right">{k.visits ? dur(k.durationSum / k.visits) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="hint mt-3">Отказ — человек посмотрел одну страницу меньше 15 секунд. Визитов бывает меньше кликов: часть людей закрывает страницу до её загрузки.</p>
+          </div>
+        ) : null}
       </section>
 
       <section className="card p-5 sm:p-7">

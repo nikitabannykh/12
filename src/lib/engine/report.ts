@@ -354,3 +354,44 @@ export async function campaignStates(b: Business, camps: Campaign[], now: Date):
   }
   return out;
 }
+
+// ─── Метрика: путь от показа до обращения ───────────────────────────────
+
+export type FunnelStep = { impressions: number; clicks: number; visits: number; quality: number; leads: number };
+export type CampaignVisits = { id: string; name: string; channel: string; clicks: number; visits: number; bounces: number; durationSum: number };
+
+/**
+ * Визиты и качественные визиты (без отказа) по Метрике за период — по каналам и кампаниям.
+ * Показы, клики и обращения — из report() (byChannel), чтобы цифры совпадали с остальной страницей.
+ */
+export async function metricaVisits(b: Business, from: string, to: string) {
+  const db = await getDb();
+  const camps = await db.select().from(schema.campaigns).where(eq(schema.campaigns.businessId, b.id));
+  const rows = await db.select().from(schema.metricaDaily).where(and(eq(schema.metricaDaily.businessId, b.id), gte(schema.metricaDaily.day, from), lte(schema.metricaDaily.day, to)));
+  const stats = await db.select().from(schema.statsDaily).where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, from), lte(schema.statsDaily.day, to)));
+  const byChannel = new Map<string, { visits: number; quality: number }>();
+  const byCamp = new Map<string, CampaignVisits>();
+  const campOf = (id: string) => {
+    let x = byCamp.get(id);
+    const c = camps.find((k) => k.id === id);
+    if (!x && c) byCamp.set(id, (x = { id, name: c.name, channel: c.channel, clicks: 0, visits: 0, bounces: 0, durationSum: 0 }));
+    return x;
+  };
+  for (const r of rows) {
+    const c = campOf(r.campaignId);
+    if (!c) continue;
+    c.visits += r.visits;
+    c.bounces += r.bounces;
+    c.durationSum += r.durationSum;
+    const ch = byChannel.get(c.channel) ?? { visits: 0, quality: 0 };
+    ch.visits += r.visits;
+    ch.quality += Math.max(0, r.visits - r.bounces);
+    byChannel.set(c.channel, ch);
+  }
+  for (const s of stats) {
+    const c = byCamp.get(s.campaignId);
+    if (c) c.clicks += s.clicks;
+  }
+  const campaigns = [...byCamp.values()].sort((a, b) => CHANNEL_ORDER.indexOf(a.channel) - CHANNEL_ORDER.indexOf(b.channel) || b.visits - a.visits);
+  return { rows: rows.length, byChannel, campaigns };
+}

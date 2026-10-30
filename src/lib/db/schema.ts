@@ -164,6 +164,43 @@ export const statsDaily = pgTable("stats_daily", {
   posWeighted: real("pos_weighted").notNull().default(0),
 }, (t) => [uniqueIndex("stats_unique").on(t.campaignId, t.adId, t.day), index("stats_business_day").on(t.businessId, t.day)]);
 
+/**
+ * Яндекс Метрика по дням (Reporting API): визиты из рекламы по кампании, объявлению и ключевой фразе.
+ * «Качественный визит» = визит без отказа (bounces — отказы Метрики: один просмотр короче 15 секунд).
+ * source: direct — по данным Директа в Метрике; utm — по меткам ссылки (так же и VK); demo — смоделировано.
+ */
+export const metricaDaily = pgTable("metrica_daily", {
+  id: id(),
+  businessId: text("business_id").notNull(),
+  campaignId: text("campaign_id").notNull(),
+  adId: text("ad_id").notNull().default(""), // "" — без разбивки по объявлениям
+  phrase: text("phrase").notNull().default(""), // ключевая фраза (поиск), "" — нет
+  day: date("day").notNull(),
+  source: text("source").notNull(),
+  visits: integer("visits").notNull().default(0),
+  bounces: integer("bounces").notNull().default(0),
+  durationSum: real("duration_sum").notNull().default(0), // секунд во всех визитах
+  pageviews: real("pageviews").notNull().default(0),
+  leads: integer("leads").notNull().default(0), // достижения цели «обращение»
+  goals: jsonb("goals").$type<Record<string, number>>().notNull().default({}),
+}, (t) => [uniqueIndex("metrica_daily_unique").on(t.campaignId, t.adId, t.phrase, t.day), index("metrica_daily_business_day").on(t.businessId, t.day)]);
+
+/** Метрика за период по площадкам РСЯ (kind = site) и поисковым запросам (kind = query) — для решений робота */
+export const metricaSlices = pgTable("metrica_slices", {
+  id: id(),
+  businessId: text("business_id").notNull(),
+  campaignId: text("campaign_id").notNull(),
+  kind: text("kind").notNull(), // site | query
+  key: text("key").notNull(),
+  visits: integer("visits").notNull().default(0),
+  bounces: integer("bounces").notNull().default(0),
+  durationSum: real("duration_sum").notNull().default(0),
+  leads: integer("leads").notNull().default(0),
+  periodFrom: date("period_from").notNull(),
+  periodTo: date("period_to").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex("metrica_slices_unique").on(t.campaignId, t.kind, t.key), index("metrica_slices_business").on(t.businessId)]);
+
 export const experiments = pgTable("experiments", {
   id: id(),
   businessId: text("business_id").notNull(),
@@ -188,7 +225,10 @@ export type UndoOp =
   | { op: "adText"; adId: string; title: string; title2: string | null; text: string }
   | { op: "campaignStrategy"; campaignId: string; strategy: "clicks" | "conversions" }
   | { op: "monthlyBudget"; businessId: string; monthlyBudget: number }
-  | { op: "bidCeiling"; campaignId: string; value: number | null };
+  | { op: "bidCeiling"; campaignId: string; value: number | null }
+  /** РСЯ: площадки (сайты, приложения), где кампания не показывается (Директ ExcludedSites, до 1000) */
+  | { op: "excludeSites"; campaignId: string; sites: string[] }
+  | { op: "includeSites"; campaignId: string; sites: string[] };
 
 export const changes = pgTable("changes", {
   id: id(),

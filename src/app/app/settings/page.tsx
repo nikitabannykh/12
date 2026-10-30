@@ -2,6 +2,7 @@ import { VkConnect } from "@/components/VkConnect";
 import { VkPixelSetup } from "@/components/VkPixelSetup";
 import { ShowSettingsEditor } from "@/components/ShowSettingsEditor";
 import { LandingEditor } from "@/components/LandingEditor";
+import { MetricaCounterPicker } from "@/components/MetricaCounterPicker";
 import { pageUrl, type LandingSettings } from "@/lib/engine/landing";
 import { timeTargeting } from "@/lib/engine/extras";
 import { vkRadiusFor } from "@/lib/platforms/vk-formats";
@@ -165,6 +166,10 @@ export default async function Settings() {
               {b.counterId ? <span className="text-sm text-muted">Счётчик Метрики № {b.counterId}, цели: обращение, заявка, звонок, мессенджер</span> : <span className="text-sm text-muted">Счётчик Метрики создадим при запуске в Директе</span>}
             </div>
             <p className="hint mt-3 max-w-2xl">Код сам замечает заявки из форм, клики по номеру телефона и переходы в WhatsApp и Telegram — и понимает, из какого объявления пришёл человек.</p>
+            <div className="mt-5 pt-5 border-t border-line">
+              <p className="text-sm text-muted mb-3 max-w-2xl">Робот смотрит в Метрике, сколько людей после клика действительно изучили сайт, а сколько сразу ушли. Если на сайте уже стоит ваш счётчик, лучше выбрать его — так не нужен второй счётчик, а история визитов сохранится. Тогда в коде выше оставьте только строку скрипта Самохода, если код Метрики на сайте уже есть.</p>
+              <MetricaCounterPicker current={b.counterId ?? null} hasYandex={accounts.some((a) => a.platform === "yandex")} />
+            </div>
           </>
         ) : (
           <p className="text-muted mt-1 leading-relaxed max-w-2xl">Объявления ведут на вашу страницу записи — обращения с неё считаются автоматически, ничего ставить не нужно.</p>

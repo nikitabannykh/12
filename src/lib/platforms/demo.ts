@@ -1,7 +1,8 @@
 import "server-only";
 import { and, eq } from "drizzle-orm";
 import { createHash } from "crypto";
-import type { AuctionRow, AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy, WordstatPhrase } from "./types";
+import type { AuctionRow, AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlacementRow, PlatformClient, QueryRow, StatRow, Strategy, WordstatPhrase } from "./types";
+import type { MetricaDayRow, MetricaSliceRow } from "./metrica";
 import { PlatformError } from "./types";
 import { getDb, schema } from "../db";
 import { addDays, isoDay, pl, uid } from "../util";
@@ -21,6 +22,8 @@ type DemoCampaign = {
   name?: string;
   /** Ретаргетинг: не «стартует» задним числом, а начинает работать в день включения (когда набралась аудитория) */
   retarget?: boolean;
+  /** РСЯ: запрещённые площадки (как ExcludedSites в Директе) */
+  excluded?: string[];
 };
 
 /**
@@ -36,6 +39,10 @@ const TIERS = [
   { tv: 5, m: 0.4, ctr: 0.1, pos: 6 },
 ];
 const groupComp = (group: string) => 0.8 + rng("comp" + group)() * 0.5;
+/** Популярность услуги (группы поиска): от 0,15 до ~12 — одна-две главные услуги дают основной трафик, как в жизни */
+const groupPop = (group: string) => 0.15 + Math.pow(rng("pop" + group)(), 4) * 12;
+/** Округление с вероятностью дробной части: среднее сохраняется */
+const sround = (x: number, r: () => number) => Math.floor(x) + (r() < x - Math.floor(x) ? 1 : 0);
 const tierPrice = (group: string, m: number) => Math.round(22 * m * groupComp(group));
 type State = { campaigns: Record<string, DemoCampaign>; ads: Record<string, DemoAd>; seq: number };
 
@@ -132,6 +139,60 @@ const DEMO_DIRECT_LIMITS: AdLimits = { nonArchived: 3, total: 10 };
 const limitsFor = (channel: Channel | undefined) => (channel && formatOf(channel) === "vk" ? null : DEMO_DIRECT_LIMITS);
 
 const BAD_WORDS = ["бесплатно", "вакансии", "обучение", "своими руками", "курсы", "работа", "дома самой", "как сделать", "отзывы сотрудников", "игра"];
+/**
+ * Запросы, которые правила минус-слов не ловят, но по Метрике видно, что люди уходят сразу (почти одни отказы)
+ * и не обращаются, — на них робот подбирает минус-слова по данным.
+ */
+const DATA_JUNK = ["форум", "пошагово", "приснился", "тест"];
+
+/**
+ * Площадки РСЯ демо: обычные сайты и «мусорные» приложения, где клики случайные — много кликов, почти одни отказы,
+ * ни одного обращения. Робот запрещает такие площадки, и конверсия кампании немного растёт.
+ */
+const DEMO_SITES = ["mail.ru", "gismeteo.ru", "drive2.ru", "pikabu.ru", "rambler.ru", "kp.ru", "sports.ru"];
+const DEMO_JUNK_SITES = ["com.puzzle.blocks.free", "com.fun.match3.game", "wordgame.app", "free-slots-online.ru"];
+const junkSite = (site: string) => DEMO_JUNK_SITES.includes(site);
+
+/** Доля отказов у объявления: «насколько страница отвечает обещанию объявления» — не зависит от кликабельности */
+function demoBounceRate(adExt: string, channel: Channel) {
+  const fit = rng("fit:" + adExt)();
+  if (channel === "search") return 0.16 + fit * 0.4;
+  if (isRetarget(channel)) return 0.14 + fit * 0.3;
+  return 0.28 + fit * 0.45;
+}
+
+/** Биномиальная выборка (детерминированная): сколько из n визитов — отказы */
+function binom(n: number, p: number, r: () => number) {
+  let k = 0;
+  for (let i = 0; i < n; i++) if (r() < p) k++;
+  return k;
+}
+
+/** n случаев по весам — каждый выпадает случайно (детерминированно), как при малых числах в жизни */
+function sample(n: number, weights: number[], r: () => number) {
+  const out = weights.map(() => 0);
+  const sum = weights.reduce((a, b) => a + b, 0);
+  if (!sum) return out;
+  for (let k = 0; k < n; k++) {
+    let x = r() * sum, i = 0;
+    while (i < weights.length - 1 && x >= weights[i]) x -= weights[i++];
+    out[i]++;
+  }
+  return out;
+}
+
+/** Делим целое n по весам без потерь (метод наибольшего остатка) */
+function split(n: number, weights: number[]) {
+  const sum = weights.reduce((a, b) => a + b, 0) || 1;
+  const raw = weights.map((w) => (n * w) / sum);
+  const out = raw.map(Math.floor);
+  let left = n - out.reduce((a, b) => a + b, 0);
+  for (const i of raw.map((x, i) => ({ i, r: x - Math.floor(x) })).sort((a, b) => b.r - a.r).map((x) => x.i)) {
+    if (left-- <= 0) break;
+    out[i]++;
+  }
+  return out;
+}
 
 export class DemoPlatform implements PlatformClient {
   platform = "demo" as const;
@@ -412,9 +473,10 @@ export class DemoPlatform implements PlatformClient {
         const weekly = [...c.budgets].reverse().find((b) => b.from <= day)?.weekly ?? 0;
         const r0 = rng(cExt + day);
         const dayBudget = (weekly / 7) * (0.78 + r0() * 0.2) * (new Date(day).getUTCDay() % 6 === 0 ? 0.85 : 1);
-        const weights = live.map(([, a]) => Math.sqrt(a.quality));
+        // Поиск: спрос на услуги разный — популярные группы забирают большую часть бюджета (как в аукционе Директа)
+        const weights = live.map(([, a]) => Math.sqrt(a.quality) * (c.channel === "search" ? groupPop(a.group) : 1));
         const wsum = weights.reduce((x, y) => x + y, 0);
-        const negBoost = 1 + Math.min(0.25, c.negatives.length * 0.012);
+        const negBoost = 1 + Math.min(0.25, c.negatives.length * 0.012) + Math.min(0.3, (c.excluded ?? []).filter(junkSite).length * 0.07);
         const ceiling = [...(c.ceilings ?? [])].reverse().find((x) => x.from <= day)?.value ?? null;
         live.forEach(([id, a], i) => {
           const r = rng(id + day);
@@ -431,7 +493,8 @@ export class DemoPlatform implements PlatformClient {
             const cpc = (tierPrice(a.group, t.m) / Math.sqrt(a.quality)) * (0.88 + r() * 0.24);
             const ctr = 0.075 * a.quality * t.ctr * (0.85 + r() * 0.3);
             const supply = 260 * groupComp(a.group) * (0.85 + r() * 0.3); // сколько раз за день ищут услугу
-            const clicks = Math.max(0, Math.min(Math.round(spend / cpc), Math.round(supply * ctr)));
+            // Дробное число кликов округляем случайно (детерминированно): иначе при десятках объявлений у каждого выходило 0
+            const clicks = Math.max(0, Math.min(sround(spend / cpc, r), Math.round(supply * ctr)));
             const impressions = Math.round(clicks / Math.max(ctr, 0.0005)) + Math.round(r() * 15);
             const cr = 0.06 * a.quality * negBoost;
             let conversions = 0;
@@ -517,11 +580,114 @@ export class DemoPlatform implements PlatformClient {
       for (const w of BAD_WORDS) {
         if (c.negatives.includes(w)) continue;
         const r = rng(cExt + w);
-        out.push({ campaignExt: cExt, query: `${topic} ${w}`, impressions: 40 + Math.round(r() * 90), clicks: 2 + Math.round(r() * 5), cost: 60 + Math.round(r() * 150) });
+        out.push({ campaignExt: cExt, query: `${topic} ${w}`, impressions: 40 + Math.round(r() * 90), clicks: 2 + Math.round(r() * 5), cost: 60 + Math.round(r() * 150), conversions: 0 });
       }
-      out.push({ campaignExt: cExt, query: `${topic} рядом`, impressions: 300, clicks: 22, cost: 790 });
+      for (const w of DATA_JUNK) {
+        if (c.negatives.includes(w)) continue;
+        const r = rng(cExt + "dj" + w);
+        out.push({ campaignExt: cExt, query: `${topic} ${w}`, impressions: 90 + Math.round(r() * 120), clicks: 6 + Math.round(r() * 6), cost: 220 + Math.round(r() * 260), conversions: 0 });
+      }
+      out.push({ campaignExt: cExt, query: `${topic} рядом`, impressions: 300, clicks: 22, cost: 790, conversions: 3 });
+      out.push({ campaignExt: cExt, query: `${topic} цена`, impressions: 260, clicks: 18, cost: 640, conversions: 2 });
     }
     return out;
+  }
+
+  // ─── РСЯ: площадки ───────────────────────────────────────────────────
+
+  /** Клики РСЯ за период, разложенные по площадкам: «мусорные» приложения получают много кликов и ни одного обращения */
+  async getPlacements(campaignExts: string[], from: string, to: string): Promise<PlacementRow[]> {
+    const s = await this.load();
+    const nets = campaignExts.filter((x) => s.campaigns[x]?.channel === "network");
+    if (!nets.length) return [];
+    const stats = await this.getStats(nets, from, to);
+    const out: PlacementRow[] = [];
+    for (const cExt of nets) {
+      const c = s.campaigns[cExt];
+      const excluded = new Set(c.excluded ?? []);
+      const rows = stats.filter((r) => r.campaignExt === cExt);
+      const tot = rows.reduce((a, r) => ({ impressions: a.impressions + r.impressions, clicks: a.clicks + r.clicks, cost: a.cost + r.cost, conversions: a.conversions + r.conversions }), { impressions: 0, clicks: 0, cost: 0, conversions: 0 });
+      const sites = [...DEMO_SITES, ...DEMO_JUNK_SITES].filter((x) => !excluded.has(x));
+      if (!sites.length || !tot.clicks) continue;
+      const w = sites.map((x) => (junkSite(x) ? 1.6 : 0.6) + rng(`site:${cExt}:${x}`)() * 0.8);
+      const clicks = split(tot.clicks, w);
+      const impressions = split(tot.impressions, sites.map((x, i) => (junkSite(x) ? w[i] * 0.6 : w[i])));
+      const conv = split(tot.conversions, sites.map((x, i) => (junkSite(x) ? 0 : w[i])));
+      sites.forEach((site, i) => {
+        if (!clicks[i] && !impressions[i]) return;
+        out.push({ campaignExt: cExt, placement: site, impressions: impressions[i], clicks: clicks[i], cost: Math.round((tot.cost * clicks[i]) / tot.clicks), conversions: conv[i] });
+      });
+    }
+    return out;
+  }
+
+  async getExcludedSites(campaignExt: string) {
+    const s = await this.load();
+    return [...(s.campaigns[campaignExt]?.excluded ?? [])];
+  }
+
+  async setExcludedSites(campaignExt: string, sites: string[]) {
+    if (sites.length > 1000) throw new PlatformError("demo", "Можно запретить не больше 1000 площадок в кампании");
+    const s = await this.load();
+    const c = s.campaigns[campaignExt];
+    if (c) c.excluded = [...new Set(sites)];
+    await this.save(s);
+  }
+
+  // ─── Демо-Метрика ────────────────────────────────────────────────────
+  // Детерминированные «визиты» поверх смоделированных кликов: это не данные Метрики, но так видно, как робот
+  // пользуется качеством визитов, когда обращений мало.
+
+  /**
+   * Визиты по дням: кампания → объявление → ключевая фраза (для поиска). phrasesByGroup — фразы групп (ID группы на площадке).
+   * В каждой группе поиска с тремя фразами и больше одна фраза «слабая»: широкая, с большим трафиком и почти одними отказами.
+   */
+  async metricaDaily(campaignExts: string[], from: string, to: string, phrasesByGroup: Record<string, string[]>): Promise<MetricaDayRow[]> {
+    const s = await this.load();
+    const stats = await this.getStats(campaignExts, from, to);
+    const out: MetricaDayRow[] = [];
+    for (const r of stats) {
+      const c = s.campaigns[r.campaignExt];
+      const a = s.ads[r.adExt];
+      if (!c || !a || !r.clicks) continue;
+      const rnd = rng(`m:${r.adExt}:${r.day}`);
+      const visits = Math.round(r.clicks * (0.86 + rnd() * 0.08));
+      if (!visits) continue;
+      const rate = demoBounceRate(r.adExt, c.channel);
+      const phrases = c.channel === "search" ? (phrasesByGroup[a.group] ?? []).slice(0, 8) : [];
+      const base = { day: r.day, via: "direct" as const, campaignKey: r.campaignExt, adKey: r.adExt };
+      const row = (phrase: string, v: number, p: number, leads: number) => {
+        const bounces = binom(v, Math.min(0.97, Math.max(0.02, p)), rnd);
+        out.push({ ...base, phrase, visits: v, bounces, durationSum: Math.round(bounces * 6 + (v - bounces) * (70 + rnd() * 80)), pageviews: Math.round((bounces + (v - bounces) * 2.6) * 10) / 10, goals: { lead: leads } });
+      };
+      if (!phrases.length) {
+        row("", visits, rate, r.conversions);
+        continue;
+      }
+      const weak = phrases.length >= 3 ? Math.floor(rng("weak:" + a.group)() * phrases.length) : -1;
+      const w = phrases.map((p, i) => (0.5 + rng("pw:" + p)()) * (i === weak ? 5 : 1));
+      // Визитов у объявления за день единицы — раскладываем по фразам случайно (по весам), а не «по наибольшему остатку»
+      const v = sample(visits, w, rnd);
+      const leads = sample(r.conversions, phrases.map((_, i) => (i === weak ? 0 : w[i])), rnd);
+      phrases.forEach((p, i) => v[i] && row(p, v[i], i === weak ? 0.86 : rate, leads[i]));
+    }
+    return out;
+  }
+
+  /** Визиты за период по площадкам РСЯ и по поисковым запросам — из тех же смоделированных кликов */
+  async metricaSlices(campaignExts: string[], from: string, to: string): Promise<{ sites: MetricaSliceRow[]; queries: MetricaSliceRow[] }> {
+    const slice = (campaignKey: string, key: string, clicks: number, p: number, leads: number): MetricaSliceRow => {
+      const r = rng(`ms:${campaignKey}:${key}:${to}`);
+      const visits = Math.round(clicks * (0.85 + r() * 0.08));
+      const bounces = binom(visits, p, r);
+      return { campaignKey, key, visits, bounces, durationSum: Math.round(bounces * 6 + (visits - bounces) * 90), pageviews: visits * 2, goals: { lead: leads } };
+    };
+    const sites = (await this.getPlacements(campaignExts, from, to)).map((x) => slice(x.campaignExt, x.placement, x.clicks, junkSite(x.placement) ? 0.91 : 0.3 + rng("sb:" + x.placement)() * 0.2, x.conversions));
+    const queries = (await this.getSearchQueries(campaignExts)).map((q) => {
+      const p = DATA_JUNK.some((w) => q.query.endsWith(" " + w)) ? 0.92 : BAD_WORDS.some((w) => q.query.endsWith(" " + w)) ? 0.7 : 0.28;
+      return slice(q.campaignExt, q.query, q.clicks, p, q.conversions ?? 0);
+    });
+    return { sites, queries };
   }
 }
 

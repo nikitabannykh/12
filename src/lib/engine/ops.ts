@@ -9,6 +9,7 @@ import { businessNow, budgetState, liveCampaigns } from "./budget-guard";
 import { reserveFor, restoreTarget, spendableWeekly } from "./budget-plan";
 import { MIN_WEEKLY } from "./budget";
 import type { Channel } from "../platforms/types";
+import { MAX_EXCLUDED_SITES } from "../platforms/yandex";
 
 /**
  * Любое изменение рекламы — это набор операций. Каждая операция, применяясь, возвращает обратную.
@@ -126,6 +127,24 @@ export async function applyOp(op: UndoOp, cx?: Ctx): Promise<UndoOp> {
       await db.update(schema.ads).set({ title: op.title, title2: op.title2, text: op.text, status: ad.status === "rejected" ? "moderation" : ad.status }).where(eq(schema.ads.id, ad.id));
       return { op: "adText", adId: ad.id, title: ad.title, title2: ad.title2, text: ad.text };
     }
+    case "excludeSites":
+    case "includeSites": {
+      // Список площадок у Директа — источник правды: владелец мог запретить свои площадки в кабинете, их не теряем
+      const camp = await campaignById(c, op.campaignId);
+      const client = camp.externalId ? await platformFor(c, camp) : null;
+      const metaList = ((camp.meta as { excludedSites?: string[] } | null)?.excludedSites ?? []);
+      const cur = client?.getExcludedSites && camp.externalId ? await client.getExcludedSites(camp.externalId) : metaList;
+      const has = new Set(cur.map((x) => x.toLowerCase()));
+      const changed = op.op === "excludeSites" ? [...new Set(op.sites)].filter((x) => !has.has(x.toLowerCase())) : op.sites.filter((x) => has.has(x.toLowerCase()));
+      const drop = new Set(changed.map((x) => x.toLowerCase()));
+      const next = op.op === "excludeSites" ? [...cur, ...changed] : cur.filter((x) => !drop.has(x.toLowerCase()));
+      if (next.length > MAX_EXCLUDED_SITES) throw userError(`В кампании уже ${pl(cur.length, "запрещённая площадка", "запрещённые площадки", "запрещённых площадок")} — больше ${MAX_EXCLUDED_SITES} Директ не принимает`);
+      if (changed.length) {
+        if (client?.setExcludedSites && camp.externalId) await client.setExcludedSites(camp.externalId, next);
+        await db.update(schema.campaigns).set({ meta: { ...(camp.meta ?? {}), excludedSites: next } }).where(eq(schema.campaigns.id, camp.id));
+      }
+      return { op: op.op === "excludeSites" ? "includeSites" : "excludeSites", campaignId: camp.id, sites: changed };
+    }
     case "monthlyBudget": {
       const [b] = await db.select().from(schema.businesses).where(eq(schema.businesses.id, op.businessId));
       await db.update(schema.businesses).set({ monthlyBudget: op.monthlyBudget, updatedAt: new Date() }).where(eq(schema.businesses.id, op.businessId));
@@ -141,7 +160,8 @@ const canon = (v: unknown): string =>
 /** Операция ничего не поменяла: обратная к ней совпадает с ней самой (или пустой набор минус-слов) */
 export const isNoop = (op: UndoOp, inverse: UndoOp) =>
   // Группа: статусы объявлений внутри могли поменяться, даже если статус группы тот же
-  (op.op !== "groupStatus" && canon(op) === canon(inverse)) || ((inverse.op === "addNegatives" || inverse.op === "removeNegatives") && !inverse.words.length);
+  (op.op !== "groupStatus" && canon(op) === canon(inverse)) || ((inverse.op === "addNegatives" || inverse.op === "removeNegatives") && !inverse.words.length) ||
+  ((inverse.op === "excludeSites" || inverse.op === "includeSites") && !inverse.sites.length);
 
 /**
  * Применить набор операций; при ошибке — откатить уже применённые.

@@ -2,7 +2,7 @@ import "server-only";
 import type { AuctionRow, AudienceSpec, CampaignDelivery, DemographicsAdjustment, TargetingUpdate } from "./types";
 import type { Sitelink } from "../engine/extras";
 import type {
-  AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy, WordstatPhrase, WordstatReports,
+  AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlacementRow, PlatformClient, QueryRow, StatRow, Strategy, WordstatPhrase, WordstatReports,
 } from "./types";
 import { PlatformError } from "./types";
 import { sleep, uid } from "../util";
@@ -24,6 +24,8 @@ const sandbox = () => process.env.YANDEX_DIRECT_SANDBOX === "true";
 const host = () => (sandbox() ? "https://api-sandbox.direct.yandex.com" : "https://api.direct.yandex.com");
 const API = () => process.env.YANDEX_DIRECT_API_URL || `${host()}/json/v501`;
 const REPORTS = () => process.env.YANDEX_DIRECT_REPORTS_URL || `${host()}/json/v5/reports`;
+/** Директ: не больше 1000 запрещённых площадок в кампании (Campaign.ExcludedSites) */
+export const MAX_EXCLUDED_SITES = 1000;
 /** JSON API v4 — только ради Wordstat (CreateNewWordstatReport и т. п.): в v5 этих методов нет */
 const V4 = () => process.env.YANDEX_DIRECT_V4_URL || (sandbox() ? "https://api-sandbox.direct.yandex.ru/v4/json/" : "https://api.direct.yandex.ru/v4/json/");
 
@@ -1113,20 +1115,88 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     }));
   }
 
-  async getSearchQueries(campaignExts: string[], from: string, to: string): Promise<QueryRow[]> {
+  /**
+   * Поисковые запросы (SEARCH_QUERY_PERFORMANCE_REPORT). С целями Метрики — ещё и обращения по запросу (Conversions по каждой цели,
+   * колонки Conversions_<цель>_<модель> складываем) и ключевая фраза, по которой был показ (Criterion).
+   */
+  async getSearchQueries(campaignExts: string[], from: string, to: string, goalIds: number[] = []): Promise<QueryRow[]> {
     if (!campaignExts.length) return [];
+    const goals = goalIds.filter(Boolean).slice(0, 10);
     const rows = await this.report({
       SelectionCriteria: { DateFrom: from, DateTo: to, Filter: [{ Field: "CampaignId", Operator: "IN", Values: campaignExts }] },
-      FieldNames: ["CampaignId", "Query", "Impressions", "Clicks", "Cost"],
+      FieldNames: ["CampaignId", "Query", "Criterion", "Impressions", "Clicks", "Cost", ...(goals.length ? ["Conversions"] : [])],
       ReportType: "SEARCH_QUERY_PERFORMANCE_REPORT",
+      ...(goals.length ? { Goals: goals, AttributionModels: ["AUTO"] } : {}),
     });
     return rows.map((r) => ({
       campaignExt: r.CampaignId,
       query: r.Query,
+      criterion: r.Criterion && r.Criterion !== "--" ? r.Criterion : undefined,
       impressions: Number(r.Impressions) || 0,
       clicks: Number(r.Clicks) || 0,
       cost: Number(r.Cost) || 0,
+      conversions: sumConversions(r),
     }));
+  }
+
+  /** РСЯ по площадкам: CUSTOM_REPORT с полем Placement (сайт или приложение), только сети (AdNetworkType = AD_NETWORK) */
+  async getPlacements(campaignExts: string[], from: string, to: string, goalIds: number[] = []): Promise<PlacementRow[]> {
+    if (!campaignExts.length) return [];
+    const goals = goalIds.filter(Boolean).slice(0, 10);
+    const rows = await this.report({
+      SelectionCriteria: {
+        DateFrom: from, DateTo: to,
+        Filter: [{ Field: "CampaignId", Operator: "IN", Values: campaignExts }, { Field: "AdNetworkType", Operator: "EQUALS", Values: ["AD_NETWORK"] }],
+      },
+      FieldNames: ["CampaignId", "Placement", "Impressions", "Clicks", "Cost", ...(goals.length ? ["Conversions"] : [])],
+      ReportType: "CUSTOM_REPORT",
+      ...(goals.length ? { Goals: goals, AttributionModels: ["AUTO"] } : {}),
+    });
+    return rows
+      .filter((r) => r.Placement && r.Placement !== "--")
+      .map((r) => ({
+        campaignExt: r.CampaignId,
+        placement: r.Placement,
+        impressions: Number(r.Impressions) || 0,
+        clicks: Number(r.Clicks) || 0,
+        cost: Number(r.Cost) || 0,
+        conversions: sumConversions(r),
+      }));
+  }
+
+  /** Запрещённые площадки кампании (campaigns.get → ExcludedSites) */
+  async getExcludedSites(campaignExt: string): Promise<string[]> {
+    const res = await this.call("campaigns", "get", { SelectionCriteria: { Ids: [Number(campaignExt)] }, FieldNames: ["Id", "ExcludedSites"] });
+    return ((res?.Campaigns?.[0]?.ExcludedSites?.Items ?? []) as string[]).map(String);
+  }
+
+  /** Новый список запрещённых площадок целиком (campaigns.update; Директ принимает не больше 1000) */
+  async setExcludedSites(campaignExt: string, sites: string[]) {
+    if (sites.length > MAX_EXCLUDED_SITES) throw new PlatformError("yandex", `Директ принимает не больше ${MAX_EXCLUDED_SITES} запрещённых площадок в кампании`);
+    const res = await this.call("campaigns", "update", {
+      Campaigns: [{ Id: Number(campaignExt), ExcludedSites: sites.length ? { Items: sites } : null }],
+    });
+    this.items(res.UpdateResults, "Запрещённые площадки");
+  }
+
+  /**
+   * Счётчики Метрики кампании (UnifiedCampaign.CounterIds) и приоритетная цель (PriorityGoals, операция SET).
+   * Если Директ не примет цель — ставим хотя бы счётчики и возвращаем предупреждение.
+   */
+  async setCounters(campaignExt: string, counterIds: number[], goalId?: number | null): Promise<string[]> {
+    const warnings: string[] = [];
+    const unified: Record<string, unknown> = { CounterIds: { Items: counterIds.slice(0, 100) } };
+    if (goalId) unified.PriorityGoals = { Items: [{ GoalId: goalId, Value: micros(1000), Operation: "SET" }] };
+    try {
+      const res = await this.call("campaigns", "update", { Campaigns: [{ Id: Number(campaignExt), UnifiedCampaign: unified }] });
+      this.items(res.UpdateResults, "Счётчик Метрики", warnings);
+    } catch (e) {
+      if (!goalId) throw e;
+      warnings.push(`Ключевая цель не принята (${(e as Error).message}) — привязали только счётчик`);
+      const res = await this.call("campaigns", "update", { Campaigns: [{ Id: Number(campaignExt), UnifiedCampaign: { CounterIds: unified.CounterIds } }] });
+      this.items(res.UpdateResults, "Счётчик Метрики", warnings);
+    }
+    return warnings;
   }
 
   /** Справочник регионов — для поиска ID города */
@@ -1209,6 +1279,11 @@ export async function yandexLogin(token: string): Promise<{ login: string; id: s
 }
 
 export const yandexConfigured = () => Boolean(yaId() && yaSecret());
+
+/** Колонки Conversions_<цель>_<модель> отчёта Директа — сумма по всем целям */
+function sumConversions(r: Record<string, string>) {
+  return Object.entries(r).filter(([k]) => k.startsWith("Conversions")).reduce((s, [, v]) => s + (Number(v) || 0), 0);
+}
 
 function num(v: string | undefined) {
   const n = Number(String(v ?? "").replace(",", "."));
