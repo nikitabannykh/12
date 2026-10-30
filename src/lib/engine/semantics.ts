@@ -920,3 +920,41 @@ export function semanticsView(core: {
   const layers = LAYERS.map((id) => ({ id, label: LAYER_LABEL[id], groups: groups.filter((g) => g.layer === id).length, count: groups.filter((g) => g.layer === id).reduce((s, g) => s + g.count, 0) })).filter((x) => x.groups);
   return { total: groups.reduce((s, g) => s + g.count, 0), groups, layers, negatives: core.negatives, geo: core.geo, checks: core.checks, ...(core.medical ? { medical: true } : {}) };
 }
+
+
+// ─── Охват поиска: точно / оптимально / широко ──────────────────────────
+
+/** Маркеры намерения «записаться»: цена, запись, рядом, салон/мастер, срочность */
+const INTENT_RE = /(^|\s)(цен\S*|стоимост\S*|сколько|прайс|запис\S*|рядом|недорог\S*|дешев\S*|салон\S*|студи\S*|мастер\S*|кабинет\S*|центр\S*|клиник\S*|врач\S*|адрес\S*|сегодня|завтра|срочно|круглосуточно|отзыв\S*|лучш\S*|недалеко|возле|около|метро|район\S*|улиц\S*|онлайн)(\s|$)/;
+/** Информационные хвосты, которые не продают (дублирует wordstat.INFO_RE для фраз ядра) + год («маникюр 2026» — тренды) */
+const INFO_KW_RE = /(^|\s)(фото\S*|картинк\S*|иде[яи]\S*|видео|тренд\S*|модн\S*|новинк\S*|своими|дома|как|что|почему|обучени\S*|курс\S*|вакан\S*|20\d\d)(\s|$)/;
+
+/**
+ * Фразы поиска под выбранный охват. Директолог на маленьком бюджете не покупает «ногти» и «маникюр»:
+ * это сотни тысяч показов в месяц, большинство — не про запись. Поэтому:
+ *  - precise: остаются фразы с намерением (цена, запись, рядом, город/район) или из 3+ слов; двухсловные — в кавычках;
+ *  - balanced: без однословных и информационных; двухсловные без намерения — в кавычках (Директ не расширяет);
+ *  - wide: как есть.
+ * Не меньше `min` фраз в группе: если фильтр выкинул всё, оставляем самые конкретные (длинные).
+ */
+export function reachKeywords(keywords: string[], reach: "precise" | "balanced" | "wide" | undefined, geo: { city: string[]; local: string[] }, min = 3): string[] {
+  if (!reach || reach === "wide") return keywords;
+  const geoRe = new RegExp(`(^|\\s)(${[...geo.city, ...geo.local].map((g) => g.split(/\s+/).map((w) => stem(w).replace(/[.*+?^${}()|[\]\\]/g, "")).join("\\S*\\s+")).filter(Boolean).join("|") || "$^"})`, "i");
+  const scored = keywords.map((k) => {
+    const plain = displayKeyword(k);
+    const words = sigWords(plain);
+    const intent = INTENT_RE.test(plain) || geoRe.test(plain);
+    const info = INFO_KW_RE.test(plain);
+    return { k, plain, n: words.length, intent, info };
+  });
+  // Кавычки фиксируют число слов: Директ не покажет «маникюр гель» по «маникюр гель лак фото» (операторы +без сохраняем)
+  const fix = (x: { k: string; n: number }) => (x.n === 2 && !/^".*"$/.test(x.k) && !/\s-/.test(x.k) ? `"${x.k}"` : x.k);
+  let out: string[];
+  if (reach === "precise") out = scored.filter((x) => !x.info && x.n >= 2 && (x.intent || x.n >= 3)).map(fix);
+  else out = scored.filter((x) => !x.info && x.n >= 2).map((x) => (x.intent ? x.k : fix(x)));
+  if (out.length < min) {
+    const extra = scored.filter((x) => !x.info && x.n >= 2).sort((a, b) => b.n - a.n).map(fix).filter((k) => !out.includes(k));
+    out = [...out, ...extra].slice(0, Math.max(min, out.length));
+  }
+  return [...new Set(out)];
+}

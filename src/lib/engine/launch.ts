@@ -1,12 +1,12 @@
 import "server-only";
-import { directDemographics, showOf } from "./show";
+import { directDemographics, recommendedReach, showOf } from "./show";
 import { landingFor } from "./landing";
 import { and, asc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import type { AdAccount, Business, Campaign, UndoOp } from "../db/schema";
 import { allocate, MAX_MONTHLY } from "./budget";
 import { expandSemantics, generateCopyPlan, type CopyPlan } from "../ai/copy";
-import { buildSemanticCore, refineWithDirect, type SemanticChecks, type SemanticCore } from "./semantics";
+import { buildSemanticCore, geoTerms, reachKeywords, refineWithDirect, type SemanticChecks, type SemanticCore } from "./semantics";
 import { applyWordstat } from "./wordstat";
 import { demandForCore } from "./demand";
 import { aiConfigured } from "../ai/yandex";
@@ -763,7 +763,10 @@ async function buildChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acco
       });
     }
     if (!ads.length && !build.groups[g.id]) continue;
-    spec.groups.push({ localId: g.id, name: g.name, keywords: vkFormat || audienceId ? [] : g.keywords, negatives: vkFormat || audienceId ? [] : g.negatives ?? [], autotargeting: audienceId ? false : g.autotargeting, regionIds, ...ageSexOf(b, g), retargetingId: audienceId, ...(vkFormat && !audienceId && g.searchPhrases?.length ? { searchPhrases: g.searchPhrases } : {}), ...(vkFormat && !audienceId && g.interests?.length ? { interests: g.interests } : {}), ads });
+    // Поиск: фразы под охват владельца (точно / оптимально / широко); в «Точно» автотаргетинг выключен
+    const reach = ch.channel === "search" ? showOf(b).reach ?? recommendedReach(b.monthlyBudget) : undefined;
+    const kws = vkFormat || audienceId ? [] : ch.channel === "search" ? reachKeywords(g.keywords, reach, geoTerms(b)) : g.keywords;
+    spec.groups.push({ localId: g.id, name: g.name, keywords: kws, negatives: vkFormat || audienceId ? [] : g.negatives ?? [], autotargeting: audienceId || reach === "precise" ? false : g.autotargeting, regionIds, ...ageSexOf(b, g), retargetingId: audienceId, ...(vkFormat && !audienceId && g.searchPhrases?.length ? { searchPhrases: g.searchPhrases } : {}), ...(vkFormat && !audienceId && g.interests?.length ? { interests: g.interests } : {}), ads });
   }
   if (!spec.groups.length) {
     warnings.push(`${CHANNEL_NAME[ch.channel]}: нет ни одного объявления с заголовком и текстом — канал пропущен`);

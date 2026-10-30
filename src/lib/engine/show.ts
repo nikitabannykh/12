@@ -23,7 +23,30 @@ export type ShowSettings = {
   days?: number[];
   hourFrom?: number;
   hourTo?: number;
+  /** Охват поиска: precise — только запросы «готов записаться»; balanced — без однословных и общих; wide — всё (engine/semantics → reachKeywords) */
+  reach?: Reach;
 };
+
+export type Reach = "precise" | "balanced" | "wide";
+export const REACH_INFO: Record<Reach, { label: string; short: string; text: string }> = {
+  precise: {
+    label: "Точно",
+    short: "только готовые записаться",
+    text: "Показываемся только тем, кто ищет услугу с ценой, записью, «рядом», городом или районом — «маникюр цена», «записаться на маникюр рядом». Меньше показов, зато почти без случайных кликов. Автотаргетинг выключен.",
+  },
+  balanced: {
+    label: "Оптимально",
+    short: "без общих слов",
+    text: "Убираем однословные и слишком общие запросы («ногти», «маникюр») и информационные («маникюр 2026», «идеи»). Двухсловные фразы фиксируем, чтобы Директ не расширял их сам. Подходит большинству.",
+  },
+  wide: {
+    label: "Широко",
+    short: "максимум показов",
+    text: "Показываемся по всем подходящим запросам, включая общие, и с автотаргетингом. Больше людей, но и больше случайных кликов — подходит при большом бюджете и в начале, чтобы найти работающие запросы.",
+  },
+};
+/** Что советуем по бюджету: на маленьком бюджете общие запросы съедают деньги за 1–2 дня */
+export const recommendedReach = (monthlyBudget: number): Reach => (monthlyBudget < 25_000 ? "precise" : monthlyBudget < 80_000 ? "balanced" : "wide");
 
 export const DAY_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 export const AGE_MIN = 18;
@@ -39,6 +62,7 @@ const int = (x: unknown, lo: number, hi: number) => {
 export function sanitizeShow(raw: unknown): ShowSettings {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const out: ShowSettings = {};
+  out.reach = r.reach === "precise" || r.reach === "wide" || r.reach === "balanced" ? r.reach : undefined;
   out.geoMode = r.geoMode === "city" || r.geoMode === "radius" ? r.geoMode : "auto";
   if (out.geoMode === "radius") {
     const km = Number(r.radiusKm);

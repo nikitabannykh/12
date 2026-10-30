@@ -122,6 +122,8 @@ export function LaunchWizard(p: Props) {
   const toast = useToast();
   const [plan, setPlan] = useState<LaunchPlan | null>(p.plan);
   const [budget, setBudget] = useState(p.business.monthlyBudget);
+  const [waitingLock, setWaitingLock] = useState(false);
+  const autoResumed = useRef(false);
   const [savedBudget, setSavedBudget] = useState(p.business.monthlyBudget);
   const [phase, setPhase] = useState<null | "copy" | "images" | "publish">(null);
   // Почему не получился запуск — показываем у кнопки, пока владелец не запустит снова (всплывашка исчезает, и причину не успеть прочитать)
@@ -305,6 +307,7 @@ export function LaunchWizard(p: Props) {
    */
   async function launch() {
     if (phase === "publish") return;
+    autoResumed.current = true;
     setPhase("publish");
     setLaunchError(null);
     const deadline = Date.now() + 8 * 60_000;
@@ -335,14 +338,23 @@ export function LaunchWizard(p: Props) {
           router.refresh();
           return;
         }
-        if (status === 409 || status === 0 || status >= 500) {
-          if (++retries > 10 || Date.now() > deadline) throw new Error(data.error || "Сервер долго не отвечает. Обновите страницу и нажмите «Продолжить запуск» — уже созданные кампании не задублируются.");
-          await sleep(status === 409 ? 4000 : 2500);
+        if (status === 409) {
+          // Предыдущий шаг запуска ещё выполняется (или оборвался и держит блокировку до 75 с) — это не ошибка, ждём сами
+          setWaitingLock(true);
+          if (Date.now() > deadline) throw new Error("Запуск занял дольше 8 минут. Обновите страницу — запуск продолжится сам, уже созданные кампании не задублируются.");
+          await sleep(5000);
+          continue;
+        }
+        setWaitingLock(false);
+        if (status === 0 || status >= 500) {
+          if (++retries > 10 || Date.now() > deadline) throw new Error(data.error || "Сервер долго не отвечает. Обновите страницу — запуск продолжится сам, уже созданные кампании не задублируются.");
+          await sleep(2500);
           continue;
         }
         throw new Error(data.error || `Ошибка ${status}`);
       }
     } catch (e) {
+      setWaitingLock(false);
       toast("Запустить не получилось — причина внизу, у кнопки запуска", "error");
       setLaunchError((e as Error).message);
       setPhase(null);
@@ -379,6 +391,15 @@ export function LaunchWizard(p: Props) {
   const enabledAds = plan?.channels.filter((c) => c.enabled).flatMap((c) => c.groups.flatMap((g) => g.ads.filter(publishable))).length ?? 0;
   const enabledChannels = plan?.channels.filter((c) => c.enabled && c.groups.some((g) => g.ads.some(publishable))).length ?? 0;
   const resuming = Boolean(plan?.launch);
+  // Запуск прервался (закрыли вкладку, оборвалась сеть) — продолжаем сами при открытии страницы, без повторного нажатия.
+  // Только если до этого не было ошибки: с ошибкой (нет денег, данные рекламодателя) повтор ничего не даст
+  useEffect(() => {
+    if (resuming && !autoResumed.current && !launchError && plan?.stage === "ready" && !(plan.launch?.failed.length)) {
+      autoResumed.current = true;
+      void launch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resuming]);
   const preparing = phase === "copy" || phase === "images";
 
   // Запросы по группам — когда объявления готовы. Нет эндпоинта (404) или ошибка — молча без блока
@@ -518,13 +539,14 @@ export function LaunchWizard(p: Props) {
                   {g.top.length ? (
                     <ul className="mt-1.5 grid gap-0.5 text-xs text-ink-2">
                       {g.top.map((t) => (
-                        <li key={t.phrase} className="flex justify-between gap-3"><span className="min-w-0 truncate">{t.phrase}</span><span className="whitespace-nowrap text-muted">{fmt(t.shows)}</span></li>
+                        <li key={t.phrase} className="flex justify-between gap-3"><span className={`min-w-0 truncate ${t.phrase.trim().split(/\s+/).length === 1 ? "text-faint line-through decoration-faint" : ""}`} title={t.phrase.trim().split(/\s+/).length === 1 ? "Слишком общий запрос: ищут фото и идеи, а не запись. Покупаем только при охвате «Широко»" : undefined}>{t.phrase}</span><span className="whitespace-nowrap text-muted">{fmt(t.shows)}</span></li>
                       ))}
                     </ul>
                   ) : null}
                 </li>
               ))}
             </ul>
+            <p className="text-xs text-muted">Зачёркнуты слишком общие запросы («ногти», «маникюр»): по ним в основном ищут фото и идеи. Они показывают спрос, но покупать их робот не будет, если охват поиска не «Широко» (настройка в «Где, кому и когда показывать»).</p>
             {demand.summary.groups.length > 6 ? (
               <button type="button" className="btn btn-ghost btn-sm justify-self-start" onClick={() => setAllGroups(!allGroups)}>{allGroups ? "Свернуть" : `Показать все группы (${demand.summary.groups.length})`}</button>
             ) : null}
@@ -633,7 +655,7 @@ export function LaunchWizard(p: Props) {
       </Section>
 
       <Section id="show" title="Где, кому и когда показывать" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>
-        <ShowSettingsEditor initial={p.show.initial} city={p.show.city} address={p.show.address} autoTime={p.show.autoTime} autoRadiusKm={p.show.autoRadiusKm} live={false} />
+        <ShowSettingsEditor monthlyBudget={budget} initial={p.show.initial} city={p.show.city} address={p.show.address} autoTime={p.show.autoTime} autoRadiusKm={p.show.autoRadiusKm} live={false} />
       </Section>
 
       <Section id="landing" title="Куда ведёт реклама" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>
@@ -734,7 +756,7 @@ export function LaunchWizard(p: Props) {
         {resuming && phase !== "publish" ? (
           <div className="mt-4 rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2" role="status">
             <TriangleAlert size={16} className="shrink-0 mt-0.5" />
-            <div>Запуск прервался на середине. Нажмите «Продолжить запуск» — уже созданные кампании не задублируются, недосозданные пересоздадим.</div>
+            <div>Запуск прервался на середине — продолжаем сами. Уже созданные кампании не задублируются, недосозданные пересоздадим.</div>
           </div>
         ) : null}
         {progress && (phase === "publish" || resuming) ? (
@@ -750,7 +772,9 @@ export function LaunchWizard(p: Props) {
               );
             })}
           </ul>
-        ) : phase === "publish" ? <p className="hint mt-2">Создаём кампании по очереди, это может занять пару минут. Показы включим все разом, когда создадим всё, — до этого деньги не тратятся. Если закроете страницу, робот доведёт запуск сам.</p> : null}
+        ) : null}
+        {waitingLock && phase === "publish" ? <p className="hint mt-2 flex items-center gap-1.5"><Loader2 size={14} className="spin" /> Предыдущий шаг запуска ещё выполняется — ждём его и продолжаем сами, нажимать ничего не нужно.</p> : null}
+        {phase === "publish" && !progress ? <p className="hint mt-2">Создаём кампании по очереди, это может занять пару минут. Показы включим все разом, когда создадим всё, — до этого деньги не тратятся. Если закроете страницу, робот доведёт запуск сам.</p> : null}
       </Section>
 
       {/* Одна главная кнопка этапа — прилипает к низу экрана */}

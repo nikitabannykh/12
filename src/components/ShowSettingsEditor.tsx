@@ -5,9 +5,9 @@
  */
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Clock, Loader2, MapPin, Plus, Users, X } from "lucide-react";
+import { Clock, Loader2, MapPin, Plus, Target, Users, X } from "lucide-react";
 import { api, useToast } from "./client";
-import { AGE_MAX, AGE_MIN, DAY_SHORT, RADIUS_STEPS, sanitizeShow, showSummary, type ShowSettings } from "@/lib/engine/show";
+import { AGE_MAX, AGE_MIN, DAY_SHORT, RADIUS_STEPS, REACH_INFO, recommendedReach, sanitizeShow, showSummary, type Reach, type ShowSettings } from "@/lib/engine/show";
 
 const Seg = <T extends string>({ value, options, onChange, label }: { value: T; options: { v: T; label: string; disabled?: boolean; title?: string }[]; onChange: (v: T) => void; label: string }) => (
   <div role="radiogroup" aria-label={label} className="inline-flex w-fit max-w-full flex-wrap rounded-lg border border-line overflow-hidden text-sm">
@@ -20,7 +20,7 @@ const Seg = <T extends string>({ value, options, onChange, label }: { value: T; 
 
 const hh = (h: number) => `${String(h).padStart(2, "0")}:00`;
 
-export function ShowSettingsEditor({ initial, city, address, autoTime, live, autoRadiusKm }: {
+export function ShowSettingsEditor({ initial, city, address, autoTime, live, autoRadiusKm, monthlyBudget }: {
   initial: ShowSettings;
   city: string;
   address: string | null;
@@ -30,6 +30,8 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
   live: boolean;
   /** Радиус ВКонтакте вокруг адреса; null — координаты адреса не определили, ВКонтакте показывает по всему городу */
   autoRadiusKm: number | null;
+  /** Бюджет в месяц — от него зависит совет по охвату поиска */
+  monthlyBudget?: number;
 }) {
   const hasGeo = autoRadiusKm != null;
   const [s, setS] = useState<ShowSettings>(() => sanitizeShow(initial));
@@ -67,8 +69,22 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
     }
   }
 
+  const rec = recommendedReach(monthlyBudget ?? 30000);
+  const reach: Reach = s.reach ?? rec;
   return (
     <div className="grid gap-6">
+      {/* Охват поиска: насколько широко покупать запросы — главный рычаг, чтобы не сливать бюджет на общие слова */}
+      <div className="grid gap-2.5">
+        <div className="font-semibold flex items-center gap-2"><Target size={16} /> Охват поиска</div>
+        <Seg label="Охват поиска" value={reach} onChange={(v) => set({ reach: v })}
+          options={(["precise", "balanced", "wide"] as Reach[]).map((v) => ({ v, label: `${REACH_INFO[v].label}${v === rec ? " · советуем" : ""}` }))} />
+        <p className="text-sm text-muted leading-relaxed max-w-2xl">{REACH_INFO[reach].text}</p>
+        {reach === "wide" && rec !== "wide" ? (
+          <p className="text-sm text-warn leading-relaxed max-w-2xl">При бюджете {monthlyBudget ? `${new Intl.NumberFormat("ru-RU").format(monthlyBudget)} ₽ в месяц` : "как у вас"} общие запросы вроде «маникюр» и «ногти» съедят деньги за несколько дней: по ним ищут фото и идеи, а не запись. Советуем «{REACH_INFO[rec].label}».</p>
+        ) : null}
+        {live ? <p className="text-xs text-faint">Для идущей рекламы: лишние фразы ставим на паузу в Директе, а не удаляем — охват можно вернуть.</p> : null}
+      </div>
+
       {/* Где */}
       <div className="grid gap-2.5">
         <div className="font-semibold flex items-center gap-2"><MapPin size={16} /> Где показывать</div>

@@ -7,7 +7,8 @@ import { VkAds } from "../platforms/vk";
 import { isDirectChannel } from "./launch";
 import { timeTargeting } from "./extras";
 import { regionIdsFor, vkAdContext, vkLocalGeo } from "./regions";
-import { directDemographics, showOf } from "./show";
+import { directDemographics, recommendedReach, showOf } from "./show";
+import { displayKeyword, geoTerms, reachKeywords } from "./semantics";
 import type { TargetingUpdate } from "../platforms/types";
 
 type GroupTargeting = { ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any"; regionIds?: number[]; retargetingId?: string | null; base?: { ageFrom?: number; ageTo?: number; sex?: "female" | "male" | "any" } };
@@ -72,6 +73,36 @@ export async function applyShowSettings(b: Business): Promise<{ updated: number;
       updated++;
     } catch (e) {
       warnings.push(`${name}: ${(e as Error).message}`);
+    }
+  }
+  return { updated, warnings };
+}
+
+
+/**
+ * Охват поиска у идущей рекламы: в группах поиска оставляем фразы по reachKeywords (остальные — на паузу в Директе,
+ * не удаляем), в «Точно» выключаем автотаргетинг. Фразы групп в базе не трогаем — так охват можно вернуть.
+ */
+export async function applyReach(b: Business): Promise<{ updated: number; warnings: string[] }> {
+  const db = await getDb();
+  const reach = showOf(b).reach ?? recommendedReach(b.monthlyBudget);
+  const camps = await db.select().from(schema.campaigns)
+    .where(and(eq(schema.campaigns.businessId, b.id), eq(schema.campaigns.channel, "search"), inArray(schema.campaigns.status, ["active", "paused"]), isNotNull(schema.campaigns.externalId)));
+  const geo = geoTerms(b);
+  let updated = 0;
+  const warnings: string[] = [];
+  for (const camp of camps) {
+    try {
+      const [acc] = await db.select().from(schema.adAccounts).where(eq(schema.adAccounts.id, camp.accountId));
+      if (!acc) continue;
+      const client = await clientFor(acc);
+      if (!client.applyReach) continue;
+      const groups = await db.select().from(schema.adGroups).where(eq(schema.adGroups.campaignId, camp.id));
+      const keep = new Map<string, string>();
+      for (const g of groups) for (const k of reachKeywords(g.keywords ?? [], reach, geo)) keep.set(displayKeyword(k), k);
+      updated += await client.applyReach(camp.externalId!, keep, reach !== "precise", displayKeyword);
+    } catch (e) {
+      warnings.push(`${CHANNEL_NAME[camp.channel]}: охват не применили — ${(e as Error).message}`);
     }
   }
   return { updated, warnings };

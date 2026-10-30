@@ -4,7 +4,8 @@ import { getDb, schema } from "@/lib/db";
 import { logChange } from "@/lib/engine/ops";
 import { sanitizeShow, showSummary, type ShowSettings } from "@/lib/engine/show";
 import { timeTargeting } from "@/lib/engine/extras";
-import { applyShowSettings } from "@/lib/engine/showApply";
+import { applyReach, applyShowSettings } from "@/lib/engine/showApply";
+import { REACH_INFO, recommendedReach } from "@/lib/engine/show";
 
 export const maxDuration = 60;
 
@@ -26,11 +27,21 @@ export const PUT = route(async ({ business, req }) => {
   const next = { ...business, showSettings: settings };
   const sum = showSummary(settings, business, timeTargeting({ ...business, showSettings: {} })?.note ?? null);
   let result: { updated: number; warnings: string[] } = { updated: 0, warnings: [] };
-  if (business.status === "active" || business.status === "paused") result = await applyShowSettings(next);
+  const prevReach = ((business.showSettings ?? {}) as ShowSettings).reach ?? recommendedReach(business.monthlyBudget);
+  const nextReach = settings.reach ?? recommendedReach(business.monthlyBudget);
+  const live = business.status === "active" || business.status === "paused";
+  if (live) result = await applyShowSettings(next);
+  let reachChanged = 0;
+  if (live && prevReach !== nextReach) {
+    const r = await applyReach(next);
+    reachChanged = r.updated;
+    result.warnings.push(...r.warnings);
+  }
   const diff = [
     prev.where !== sum.where ? `Где: ${sum.where}` : null,
     prev.who !== sum.who ? `Кому: ${sum.who}` : null,
     prev.when !== sum.when ? `Когда: ${sum.when}` : null,
+    prevReach !== nextReach ? `Охват поиска: ${REACH_INFO[nextReach].label} (${REACH_INFO[nextReach].short})${reachChanged ? `, в Директе изменили ${reachChanged} фраз` : ""}` : null,
   ].filter(Boolean) as string[];
   if (diff.length) {
     await logChange({

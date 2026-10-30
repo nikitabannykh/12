@@ -123,7 +123,7 @@ export default async function Settings() {
       <section id="show" className="card p-5 sm:p-7 scroll-mt-6">
         <h2 className="text-lg font-bold">Где, кому и когда показывать</h2>
         <p className="hint mt-1 mb-5">Регион, пол и возраст, дни и часы показа — для всех кампаний сразу. Что не задано, подбирает робот.</p>
-        <ShowSettingsEditor initial={(b.showSettings ?? {}) as ShowSettings} city={b.city} address={b.address} autoTime={timeTargeting({ ...b, showSettings: {} })?.note ?? null} autoRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null} live={b.status === "active" || b.status === "paused"} />
+        <ShowSettingsEditor monthlyBudget={b.monthlyBudget} initial={(b.showSettings ?? {}) as ShowSettings} city={b.city} address={b.address} autoTime={timeTargeting({ ...b, showSettings: {} })?.note ?? null} autoRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null} live={b.status === "active" || b.status === "paused"} />
       </section>
 
       <section id="budget" className="card p-5 sm:p-7 scroll-mt-6">

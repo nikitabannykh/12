@@ -1002,6 +1002,30 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     this.items(res.UpdateResults, "Бюджет кампании");
   }
 
+  /**
+   * Охват поиска у идущей кампании: фразы, которых нет в новом списке, — на паузу (не удаляем: охват можно вернуть);
+   * те, что в списке, — включаем; если фраза в списке с кавычками, а в Директе без, — меняем текст. Автотаргетинг — вкл/выкл.
+   * plain(kw) — текст без операторов для сравнения. Возвращает число изменённых фраз.
+   */
+  async applyReach(campaignExt: string, keep: Map<string, string>, autotargeting: boolean, plain: (k: string) => string): Promise<number> {
+    const res = await this.call("keywords", "get", { SelectionCriteria: { CampaignIds: [did(campaignExt)] }, FieldNames: ["Id", "Keyword", "State"] });
+    const list = (res.Keywords ?? []) as { Id: unknown; Keyword: string; State: string }[];
+    const suspend: unknown[] = [], resume: unknown[] = [], update: { Id: unknown; Keyword: string }[] = [];
+    for (const k of list) {
+      const auto = k.Keyword === "---autotargeting";
+      const want = auto ? (autotargeting ? k.Keyword : null) : keep.get(plain(k.Keyword)) ?? null;
+      const on = k.State !== "SUSPENDED";
+      if (!want && on) suspend.push(k.Id);
+      if (want && !on) resume.push(k.Id);
+      if (want && !auto && want !== k.Keyword) update.push({ Id: k.Id, Keyword: want });
+    }
+    const chunk = <T,>(a: T[]) => Array.from({ length: Math.ceil(a.length / 1000) }, (_, i) => a.slice(i * 1000, i * 1000 + 1000));
+    for (const ids of chunk(suspend)) await this.call("keywords", "suspend", { SelectionCriteria: { Ids: ids } });
+    for (const ids of chunk(resume)) await this.call("keywords", "resume", { SelectionCriteria: { Ids: ids } });
+    for (const part of chunk(update)) await this.call("keywords", "update", { Keywords: part });
+    return suspend.length + resume.length + update.length;
+  }
+
   async setNegativeKeywords(campaignExt: string, words: string[]) {
     const res = await this.call("campaigns", "update", {
       Campaigns: [{ Id: did(campaignExt), NegativeKeywords: words.length ? { Items: words.slice(0, 1000) } : null }],

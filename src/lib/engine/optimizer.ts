@@ -28,7 +28,8 @@ import { formatOf, isRetarget, waitingAudience } from "../channels";
 import { retargetStep } from "./retarget";
 import { addQ, bounceRate, PROXY, proxyCompare, proxyVerdict, proxyVetoes, QUERY_RULE, qualityOf, SITE_RULE, zeroQ, type ProxyResult, type QStat } from "./quality";
 import { phraseKeyOf, sliceKey } from "./metrica-sync";
-import { geoTerms, phraseKey, stem } from "./semantics";
+import { geoTerms, phraseKey, reachKeywords, stem } from "./semantics";
+import { recommendedReach, showOf } from "./show";
 import { MAX_EXCLUDED_SITES } from "../platforms/yandex";
 import type { QueryRow } from "../platforms/types";
 
@@ -387,7 +388,7 @@ async function rolloverGroup(cx: Ctx, client: PlatformClient, camp: Campaign, gr
   const regionIds = t.regionIds ?? ((camp.meta as { regionIds?: number[] })?.regionIds ?? []);
   // Ретаргетинг: новая группа — с тем же условием ретаргетинга, без фраз и автотаргетинга
   const rt = t.retargetingId ?? null;
-  const { groupExt, warnings } = await client.addGroup(camp.externalId, { name: group.name, keywords: rt ? [] : group.keywords ?? [], negatives: rt ? [] : t.negatives ?? [], autotargeting: rt ? false : t.autotargeting ?? true, regionIds, ageFrom: t.ageFrom, ageTo: t.ageTo, sex: t.sex, retargetingId: rt }, { channel: camp.channel as Channel });
+  const { groupExt, warnings } = await client.addGroup(camp.externalId, { name: group.name, keywords: rt ? [] : camp.channel === "search" ? reachKeywords(group.keywords ?? [], showOf(cx.b).reach ?? recommendedReach(cx.b.monthlyBudget), geoTerms(cx.b)) : group.keywords ?? [], negatives: rt ? [] : t.negatives ?? [], autotargeting: rt || (camp.channel === "search" && (showOf(cx.b).reach ?? recommendedReach(cx.b.monthlyBudget)) === "precise") ? false : t.autotargeting ?? true, regionIds, ageFrom: t.ageFrom, ageTo: t.ageTo, sex: t.sex, retargetingId: rt }, { channel: camp.channel as Channel });
   const fresh: AdGroup = { ...group, id: uid("g_"), externalId: groupExt, status: "active", createdAt: new Date() };
   await db.insert(schema.adGroups).values(fresh);
   cx.groups.push(fresh);

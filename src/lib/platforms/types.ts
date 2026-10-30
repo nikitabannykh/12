@@ -224,6 +224,8 @@ export interface PlatformClient {
   /** Сменить ссылку у идущих объявлений (куда ведёт реклама). Возвращает предупреждения */
   updateAdsHref?(adExts: string[], href: string): Promise<string[]>;
   updateTargeting?(campaignExt: string, t: TargetingUpdate): Promise<string[]>;
+  /** Охват поиска: оставить фразы keep (ключ — текст без операторов, значение — фраза для площадки), автотаргетинг вкл/выкл */
+  applyReach?(campaignExt: string, keep: Map<string, string>, autotargeting: boolean, plain: (k: string) => string): Promise<number>;
   updateAdText(adExt: string, t: { title: string; title2?: string | null; text: string; titles?: string[]; texts?: string[] }): Promise<void>;
   getAdStates(adExts: string[]): Promise<Record<string, AdState>>;
   getStats(campaignExts: string[], from: string, to: string, goalIds: number[]): Promise<StatRow[]>;

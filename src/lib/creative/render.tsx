@@ -13,13 +13,14 @@ import { withoutSuperlatives } from "../engine/extras";
  * Без фото — типографские карточки в цветах ниши: прайс, предложение, отзыв.
  * Никаких «нейро-лиц» и шаблонных градиентов — так объявления выглядят как от живого бизнеса.
  */
-export type Layout = "photo" | "tag" | "pricelist" | "review" | "offer";
+export type Layout = "photo" | "tag" | "pricelist" | "review" | "offer" | "benefit";
 export const LAYOUT_NAME: Record<Layout, string> = {
   photo: "Чистое фото",
-  tag: "Ценник",
+  tag: "Подпись на фото",
   pricelist: "Прайс-карточка",
   review: "Отзыв клиента",
   offer: "Предложение крупно",
+  benefit: "Преимущество с рисунком",
 };
 
 type Font = { name: string; data: ArrayBuffer; weight: 500 | 700 | 800; style: "normal" };
@@ -42,7 +43,7 @@ export type RenderInput = {
   layout: Layout;
   width: number;
   height: number;
-  business: Pick<Business, "name" | "niche" | "services" | "offer" | "review" | "address" | "city"> & Partial<Pick<Business, "description">>;
+  business: Pick<Business, "name" | "niche" | "services" | "offer" | "review" | "address" | "city"> & Partial<Pick<Business, "description" | "advantages">>;
   photo?: { data: Buffer; mime: string } | null;
   headline?: string;
   price?: string;
@@ -69,7 +70,9 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
   // Без услуг от владельца — нейтральное название ниши, а не пример вроде «Пилатес на реформерах»
   const headline = inp.headline || svc?.name || (n.id === "other" ? inp.business.name : n.generic);
   const variant = inp.variant ?? 0;
-  const price = inp.price || svc?.price || "";
+  // Цены на картинках не пишем: цена есть в тексте объявления и уточнениях, а на картинке она старит креатив
+  // и путает, когда цена меняется. Картинка продаёт настроение, результат и преимущество
+  const price = "";
   const place = inp.business.address?.split(",")[0] || inp.business.city;
   const layout: Layout = inp.layout;
   // На тёмных палитрах (барбершоп) «ink» светлый — для бумажного ценника берём тёмный текст
@@ -202,6 +205,44 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
       break;
     }
 
+    case "benefit": {
+      // Текст + рисунок: одно сильное преимущество крупно на цвете, иллюстрация ниши. Цвет и сюжет меняются от варианта
+      const advs = (inp.business.advantages ?? []).map((x) => x.trim()).filter((x) => x.length >= 6 && x.length <= 70);
+      const line = advs.length ? advs[variant % advs.length] : inp.business.offer || headline;
+      const schemes = [
+        { back: accent, fore: "#FFFFFF", sub: "rgba(255,255,255,0.85)", illo: { ink, accent: "#FFFDF8", bg } },
+        { back: bg, fore: ink, sub: ink, illo: n.palette },
+        { back: "#FFFDF8", fore: tagInk, sub: tagInk, illo: n.palette },
+      ];
+      const sc = schemes[variant % schemes.length];
+      // Широкая: рисунок справа или слева по варианту. Квадрат: текст сверху, рисунок внизу справа — не наезжают
+      const left = !wide || variant % 2 === 0;
+      el = wide ? (
+        <div style={{ width: W, height: H, display: "flex", position: "relative", background: sc.back, color: sc.fore, fontFamily: "Onest" }}>
+          <div style={{ position: "absolute", display: "flex", ...(left ? { right: -30 * u } : { left: -30 * u }), bottom: -20 * u, opacity: 0.95 }}>
+            <Illustration niche={inp.business.niche} variant={variant + 1} palette={sc.illo} size={0.85 * wideH} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", padding: `${56 * u}px`, width: 0.6 * W, height: H, ...(left ? {} : { marginLeft: 0.4 * W }) }}>
+            <div style={{ display: "flex", fontSize: 28 * u, fontWeight: 700, color: sc.sub }}>{headline}</div>
+            <div style={{ display: "flex", fontSize: (line.length > 40 ? 60 : 72) * u, fontWeight: 800, lineHeight: 1.0, letterSpacing: -2.5 * u }}>{line}</div>
+            <div style={{ display: "flex", fontSize: 28 * u, fontWeight: 700, color: sc.sub }}>{`${inp.business.name} · ${place}`}</div>
+          </div>
+        </div>
+      ) : (
+        <div style={{ width: W, height: H, display: "flex", position: "relative", background: sc.back, color: sc.fore, fontFamily: "Onest" }}>
+          <div style={{ position: "absolute", display: "flex", right: -20 * u, bottom: -20 * u, opacity: 0.95 }}>
+            <Illustration niche={inp.business.niche} variant={variant + 1} palette={sc.illo} size={0.5 * W} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", padding: `${80 * u}px`, width: W, height: H }}>
+            <div style={{ display: "flex", fontSize: 34 * u, fontWeight: 700, color: sc.sub }}>{headline}</div>
+            <div style={{ display: "flex", fontSize: (line.length > 40 ? 76 : 92) * u, fontWeight: 800, lineHeight: 1.02, letterSpacing: -2.5 * u, marginTop: 44 * u, maxWidth: 0.86 * W }}>{line}</div>
+            <div style={{ display: "flex", fontSize: 32 * u, fontWeight: 700, color: sc.sub, marginTop: "auto", maxWidth: 0.42 * W }}>{`${inp.business.name} · ${place}`}</div>
+          </div>
+        </div>
+      );
+      break;
+    }
+
     case "offer":
     default: {
       const offer = inp.business.offer || (price ? `${headline} — ${price}` : headline);
@@ -247,10 +288,10 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
 }
 
 /** Какие макеты имеют смысл для этого бизнеса */
-export function availableLayouts(b: Pick<Business, "services" | "offer" | "review"> & Partial<Pick<Business, "niche" | "name" | "description">>, hasPhotos = true): Layout[] {
+export function availableLayouts(b: Pick<Business, "services" | "offer" | "review"> & Partial<Pick<Business, "niche" | "name" | "description" | "advantages">>, hasPhotos = true): Layout[] {
   void hasPhotos; // без фото «photo» и «tag» рисуются с тематической иллюстрацией
-  const out: Layout[] = ["photo", "tag"];
-  if ((b.services ?? []).filter((s) => s.price).length >= 2) out.push("pricelist");
+  // Цен на картинках нет: «прайс-карточку» больше не предлагаем; вместо неё — преимущество с рисунком
+  const out: Layout[] = ["photo", "tag", "benefit"];
   if (b.offer || !hasPhotos) out.push("offer");
   // Медуслуги: отзывы и благодарности пациентов в рекламе запрещены (закон «О рекламе», ст. 24)
   if (b.review && b.review.length > 20 && !(b.niche && isMedical({ ...b, niche: b.niche }))) out.push("review");
