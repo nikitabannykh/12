@@ -19,7 +19,7 @@ import { isMedical } from "@/lib/niches";
 import { DaysChart, Delta } from "@/components/charts";
 import { ClientsWeek } from "@/components/ClientsWeek";
 import { CHANNEL_NAME } from "@/lib/platforms";
-import { rub, num, pl, isoDay } from "@/lib/util";
+import { rub, num, pl, plural, isoDay } from "@/lib/util";
 import { monthStartDay, nextMonthStart } from "@/lib/engine/budget-plan";
 import { healthCheck, type Health } from "@/lib/engine/health";
 import { balanceText, LOW_DAYS, TOPUP_URL } from "@/lib/engine/balance";
@@ -74,7 +74,7 @@ export default async function Dashboard() {
   // «Модерацию прошло, но показов нет» (нужны документы, нет денег…) — площадка пишет причину, мы храним её с префиксом
   const isBlocked = (a: (typeof ads)[number]) => a.status === "active" && /^Не показывается/.test(a.statusNote ?? "");
   const blockedAds = ads.filter((a) => isBlocked(a) && liveCamp.has(a.campaignId));
-  const blockedDocs = blockedAds.filter((a) => /документ/i.test(a.statusNote ?? "")).length;
+  const blockedDocs = blockedAds.filter((a) => /документ|лиценз/i.test(a.statusNote ?? "")).length;
   const active = ads.filter((a) => a.status === "active" && !isBlocked(a) && showing(a)).length;
   const moderation = ads.filter((a) => a.status === "moderation" && showing(a)).length;
   const rejected = ads.filter((a) => a.status === "rejected").length;
@@ -104,7 +104,7 @@ export default async function Dashboard() {
   const monthShare = b.monthlyBudget ? monthCost / b.monthlyBudget : 0;
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-[2.2rem] sm:text-[2.6rem] font-semibold tracking-[-0.045em] leading-none">Главное</h1>
@@ -244,13 +244,13 @@ export default async function Dashboard() {
           <div className="rounded-2xl bg-paper p-5">
             <div className="text-[13px] text-muted">Прошлые 7 дней</div>
             <div className="mt-2 text-[15px] text-muted">{cpcPrev ? `${rub(p.cost)} ÷ ${rub(cpcPrev)} за клиента` : `Потрачено ${rub(p.cost)}`}</div>
-            <div className="mt-1 text-4xl font-semibold tracking-[-0.04em] text-ink/45">{num(p.clients || p.leads)} <span className="text-lg font-medium tracking-normal">{p.clients ? "клиентов" : "обращений"}</span></div>
+            <div className="mt-1 text-4xl font-semibold tracking-[-0.04em] text-ink/45">{num(p.clients || p.leads)} <span className="text-lg font-medium tracking-normal">{p.clients ? plural(p.clients, "клиент", "клиента", "клиентов") : plural(p.leads, "обращение", "обращения", "обращений")}</span></div>
           </div>
           <div className="rounded-2xl bg-white ring-1 ring-black/[0.08] p-5">
             <div className="text-[13px] text-muted">Эти 7 дней</div>
             <div className="mt-2 text-[15px] text-ink-2">{cpc ? `${rub(c.cost)} ÷ ${rub(cpc)} за клиента` : `Потрачено ${rub(c.cost)}`}</div>
             <div className="mt-1 flex items-baseline gap-3 flex-wrap">
-              <span className="text-4xl font-semibold tracking-[-0.04em]">{num(c.clients || c.leads)} <span className="text-lg font-medium tracking-normal">{c.clients ? "клиентов" : "обращений"}</span></span>
+              <span className="text-4xl font-semibold tracking-[-0.04em]">{num(c.clients || c.leads)} <span className="text-lg font-medium tracking-normal">{c.clients ? plural(c.clients, "клиент", "клиента", "клиентов") : plural(c.leads, "обращение", "обращения", "обращений")}</span></span>
               <Delta cur={c.clients || c.leads} prev={p.clients || p.leads} />
             </div>
           </div>
@@ -376,8 +376,10 @@ export default async function Dashboard() {
                           </span>
                         ) : blockedAds.some((a) => a.campaignId === x.id && /документ/i.test(a.statusNote ?? "")) ? (
                           <span className="pill bg-bad-soft text-bad">не показывается: нужна лицензия</span>
-                        ) : ads.some((a) => a.campaignId === x.id && a.status === "moderation") && !ads.some((a) => a.campaignId === x.id && a.status === "active") ? (
-                          <span className="pill bg-info-soft text-ink-2">на модерации</span>
+                        ) : !ads.some((a) => a.campaignId === x.id && a.status === "active" && !isBlocked(a)) && x.platform !== "demo" ? (
+                          ads.some((a) => a.campaignId === x.id && a.status === "moderation")
+                            ? <span className="pill bg-info-soft text-ink-2">на модерации</span>
+                            : <span className="pill bg-bad-soft text-bad">не показывается</span>
                         ) : (
                           <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-0.5">
                             <span className="pill bg-good-soft text-good">идёт</span>

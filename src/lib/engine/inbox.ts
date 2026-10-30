@@ -51,10 +51,12 @@ async function getSeen(businessId: string): Promise<Seen> {
 /** Открыли колокольчик: события до этого момента и текущие «требует внимания» — прочитаны */
 export async function markInboxSeen(b: Business) {
   const { items } = await inboxFor(b);
-  await kvSet(seenKey(b.id), { at: new Date().toISOString(), now: items.filter((x) => x.group === "now").map(nowKey) });
+  // Демо живёт по своим часам (впереди настоящих) — «прочитано до» берём не раньше самого свежего события
+  const latest = items.filter((x) => x.group === "event").reduce((m, x) => (x.at > m ? x.at : m), new Date().toISOString());
+  await kvSet(seenKey(b.id), { at: latest, now: items.filter((x) => x.group === "now").map(nowKey) });
 }
-/** «Сейчас» помечаем прочитанным вместе с текстом: изменилось (стало больше отклонённых) — снова новое */
-const nowKey = (x: { id: string; title: string }) => `${x.id}|${x.title}`;
+/** «Сейчас» помечаем прочитанным по виду проблемы: счётчик в заголовке меняется («ещё одно прошло») — это не новое */
+const nowKey = (x: { id: string; tone: string }) => `${x.id}|${x.tone}`;
 
 /** Лента для колокольчика */
 export async function inboxFor(b: Business): Promise<{ items: InboxItem[]; unread: number }> {
@@ -99,9 +101,9 @@ export async function inboxFor(b: Business): Promise<{ items: InboxItem[]; unrea
   const events: InboxItem[] = ((await kvGet<InboxEvent[]>(key(b.id))) ?? []).map((e): InboxItem | null => {
     const camp = /#c-(.+)$/.exec(e.href ?? "")?.[1];
     // Старые записи «показы идут», а одобренных объявлений нет (все на модерации) — это была неправда, не показываем
-    if (camp && /: показы идут$/.test(e.title) && !servingCamps.has(camp) && !docsCamps.has(camp)) return null;
-    if (camp && docsCamps.has(camp) && /: показы идут$/.test(e.title))
-      return { ...e, tone: "warn" as const, title: e.title.replace(/: показы идут$/, ": Директ включил кампанию, но показов ещё нет"), text: "Объявления ждут проверки лицензии — показы начнутся после неё.", group: "event" as const, unread: e.at > seen };
+    if (camp && /: показы (идут|начались)$/.test(e.title) && !servingCamps.has(camp) && !docsCamps.has(camp)) return null;
+    if (camp && docsCamps.has(camp) && /: показы (идут|начались)$/.test(e.title))
+      return { ...e, tone: "warn" as const, title: e.title.replace(/: показы (идут|начались)$/, ": Директ включил кампанию, но показов ещё нет"), text: "Объявления ждут проверки лицензии — показы начнутся после неё.", group: "event" as const, unread: e.at > seen };
     return { ...e, group: "event" as const, unread: e.at > seen };
   }).filter((x): x is InboxItem => x !== null);
   const changes = await db.select().from(schema.changes).where(and(eq(schema.changes.businessId, b.id), gte(schema.changes.at, since))).orderBy(desc(schema.changes.at)).limit(15);

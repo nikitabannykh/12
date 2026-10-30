@@ -120,7 +120,7 @@ export function ProfileMenu({ email, label }: { email: string; label: string }) 
   return (
     <div className="relative" ref={ref}>
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-label="Профиль"
-        className="h-10 pl-1 pr-3 inline-flex items-center gap-2 rounded-full bg-card ring-1 ring-black/[0.06] hover:ring-black/[0.12]">
+        className="h-10 pl-1 pr-1 sm:pr-3 inline-flex items-center gap-2 rounded-full bg-card ring-1 ring-black/[0.06] hover:ring-black/[0.12]">
         <span className="w-8 h-8 rounded-full bg-ink text-white grid place-items-center text-sm font-bold uppercase">{label.charAt(0) || "?"}</span>
         <span className="hidden sm:block text-sm font-semibold max-w-[12rem] truncate">{label}</span>
       </button>

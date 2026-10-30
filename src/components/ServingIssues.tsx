@@ -43,7 +43,7 @@ export function ServingIssues({ issues, heading, compact = false }: { issues: Is
         <div className="font-bold leading-snug">{heading ? `${heading}: ${title.charAt(0).toLowerCase()}${title.slice(1)}` : title}</div>
         <ol className="mt-3 grid gap-4">
           {issues.map((x, i) => (
-            <li key={x.title} className="text-sm">
+            <li key={`${i}-${x.title}`} className="text-sm">
               <div className="font-semibold">{issues.length > 1 ? `${i + 1}. ` : ""}{x.title}</div>
               <p className="text-ink-2 mt-0.5 leading-relaxed max-w-2xl">{x.text}</p>
               {x.action ? <div className="mt-2">{x.action}</div> : null}

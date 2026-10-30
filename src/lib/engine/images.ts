@@ -124,13 +124,18 @@ export async function generatePhotos(b: Business, ideas: string[], count: number
   const prompts = (await creativeConcepts(b, ideas, count)).slice(0, count);
   const style = "Рекламная фотосъёмка, фотореализм, выразительная композиция, живые цвета, глубина резкости, настоящие материалы. Без текста, без надписей, без логотипов, без водяных знаков";
   const seed = Math.floor(Math.random() * 1e6);
-  const results = await Promise.allSettled(prompts.map((p, i) => art(`${p}. ${style}`, { w: 1, h: 1 }, seed + i)));
+  // Стиль — первым: промпт режется до 500 символов, и «без текста» не должно потеряться. Каждый кадр сохраняем сразу,
+  // как он готов: если запрос оборвётся по времени, оплаченные картинки не пропадут
   const ids: string[] = [];
   const errors: string[] = [];
-  for (const [i, r] of results.entries()) {
-    if (r.status === "fulfilled") ids.push((await saveImage(b.id, "generated", r.value, { prompt: prompts[i] })).id);
-    else errors.push(String((r.reason as Error)?.message ?? r.reason));
-  }
+  await Promise.all(prompts.map(async (p, i) => {
+    try {
+      const img = await art(`${style}. ${p}`, { w: 1, h: 1 }, seed + i);
+      ids.push((await saveImage(b.id, "generated", img, { prompt: prompts[i] })).id);
+    } catch (e) {
+      errors.push(String((e as Error)?.message ?? e));
+    }
+  }));
   return { ids, errors };
 }
 

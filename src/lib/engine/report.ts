@@ -171,8 +171,10 @@ export async function report(b: Business, days: number, end?: string) {
   const now = await reportNow(b);
   // end — последний день периода (для произвольных дат и «прошлого месяца»); не позже сегодняшнего
   const to = end && end < isoDay(now) ? end : isoDay(now);
-  const from = isoDay(addDays(now, -(days - 1)));
-  const prevFrom = isoDay(addDays(now, -(2 * days - 1)));
+  // Период считаем от его последнего дня (to), а не от сегодня: «вчера», «прошлый месяц», свои даты
+  const endDay = new Date(to + "T00:00:00Z");
+  const from = isoDay(addDays(endDay, -(days - 1)));
+  const prevFrom = isoDay(addDays(endDay, -(2 * days - 1)));
   // Грузим целые недели: доля клиентов недели считается по всем её обращениям
   const loadFrom = isoDay(startOfWeek(new Date(prevFrom + "T00:00:00Z")));
   const loadTo = isoDay(addDays(startOfWeek(now), 6));

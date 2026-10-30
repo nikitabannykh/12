@@ -956,5 +956,9 @@ export function reachKeywords(keywords: string[], reach: "precise" | "balanced" 
     const extra = scored.filter((x) => !x.info && x.n >= 2).sort((a, b) => b.n - a.n).map(fix).filter((k) => !out.includes(k));
     out = [...out, ...extra].slice(0, Math.max(min, out.length));
   }
+  // Совсем пусто (в группе одни общие или информационные фразы) — оставляем исходные без информационных,
+  // а если и их нет — исходные как есть: группа без фраз в Директе вообще не показывается
+  if (!out.length) out = scored.filter((x) => !x.info).map((x) => x.k);
+  if (!out.length) out = keywords;
   return [...new Set(out)];
 }

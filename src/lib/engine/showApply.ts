@@ -97,10 +97,14 @@ export async function applyReach(b: Business): Promise<{ updated: number; warnin
       if (!acc) continue;
       const client = await clientFor(acc);
       if (!client.applyReach) continue;
-      const groups = await db.select().from(schema.adGroups).where(eq(schema.adGroups.campaignId, camp.id));
-      const keep = new Map<string, string>();
-      for (const g of groups) for (const k of reachKeywords(g.keywords ?? [], reach, geo)) keep.set(displayKeyword(k), k);
-      updated += await client.applyReach(camp.externalId!, keep, reach !== "precise", displayKeyword);
+      const groups = await db.select().from(schema.adGroups).where(and(eq(schema.adGroups.campaignId, camp.id), isNotNull(schema.adGroups.externalId)));
+      const perGroup = new Map<string, { keep: Map<string, string>; known: Set<string> }>();
+      for (const g of groups) {
+        if ((g.targeting as { retargetingId?: string } | null)?.retargetingId) continue;
+        const all = g.keywords ?? [];
+        perGroup.set(g.externalId!, { keep: new Map(reachKeywords(all, reach, geo).map((k) => [displayKeyword(k), k])), known: new Set(all.map(displayKeyword)) });
+      }
+      updated += await client.applyReach(camp.externalId!, perGroup, reach !== "precise", displayKeyword);
     } catch (e) {
       warnings.push(`${CHANNEL_NAME[camp.channel]}: охват не применили — ${(e as Error).message}`);
     }

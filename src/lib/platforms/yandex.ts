@@ -1003,27 +1003,46 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   }
 
   /**
-   * Охват поиска у идущей кампании: фразы, которых нет в новом списке, — на паузу (не удаляем: охват можно вернуть);
-   * те, что в списке, — включаем; если фраза в списке с кавычками, а в Директе без, — меняем текст. Автотаргетинг — вкл/выкл.
-   * plain(kw) — текст без операторов для сравнения. Возвращает число изменённых фраз.
+   * Охват поиска у идущей кампании, по группам. groups: внешний ID группы → { keep: текст без операторов → фраза для
+   * Директа; known: все наши фразы группы (без операторов) }. Наши фразы вне keep — на паузу (не удаляем: охват
+   * можно вернуть), из keep — включаем, меняем текст (кавычки) и добавляем недостающие. Фразы, добавленные владельцем
+   * в Директе руками (их нет в known), не трогаем. Автотаргетинг: вкл — добавляем/включаем, выкл — на паузу.
+   * Возвращает число изменений, которые Директ принял.
    */
-  async applyReach(campaignExt: string, keep: Map<string, string>, autotargeting: boolean, plain: (k: string) => string): Promise<number> {
-    const res = await this.call("keywords", "get", { SelectionCriteria: { CampaignIds: [did(campaignExt)] }, FieldNames: ["Id", "Keyword", "State"] });
-    const list = (res.Keywords ?? []) as { Id: unknown; Keyword: string; State: string }[];
-    const suspend: unknown[] = [], resume: unknown[] = [], update: { Id: unknown; Keyword: string }[] = [];
-    for (const k of list) {
-      const auto = k.Keyword === "---autotargeting";
-      const want = auto ? (autotargeting ? k.Keyword : null) : keep.get(plain(k.Keyword)) ?? null;
-      const on = k.State !== "SUSPENDED";
-      if (!want && on) suspend.push(k.Id);
-      if (want && !on) resume.push(k.Id);
-      if (want && !auto && want !== k.Keyword) update.push({ Id: k.Id, Keyword: want });
+  async applyReach(campaignExt: string, groups: Map<string, { keep: Map<string, string>; known: Set<string> }>, autotargeting: boolean, plain: (k: string) => string): Promise<number> {
+    const res = await this.call("keywords", "get", { SelectionCriteria: { CampaignIds: [did(campaignExt)] }, FieldNames: ["Id", "AdGroupId", "Keyword", "State"] });
+    const list = (res.Keywords ?? []) as { Id: unknown; AdGroupId: unknown; Keyword: string; State: string }[];
+    const suspend: unknown[] = [], resume: unknown[] = [], update: { Id: unknown; Keyword: string }[] = [], add: { AdGroupId: unknown; Keyword: string }[] = [];
+    for (const [groupExt, g] of groups) {
+      const mine = list.filter((k) => String(k.AdGroupId) === String(groupExt));
+      const seen = new Set<string>();
+      let auto = false;
+      for (const k of mine) {
+        const on = k.State !== "SUSPENDED";
+        if (k.Keyword === "---autotargeting") {
+          auto = true;
+          if (autotargeting && !on) resume.push(k.Id);
+          if (!autotargeting && on) suspend.push(k.Id);
+          continue;
+        }
+        const p = plain(k.Keyword);
+        seen.add(p);
+        const want = g.keep.get(p);
+        if (!want) { if (on && g.known.has(p)) suspend.push(k.Id); continue; }
+        if (!on) resume.push(k.Id);
+        if (want !== k.Keyword) update.push({ Id: k.Id, Keyword: want });
+      }
+      for (const [p, kw] of g.keep) if (!seen.has(p)) add.push({ AdGroupId: did(groupExt), Keyword: kw });
+      if (autotargeting && !auto) add.push({ AdGroupId: did(groupExt), Keyword: "---autotargeting" });
     }
     const chunk = <T,>(a: T[]) => Array.from({ length: Math.ceil(a.length / 1000) }, (_, i) => a.slice(i * 1000, i * 1000 + 1000));
-    for (const ids of chunk(suspend)) await this.call("keywords", "suspend", { SelectionCriteria: { Ids: ids } });
-    for (const ids of chunk(resume)) await this.call("keywords", "resume", { SelectionCriteria: { Ids: ids } });
-    for (const part of chunk(update)) await this.call("keywords", "update", { Keywords: part });
-    return suspend.length + resume.length + update.length;
+    const okCount = (r: unknown, key: string) => (((r as Record<string, unknown>)?.[key] ?? []) as { Errors?: unknown[] }[]).filter((x) => !x.Errors?.length).length;
+    let done = 0;
+    for (const ids of chunk(suspend)) done += okCount(await this.call("keywords", "suspend", { SelectionCriteria: { Ids: ids } }), "SuspendResults");
+    for (const ids of chunk(resume)) done += okCount(await this.call("keywords", "resume", { SelectionCriteria: { Ids: ids } }), "ResumeResults");
+    for (const part of chunk(update)) done += okCount(await this.call("keywords", "update", { Keywords: part }), "UpdateResults");
+    for (const part of chunk(add)) done += okCount(await this.call("keywords", "add", { Keywords: part }), "AddResults");
+    return done;
   }
 
   async setNegativeKeywords(campaignExt: string, words: string[]) {
@@ -1079,7 +1098,9 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     for (let i = 0; i < campaignExts.length; i += 1000) {
       const res = await this.call("campaigns", "get", { SelectionCriteria: { Ids: campaignExts.slice(i, i + 1000).map(did) }, FieldNames: ["Id", "State", "Status", "StatusPayment", "StatusClarification"] }).catch(() => null);
       for (const c of res?.Campaigns ?? []) {
-        if (c.State === "ON" || c.State === "SUSPENDED" || c.State === "ARCHIVED") { out[String(c.Id)] = { ok: true }; continue; }
+        if (c.State === "ON" || c.State === "ARCHIVED") { out[String(c.Id)] = { ok: true }; continue; }
+        // Мы спрашиваем только про включённые у нас кампании: SUSPENDED — её остановили прямо в кабинете Директа
+        if (c.State === "SUSPENDED") { out[String(c.Id)] = { ok: false, code: "SUSPENDED", note: "Кампанию остановили в кабинете Директа — включите её там или здесь" }; continue; }
         const why = String(c.StatusClarification ?? "");
         const note = c.StatusPayment === "DISALLOWED" || /средств|деньг|оплат/i.test(why) ? "Не хватает средств на счёте Директа — пополните кабинет, и показы начнутся"
           : c.Status === "MODERATION" || /модерац/i.test(why) ? "Кампания на модерации Директа"

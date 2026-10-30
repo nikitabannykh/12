@@ -44,7 +44,7 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
   const inbox: Omit<InboxEvent, "id" | "at">[] = [];
   // Смена «показывается/нет» у кампании — пишем после статусов объявлений: если объявления ждут лицензию,
   // «показы идут» было бы неправдой
-  const deliveryMoves: { c: Campaign; ok: boolean; note?: string; wasMoney: boolean }[] = [];
+  const deliveryMoves: { c: Campaign; ok: boolean; note?: string; wasMoney: boolean; moderation?: boolean }[] = [];
   const byAccount = new Map<string, Campaign[]>();
   for (const c of camps) if (c.externalId) byAccount.set(c.accountId, [...(byAccount.get(c.accountId) ?? []), c]);
 
@@ -159,7 +159,8 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
           if (!x) continue;
           const prev = (c.meta as { delivery?: { ok: boolean; note?: string } } | null)?.delivery;
           if (prev?.ok === x.ok && prev?.note === x.note) continue;
-          if (prev?.ok !== x.ok) deliveryMoves.push({ c, ok: x.ok, note: x.note, wasMoney: /средств|пополн/i.test(prev?.note ?? "") });
+          // Первая проверка после запуска (prev нет) и «на модерации» — не событие: это обычное начало
+          if (prev && prev.ok !== x.ok) deliveryMoves.push({ c, ok: x.ok, note: x.note, wasMoney: /средств|пополн/i.test(prev?.note ?? ""), moderation: /модерац/i.test(x.note ?? "") });
           const [fresh] = await db.select({ meta: schema.campaigns.meta }).from(schema.campaigns).where(eq(schema.campaigns.id, c.id));
           await db.update(schema.campaigns).set({ meta: { ...(fresh?.meta ?? {}), delivery: { ...x, at: new Date().toISOString() } } }).where(eq(schema.campaigns.id, c.id));
         }
@@ -195,7 +196,7 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
           await db.update(schema.ads).set({ status: next, statusNote: s.note ?? null }).where(eq(schema.ads.id, a.id));
         }
       }
-      if (moved.accepted) inbox.push({ tone: "good", title: `Модерацию прошли ${pl(moved.accepted, "объявление", "объявления", "объявлений")}`, href: "/app/ads" });
+      if (moved.accepted) inbox.push({ tone: "good", title: `Модерацию ${moved.accepted % 10 === 1 && moved.accepted % 100 !== 11 ? "прошло" : "прошли"} ${pl(moved.accepted, "объявление", "объявления", "объявлений")}`, href: "/app/ads" });
       if (moved.rejected) inbox.push({ tone: "warn", title: `Модерация отклонила ${pl(moved.rejected, "объявление", "объявления", "объявлений")}`, text: "Причины и что делать — у каждого объявления.", href: "/app/ads" });
       if (moved.docs) inbox.push({ tone: "bad", title: "Директ ждёт лицензию", text: `${pl(moved.docs, "объявление прошло", "объявления прошли", "объявлений прошли")} модерацию, но не показываются, пока Директ не проверит лицензию.`, href: "/app" });
       if (drafts.length && client.moderateAds) {
@@ -210,8 +211,11 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
   // «Показы идут» — только когда это правда: площадка кампанию показывает И в ней есть одобренные объявления без
   // ограничений (не на модерации, не ждут лицензию). Пишем при смене состояния (meta.serving), а не при каждой проверке
   {
-    for (const m of deliveryMoves.filter((x) => !x.ok))
+    const stoppedNow = new Set<string>();
+    for (const m of deliveryMoves.filter((x) => !x.ok && !x.moderation)) {
+      stoppedNow.add(m.c.id);
       inbox.push({ tone: "bad", title: `${CHANNEL_NAME[m.c.channel] ?? m.c.channel}: реклама не показывается`, text: m.note, href: `/app/ads#c-${m.c.id}` });
+    }
     const camps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), eq(schema.campaigns.status, "active")));
     const liveAds = camps.length ? await db.select({ campaignId: schema.ads.campaignId, status: schema.ads.status, note: schema.ads.statusNote }).from(schema.ads)
       .where(and(eq(schema.ads.businessId, b.id), inArray(schema.ads.status, ["active", "moderation"]))) : [];
@@ -225,15 +229,17 @@ export async function syncBusiness(b: Business, opts: { only?: "states" } = {}) 
       await db.update(schema.campaigns).set({ meta: { ...meta, serving } }).where(eq(schema.campaigns.id, c.id));
       const name = CHANNEL_NAME[c.channel] ?? c.channel;
       const href = `/app/ads#c-${c.id}`;
-      if (serving) inbox.push({ tone: "good", title: `${name}: показы начались`, text: `Директ показывает ${okAds} ${okAds === 1 ? "объявление" : "объявлений"}.`, href });
-      else if (meta.serving) inbox.push({ tone: "warn", title: `${name}: показы остановились`, href });
+      const where = c.platform === "vk" ? "VK Реклама" : "Директ";
+      if (serving) inbox.push({ tone: "good", title: `${name}: показы начались`, text: `${where} показывает ${pl(okAds, "объявление", "объявления", "объявлений")}.`, href });
+      else if (meta.serving && !stoppedNow.has(c.id)) inbox.push({ tone: "warn", title: `${name}: показы остановились`, href });
     }
     // Пополнили счёт, но показов ещё нет (модерация, лицензия) — говорим как есть
     for (const m of deliveryMoves.filter((x) => x.ok && x.wasMoney)) {
       const mine = liveAds.filter((a) => a.campaignId === m.c.id);
       if (mine.some((a) => a.status === "active" && !/^Не показывается/.test(a.note ?? ""))) continue;
       const docs = mine.some((a) => /документ|лиценз/i.test(a.note ?? ""));
-      inbox.push({ tone: "info", title: `${CHANNEL_NAME[m.c.channel] ?? m.c.channel}: деньги поступили`, text: docs ? "Показы начнутся после проверки лицензии." : "Показы начнутся, когда объявления пройдут модерацию.", href: `/app/ads#c-${m.c.id}` });
+      const onMod = mine.some((a) => a.status === "moderation");
+      inbox.push({ tone: "info", title: `${CHANNEL_NAME[m.c.channel] ?? m.c.channel}: деньги поступили`, text: docs ? "Показы начнутся после проверки лицензии." : onMod ? "Показы начнутся, когда объявления пройдут модерацию." : "Площадка включает показы — обычно это несколько минут.", href: `/app/ads#c-${m.c.id}` });
     }
   }
   await pushInbox(b.id, inbox);

@@ -1183,7 +1183,7 @@ function ContactsSection({ f, set, sources, need }: { f: BusinessInput; set: Set
         {f.dgisUrl?.trim() && normalizeLink(f.dgisUrl) && linkKind(normalizeLink(f.dgisUrl)!) !== "dgis" ? <p className="mt-1.5 text-sm text-warn">Это не похоже на ссылку 2ГИС — проверьте адрес.</p> : null}
       </Field>
       <Field label="Юр. данные" htmlFor="r-legal" chip={sources.legalInfo} id="legal" hint="ИП или ООО, ФИО или название и ИНН — для маркировки рекламы (ЕРИР). VK без них не пропускает объявления.">
-        <input id="r-legal" className="field" value={f.legalInfo} onChange={(e) => set("legalInfo", e.target.value)} placeholder="ИП Иванова А. С., ИНН 165012345678" maxLength={200} />
+        <input id="r-legal" className="field" value={f.legalInfo} onChange={(e) => set("legalInfo", e.target.value)} placeholder="ИП Иванова А. С., ИНН 165012345680" maxLength={200} />
         {/^ИП,\s*ИНН/.test(f.legalInfo.trim()) ? <p className="mt-1.5 text-sm text-warn">Допишите ФИО после «ИП» — так, как в выписке.</p> : null}
       </Field>
       <Field label="Кто ваши клиенты" htmlFor="r-aud">

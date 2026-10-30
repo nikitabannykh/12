@@ -1740,7 +1740,9 @@ async function nextPhoto(cx: Ctx, live: Ad[], current: string | null | undefined
   const k = `${cx.b.id}|${live.map((a) => a.id).join(",")}`;
   if (photoPick.has(k)) return photoPick.get(k)!;
   if (photoPick.size > 500) photoPick.clear();
-  const inGroup = new Set(live.map((a) => cx.images.get(a.imageId!)?.photoId).filter(Boolean) as string[]);
+  // Все кадры, что уже были в группе (и проигравшие на паузе), — иначе робот гонял бы по кругу два одних и тех же фото
+  const groupId = live[0]?.adGroupId;
+  const inGroup = new Set(cx.ads.filter((a) => a.adGroupId === groupId && a.imageId).map((a) => cx.images.get(a.imageId!)?.photoId).filter(Boolean) as string[]);
   if (current) inGroup.add(current);
   const pool = await listPhotos(cx.b.id);
   let pick = pool.find((p) => !inGroup.has(p.id))?.id ?? null;

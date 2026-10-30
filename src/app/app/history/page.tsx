@@ -29,7 +29,7 @@ export default async function History({ searchParams }: { searchParams: Promise<
   }
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-3xl font-extrabold tracking-tight">История изменений</h1>

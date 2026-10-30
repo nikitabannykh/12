@@ -954,6 +954,8 @@ function CampaignPill({ s, ch, short = false, mod }: { s?: { stopped: string | n
     if (mod?.docs) return <span className="pill bg-bad-soft text-bad">Не показывается: лицензия</span>;
     if (mod && !mod.active && mod.moderation) return <span className="pill bg-info-soft text-ink-2">На модерации</span>;
     if (mod && !mod.active && !mod.moderation && mod.rejected) return <span className="pill bg-bad-soft text-bad">Отклонена модерацией</span>;
+    // Ни одного одобренного объявления без ограничений — это не «идёт», что бы ни говорила кампания
+    if (mod && !mod.active) return <span className="pill bg-bad-soft text-bad" title={s?.note ?? undefined}>Не показывается</span>;
     if (mod && mod.moderation) return <span className="pill bg-good-soft text-good">Идёт{short ? "" : ` · ${mod.moderation} на модерации`}</span>;
     return <span className="pill bg-good-soft text-good">Идёт</span>;
   })();

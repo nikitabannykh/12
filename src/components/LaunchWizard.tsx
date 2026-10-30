@@ -327,8 +327,9 @@ export function LaunchWizard(p: Props) {
           retries = 0;
           if (data.progress) setProgress(data.progress);
           if (!data.done) {
+            if (Date.now() > deadline) throw new Error("Запуск занял дольше 8 минут. Обновите страницу — запуск продолжится сам, уже созданные кампании не задублируются.");
             // Все каналы созданы, но кампания не включилась — площадке нужно время, повторяем не сразу
-            if (data.progress && data.progress.finished >= data.progress.total) await sleep(3000);
+            await sleep(data.progress && data.progress.finished >= data.progress.total ? 3000 : 500);
             continue;
           }
           const w = data.warnings ?? [];
