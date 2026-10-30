@@ -1076,13 +1076,16 @@ export class YandexDirect implements PlatformClient, WordstatReports {
       const groupIds = [...new Set(((res.Ads ?? []) as { AdGroupId?: unknown }[]).map((a) => String(a.AdGroupId ?? "")).filter(Boolean))];
       const restricted = new Set<string>();
       for (let g = 0; g < groupIds.length; g += 1000) {
-        const gr = await this.call("adgroups", "get", { SelectionCriteria: { Ids: groupIds.slice(g, g + 1000).map(did) }, FieldNames: ["Id", "RegionIds", "RestrictedRegionIds"] }).catch(() => null);
+        const gr = await this.call("adgroups", "get", { SelectionCriteria: { Ids: groupIds.slice(g, g + 1000).map(did) }, FieldNames: ["Id", "RegionIds", "RestrictedRegionIds"] })
+          .catch((e) => { console.warn(`[yandex] adgroups.get (ограничения регионов) не удалось: ${(e as Error).message}`); return null; });
         for (const x of (gr?.AdGroups ?? []) as { Id: unknown; RegionIds?: number[]; RestrictedRegionIds?: { Items?: number[] } | number[] | null }[]) {
           const rr = Array.isArray(x.RestrictedRegionIds) ? x.RestrictedRegionIds : x.RestrictedRegionIds?.Items ?? [];
-          const regions = (x.RegionIds ?? []).filter((r) => Number(r) > 0);
-          if (rr.length && (!regions.length || regions.every((r) => rr.map(String).includes(String(r))))) restricted.add(String(x.Id));
+          // Регионы ограничений бывают крупнее или мельче регионов группы (область вместо города) — любое ограничение
+          // у группы с одним городом означает, что показов там нет, пока Директ не проверит документы
+          if (rr.length) restricted.add(String(x.Id));
         }
       }
+      if (groupIds.length) console.log(`[yandex] ограничения показа по законодательству: ${restricted.size} из ${groupIds.length} групп`);
       for (const a of res.Ads ?? []) {
         // State: ON — показывается; SUSPENDED — остановлено владельцем (suspend); OFF — не показывается по другой причине
         // (черновик, модерация, отклонено, кампания остановлена или нет денег); OFF_BY_MONITORING — сайт недоступен;
