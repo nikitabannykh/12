@@ -1,3 +1,4 @@
+import { hit } from "@/lib/ratelimit";
 import { NextResponse } from "next/server";
 import { and, isNotNull, lt, or } from "drizzle-orm";
 import { runAll } from "@/lib/engine/run";
@@ -33,12 +34,14 @@ export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
   if (!secret) {
     // Без CRON_SECRET вызов не отличить от чужого (User-Agent подделывается) — в проде робот не запускается
-    if (process.env.VERCEL || process.env.NODE_ENV === "production") {
-      return NextResponse.json({ error: "CRON_SECRET не задан: добавьте переменную окружения CRON_SECRET (Vercel Cron пришлёт её сам), иначе робот по расписанию не запускается" }, { status: 503 });
+    // Переходный режим, пока переменную не добавили: пускаем только Vercel Cron по User-Agent и не чаще раза в 30 минут
+    // (заголовок подделывается — поэтому CRON_SECRET обязательно нужно задать)
+    const ua = (req.headers.get("user-agent") || "").startsWith("vercel-cron");
+    if (!(process.env.VERCEL && ua && (await hit("cron:ua", 1, 1800)).ok)) {
+      return NextResponse.json({ error: "CRON_SECRET не задан: добавьте переменную окружения CRON_SECRET (Vercel Cron пришлёт её сам)" }, { status: process.env.VERCEL ? 503 : 401 });
     }
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
-  if (!macEqual(req.headers.get("authorization") || "", `Bearer ${secret}`)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    console.warn("cron: CRON_SECRET не задан — запуск по User-Agent vercel-cron. Добавьте CRON_SECRET в переменные окружения.");
+  } else if (!macEqual(req.headers.get("authorization") || "", `Bearer ${secret}`)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const started = Date.now();
   await pollUpdates().catch(() => {});

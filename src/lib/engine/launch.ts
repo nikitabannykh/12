@@ -1056,8 +1056,11 @@ export async function publishStep(b: Business, plan: LaunchPlan, accounts: AdAcc
     // Новый запуск: недосозданные и невключённые кампании прошлых запусков (их план потерян) убираем — иначе канал задублируется.
     // Кампании идущего добавления канала не трогаем.
     const adding = (await readAddState(b.id))?.launchId;
-    const leftovers = (await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["creating", "ready"]))))
-      .filter((c) => metaOf(c).launchId !== prog.id && (!adding || metaOf(c).launchId !== adding));
+    // Сюда же — кампании прошлых запусков, которые создались, но так и не включились (ошибка при включении):
+    // это черновики на площадке, иначе после исправления причины и повторного запуска они бы задублировались
+    const leftovers = (await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["creating", "ready", "error"]))))
+      .filter((c) => metaOf(c).launchId !== prog.id && (!adding || metaOf(c).launchId !== adding))
+      .filter((c) => c.status !== "error" || (metaOf(c).launchId && !metaOf(c).launchedAt));
     for (const c of leftovers) {
       const acc = accounts.find((a) => a.id === c.accountId);
       await cleanupCreating([c], acc ? await clientFor(acc).catch(() => null) : null, prog.warnings).catch(() => null);

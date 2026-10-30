@@ -115,6 +115,8 @@ export function LaunchWizard(p: Props) {
   const [budget, setBudget] = useState(p.business.monthlyBudget);
   const [savedBudget, setSavedBudget] = useState(p.business.monthlyBudget);
   const [phase, setPhase] = useState<null | "copy" | "images" | "publish">(null);
+  // Почему не получился запуск — показываем у кнопки, пока владелец не запустит снова (всплывашка исчезает, и причину не успеть прочитать)
+  const [launchError, setLaunchError] = useState<string | null>(null);
   const [imgProgress, setImgProgress] = useState<{ ready: number; total: number } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [edit, setEdit] = useState<{ ad: PlanAd; channel: Channel } | null>(null);
@@ -205,6 +207,7 @@ export function LaunchWizard(p: Props) {
   async function launch() {
     if (phase === "publish") return;
     setPhase("publish");
+    setLaunchError(null);
     const deadline = Date.now() + 8 * 60_000;
     let retries = 0;
     try {
@@ -241,7 +244,8 @@ export function LaunchWizard(p: Props) {
         throw new Error(data.error || `Ошибка ${status}`);
       }
     } catch (e) {
-      toast((e as Error).message, "error");
+      toast("Запустить не получилось — причина внизу, у кнопки запуска", "error");
+      setLaunchError((e as Error).message);
       setPhase(null);
       try {
         const r = await api<{ plan: LaunchPlan | null }>("GET", "/api/launch/plan");
@@ -536,6 +540,7 @@ export function LaunchWizard(p: Props) {
 
       {/* Одна главная кнопка этапа — прилипает к низу экрана */}
       <div className="sticky bottom-[3.375rem] md:bottom-0 z-30 -mx-4 px-4 sm:mx-0 sm:px-0 pt-4 pb-2 md:pb-4 bg-linear-to-t from-paper from-65% to-paper/0">
+        {launchError ? <LaunchErrorBox text={launchError} onClose={() => setLaunchError(null)} /> : null}
         <div className="card shadow-lg px-4 py-3 sm:px-5 grid gap-2.5 sm:flex sm:items-center sm:gap-4">
           <p className="min-w-0 flex-1 text-sm text-ink-2 leading-snug">{action.note}</p>
           <button className={`btn ${action.cls} h-12 px-6 text-base shrink-0`} onClick={action.run} disabled={action.disabled}>
@@ -666,5 +671,45 @@ export function EditAdModal({ edit, onClose, onSave, title = "Текст объ�
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** Причина неудачного запуска и что сделать: самые частые случаи узнаём по тексту ошибки площадки */
+function LaunchErrorBox({ text, onClose }: { text: string; onClose: () => void }) {
+  const t = text.toLowerCase();
+  const hints: { test: boolean; title: string; body: React.ReactNode }[] = [
+    {
+      test: /рекламодател|маркир|о рекламе|ерир|ord|advertiser/.test(t),
+      title: "Заполните данные рекламодателя в Директе",
+      body: <>По закону «О рекламе» Директ не отправляет объявления на модерацию, пока в кабинете не указаны данные рекламодателя. Откройте <a className="underline" href="https://direct.yandex.ru/" target="_blank" rel="noreferrer">кабинет Директа</a> → красная надпись «укажите данные для соблюдения закона „О рекламе“» под логином → заполните и сохраните. Потом нажмите «Запустить рекламу» ещё раз.</>,
+    },
+    {
+      test: /лицензи/.test(t),
+      title: "Нужна медицинская лицензия",
+      body: <>Загрузите копию лицензии в кабинете площадки (подробности — в блоке про медицинские услуги выше) и запустите ещё раз.</>,
+    },
+    {
+      test: /оферт|услови|не подключ|513/.test(t),
+      title: "Примите условия Директа",
+      body: <>Откройте <a className="underline" href="https://direct.yandex.ru/" target="_blank" rel="noreferrer">direct.yandex.ru</a>, нажмите «Начать» и примите условия. Потом запустите ещё раз.</>,
+    },
+  ].filter((h) => h.test);
+  return (
+    <div role="alert" className="card mb-2 px-4 py-3 sm:px-5 border-bad/30 bg-bad-soft text-sm leading-relaxed">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-semibold text-bad">Реклама не запустилась</div>
+          {hints.map((h) => (
+            <div key={h.title} className="mt-1.5"><b>{h.title}.</b> {h.body}</div>
+          ))}
+          <details className="mt-1.5" open={!hints.length}>
+            <summary className="cursor-pointer text-ink-2">Ответ площадки</summary>
+            <div className="mt-1 whitespace-pre-line break-words text-ink-2">{text}</div>
+          </details>
+          <div className="mt-1.5 text-ink-2">Созданные черновики кампаний не задублируются: при следующем запуске сервис уберёт их и создаст заново.</div>
+        </div>
+        <button type="button" onClick={onClose} className="text-ink-2 hover:text-ink shrink-0" aria-label="Скрыть">✕</button>
+      </div>
+    </div>
   );
 }
