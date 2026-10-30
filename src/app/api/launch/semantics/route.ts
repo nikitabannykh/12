@@ -15,7 +15,7 @@ export const GET = route(async ({ business }) => {
   const search = plan?.channels.find((c) => c.channel === "search");
   if (plan && search?.groups.length) {
     const view = semanticsView({
-      groups: search.groups.map((g) => ({ id: g.id, name: g.name, service: g.service, services: g.services, keywords: g.keywords, negatives: g.negatives, layer: g.layer })),
+      groups: search.groups.map((g) => ({ id: g.id, name: g.name, service: g.service, services: g.services, keywords: g.keywords, negatives: g.negatives, layer: g.layer, demand: g.demand })),
       negatives: plan.negatives ?? [],
       geo: plan.semantics?.geo ?? { city: [], local: [] },
       checks: plan.semantics?.checks ?? {},

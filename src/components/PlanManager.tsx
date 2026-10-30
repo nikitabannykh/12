@@ -237,7 +237,7 @@ export function PlanManager(p: {
                             {ch.channel === "search" && g.layer && g.layer !== "service" ? <span className="pill bg-paper text-xs text-muted">{LAYER_ITEM[g.layer]}</span> : null}
                           </span>
                           <span className="block text-xs text-muted truncate">
-                            {ch.channel === "search" ? `${g.keywords.length} ${plural(g.keywords.length, "запрос", "запроса", "запросов")}: ${g.keywords.slice(0, 3).join(", ")}${g.keywords.length > 3 ? "…" : ""}` : `${who(g)}${g.audience ? ` · ${g.audience}` : ""}`}
+                            {ch.channel === "search" ? `${g.keywords.length} ${plural(g.keywords.length, "запрос", "запроса", "запросов")}${typeof g.demand === "number" ? ` · спрос ~${new Intl.NumberFormat("ru-RU").format(g.demand)} в мес.` : ""}: ${g.keywords.slice(0, 3).join(", ")}${g.keywords.length > 3 ? "…" : ""}` : `${who(g)}${g.audience ? ` · ${g.audience}` : ""}`}
                           </span>
                         </span>
                       </button>

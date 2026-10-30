@@ -34,6 +34,8 @@ export type GroupDraft = {
   negatives?: string[];
   /** Слой семантики: услуга, проблема клиента, смежный запрос, аудитория */
   layer?: Layer;
+  /** Целевых запросов в месяц по Wordstat */
+  demand?: number;
   /** VK: аудитория «искали услугу» (фразы) и интересы */
   searchPhrases?: string[];
   interests?: string[];
@@ -858,6 +860,7 @@ export function templatePlan(b: Business, core: SemanticCore = buildSemanticCore
           : `${LAYER_AUDIENCE[layer](g)} — ${many(g)}`,
       keywords: g.keywords,
       negatives: g.negatives,
+      ...(typeof g.demand === "number" ? { demand: g.demand } : {}),
       // Тёплые запросы — только по фразам: автотаргетинг расширил бы их до совсем случайных («болит спина у собаки»)
       ...(layer === "service" ? {} : { autotargeting: false }),
       ads: layer === "service" ? threeAds(b, "search", g.service, priceOf(g.service), i % 2) : layerAds(b, g, i % 2),

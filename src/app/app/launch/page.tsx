@@ -19,6 +19,7 @@ import { yandexConfigured } from "@/lib/platforms/yandex";
 import { vkConfigured } from "@/lib/platforms/vk";
 import { aiConfigured } from "@/lib/ai/yandex";
 import { hostOf } from "@/lib/util";
+import { isMedical } from "@/lib/niches";
 
 /** Этап 2 «Запуск рекламы»: кабинеты → бюджет → объявления → запуск (разделы одной страницы) */
 export default async function Launch() {
@@ -43,7 +44,7 @@ export default async function Launch() {
         </p>
       </div>
       <LaunchWizard
-        business={{ name: b.name, niche: b.niche, monthlyBudget: b.monthlyBudget, siteUrl: b.siteUrl }}
+        business={{ name: b.name, niche: b.niche, monthlyBudget: b.monthlyBudget, siteUrl: b.siteUrl, medical: isMedical(b) }}
         host={hostOf(landingUrl(b))}
         accounts={accounts.map((a) => ({ id: a.id, platform: a.platform, login: a.login, status: a.status, statusNote: a.statusNote }))}
         flags={{ yandex: yandexConfigured(), vk: vkConfigured(), demo: demoAllowed(), ai: aiConfigured() }}

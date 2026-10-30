@@ -2,7 +2,7 @@ import "server-only";
 import type { AuctionRow, AudienceSpec, CampaignDelivery, DemographicsAdjustment, TargetingUpdate } from "./types";
 import type { Sitelink } from "../engine/extras";
 import type {
-  AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy,
+  AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy, WordstatPhrase, WordstatReports,
 } from "./types";
 import { PlatformError } from "./types";
 import { sleep, uid } from "../util";
@@ -24,6 +24,23 @@ const sandbox = () => process.env.YANDEX_DIRECT_SANDBOX === "true";
 const host = () => (sandbox() ? "https://api-sandbox.direct.yandex.com" : "https://api.direct.yandex.com");
 const API = () => process.env.YANDEX_DIRECT_API_URL || `${host()}/json/v501`;
 const REPORTS = () => process.env.YANDEX_DIRECT_REPORTS_URL || `${host()}/json/v5/reports`;
+/** JSON API v4 — только ради Wordstat (CreateNewWordstatReport и т. п.): в v5 этих методов нет */
+const V4 = () => process.env.YANDEX_DIRECT_V4_URL || (sandbox() ? "https://api-sandbox.direct.yandex.ru/v4/json/" : "https://api.direct.yandex.ru/v4/json/");
+
+/** Строка отчёта Wordstat v4 (WordstatReportInfo) → WordstatPhrase. Поля читаем осторожно: Shows может прийти строкой */
+export function parseWordstatInfo(r: any): WordstatPhrase {
+  const items = (list: unknown): { phrase: string; shows: number }[] =>
+    (Array.isArray(list) ? list : [])
+      .map((x: any) => ({ phrase: String(x?.Phrase ?? x?.phrase ?? "").trim(), shows: Math.max(0, Number(x?.Shows ?? x?.shows ?? 0) || 0) }))
+      .filter((x) => x.phrase);
+  const phrase = String(r?.Phrase ?? r?.phrase ?? "").trim();
+  const searchedWith = items(r?.SearchedWith);
+  // Первая строка SearchedWith — сама фраза со всеми запросами; если её нет (формат поменялся) — берём самую частую
+  const norm = (s: string) => s.toLowerCase().replace(/ё/g, "е").replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+  const self = searchedWith.find((x) => norm(x.phrase) === norm(phrase));
+  const shows = self?.shows ?? Math.max(0, ...searchedWith.map((x) => x.shows));
+  return { phrase, shows, searchedWith };
+}
 
 const MICRO = 1_000_000;
 // Деньги в API — микроединицы, кратные копейке (10 000): 0,4 ₽ → 400 000, а не 0
@@ -154,7 +171,7 @@ const notDraft = (e: { Code: number; Message: string; Details?: string }) =>
 /** Ошибка API Директа (json.error) — запрос отклонён целиком; иначе транспорт (сеть, таймаут, не-JSON) и исход неизвестен */
 const isApiError = (e: unknown) => e instanceof PlatformError && !!e.detail && typeof e.detail === "object" && "error_code" in (e.detail as object);
 
-export class YandexDirect implements PlatformClient {
+export class YandexDirect implements PlatformClient, WordstatReports {
   platform = "yandex" as const;
   constructor(private token: string, private clientLogin?: string) {}
 
@@ -643,6 +660,83 @@ export class YandexDirect implements PlatformClient {
       update: ((res?.Update ?? []) as { Id: number; Keyword: string }[]).map((u) => ({ id: Number(u.Id), keyword: u.Keyword })),
       remove: ((res?.Delete?.Ids ?? []) as number[]).map(Number),
     };
+  }
+
+  // ─── Wordstat (API v4: в v5 прогноза и статистики запросов нет, Live4 CreateNewForecast отключён) ───
+
+  /**
+   * Вызов JSON API v4 (https://yandex.ru/dev/direct/doc/dg-v4/concepts/JSON): токен — в теле запроса, ответ —
+   * {"data": …} или {"error_code", "error_str", "error_detail"}. Ошибки — PlatformError с detail.error_code
+   * (31 — уже 5 отчётов, 152 — не хватает баллов, 53 — токен не подходит).
+   */
+  async callV4<T = any>(method: string, param?: unknown): Promise<T> {
+    const body: Record<string, unknown> = { method, token: this.token, locale: "ru" };
+    if (param !== undefined) body.param = param;
+    let res: Response;
+    try {
+      res = await fetch(V4(), { method: "POST", headers: { "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
+    } catch (e) {
+      throw new PlatformError("yandex", `Директ v4: нет ответа (${(e as Error).name})`);
+    }
+    const text = await res.text();
+    let json: any;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new PlatformError("yandex", `Директ v4 ответил не JSON (${res.status})`, text.slice(0, 300));
+    }
+    if (json && json.error_code !== undefined && json.error_code !== null) {
+      const err = new PlatformError("yandex", `Директ v4 ${method}: ${json.error_str ?? "ошибка"}${json.error_detail ? ` — ${json.error_detail}` : ""} (код ${json.error_code})`, { error_code: Number(json.error_code), error_str: json.error_str, error_detail: json.error_detail });
+      err.httpStatus = res.status;
+      throw err;
+    }
+    return json?.data as T;
+  }
+
+  /** CreateNewWordstatReport: до 10 фраз, регионы GeoID. Возвращает ID отчёта */
+  async wordstatCreate(phrases: string[], regionIds: number[]): Promise<number> {
+    const id = await this.callV4<number>("CreateNewWordstatReport", { Phrases: phrases.slice(0, 10), GeoID: regionIds.filter((r) => r) });
+    const n = Number(id);
+    if (!Number.isFinite(n) || n <= 0) throw new PlatformError("yandex", "Директ v4: не вернул номер отчёта Wordstat", id);
+    return n;
+  }
+
+  /** GetWordstatReportList: до 5 отчётов пользователя со статусом Done | Pending | Failed */
+  async wordstatList(): Promise<{ id: number; status: string }[]> {
+    const list = await this.callV4<any[]>("GetWordstatReportList");
+    return (Array.isArray(list) ? list : []).map((r) => ({ id: Number(r?.ReportID ?? r?.ReportId ?? r?.Id), status: String(r?.StatusReport ?? r?.Status ?? "") }));
+  }
+
+  /** GetWordstatReport: по каждой фразе отчёта — SearchedWith [{Phrase, Shows}] (Shows — запросов за прошлый месяц) */
+  async wordstatGet(reportId: number): Promise<WordstatPhrase[]> {
+    const data = await this.callV4<any[]>("GetWordstatReport", reportId);
+    return (Array.isArray(data) ? data : []).map((r) => parseWordstatInfo(r));
+  }
+
+  async wordstatDelete(reportId: number): Promise<void> {
+    await this.callV4("DeleteWordstatReport", reportId);
+  }
+
+  /** Синхронно: создать отчёт, дождаться (не дольше timeoutMs), прочитать и удалить. Для движка спроса — раздельные методы */
+  async wordstat(phrases: string[], regionIds: number[], opts: { timeoutMs?: number } = {}): Promise<WordstatPhrase[]> {
+    const until = Date.now() + (opts.timeoutMs ?? 40_000);
+    const out: WordstatPhrase[] = [];
+    for (let i = 0; i < phrases.length; i += 10) {
+      const id = await this.wordstatCreate(phrases.slice(i, i + 10), regionIds);
+      try {
+        for (;;) {
+          const st = (await this.wordstatList()).find((r) => r.id === id)?.status;
+          if (st === "Done") break;
+          if (st === "Failed" || !st) throw new PlatformError("yandex", "Директ v4: отчёт Wordstat не сформировался");
+          if (Date.now() + 3000 > until) throw new PlatformError("yandex", "Директ v4: отчёт Wordstat не успел сформироваться");
+          await sleep(3000);
+        }
+        out.push(...(await this.wordstatGet(id)));
+      } finally {
+        await this.wordstatDelete(id).catch(() => {});
+      }
+    }
+    return out;
   }
 
   /** Новая группа в работающей кампании — когда в старой исчерпан лимит в 10 объявлений */

@@ -7,6 +7,8 @@ import type { AdAccount, Business, Campaign, UndoOp } from "../db/schema";
 import { allocate, MAX_MONTHLY } from "./budget";
 import { expandSemantics, generateCopyPlan, type CopyPlan } from "../ai/copy";
 import { buildSemanticCore, refineWithDirect, type SemanticChecks, type SemanticCore } from "./semantics";
+import { applyWordstat } from "./wordstat";
+import { demandForCore } from "./demand";
 import { aiConfigured } from "../ai/yandex";
 import { generatePhotos, listPhotos, makeCreative, getImage, ensureLogo, imageSet } from "./images";
 import { adExtras, responsiveAssets, timeTargeting, withPlanCallouts } from "./extras";
@@ -35,6 +37,8 @@ export type PlanGroup = {
   negatives?: string[];
   /** Поиск: слой семантики — услуга, проблема клиента, смежный запрос, аудитория (робот сравнивает слои по цене обращения) */
   layer?: Layer;
+  /** Поиск: целевых запросов в месяц по Wordstat (engine/wordstat) — для показа владельцу */
+  demand?: number;
   /** VK: кто искал услугу (фразы поиска) и интересы — разные аудитории для A/B-сравнения */
   searchPhrases?: string[];
   interests?: string[];
@@ -267,6 +271,7 @@ function channelFromCopy(b: Business, copy: CopyPlan, channel: Channel, acc: AdA
     ...(g.services?.length ? { services: g.services } : {}),
     ...(g.negatives?.length && channel === "search" ? { negatives: g.negatives } : {}),
     ...(g.layer && channel === "search" ? { layer: g.layer } : {}),
+    ...(typeof g.demand === "number" && channel === "search" ? { demand: g.demand } : {}),
     ...(channel === "vk" && g.searchPhrases?.length ? { searchPhrases: g.searchPhrases } : {}),
     ...(channel === "vk" && g.interests?.length ? { interests: g.interests } : {}),
     autotargeting: fmt !== "vk" && !isRetarget(channel) && g.autotargeting !== false,
@@ -306,6 +311,18 @@ export async function semanticCoreFor(b: Business, accounts: AdAccount[]): Promi
       );
     } catch {
       /* без проверки Директом */
+    }
+  }
+  // Спрос по Wordstat (собран заранее, пока владелец выбирал бюджет — engine/demand): частотность, хвосты, спрос групп
+  if (core.groups.length) {
+    try {
+      const ws = await withTimeout(demandForCore(b, core), 5_000, null);
+      if (ws && Object.keys(ws.results).length) {
+        const none = core.checks.volume?.none;
+        core = applyWordstat(core, ws.results, b.niche, { noVolume: none, source: ws.source });
+      } else core = { ...core, checks: { ...core.checks, wordstat: { phrases: 0, note: ws?.note ?? "Нет данных Wordstat — запросы подобраны без частотности." } } };
+    } catch (e) {
+      core = { ...core, checks: { ...core.checks, wordstat: { phrases: 0, note: `Wordstat: ${errorText(e)}` } } };
     }
   }
   return core;

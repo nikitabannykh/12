@@ -18,7 +18,8 @@ import { LandingEditor } from "./LandingEditor";
 import { landingFor, type LandingSettings } from "@/lib/engine/landing";
 import type { ShowSettings } from "@/lib/engine/show";
 import type { ExtrasBiz } from "@/lib/engine/extras";
-import { allocate, forecast, minMonthlyFor } from "@/lib/engine/budget";
+import { allocate, forecastWithDemand, minMonthlyFor, type Range } from "@/lib/engine/budget";
+import type { DemandView } from "@/lib/engine/demand";
 import type { LaunchPlan, PlanAd, PublishStep } from "@/lib/engine/launch";
 import type { Channel } from "@/lib/platforms/types";
 import { CHANNEL_INFO, formatOf, isRetarget, RETARGET_MIN_AUDIENCE, type AdFormat } from "@/lib/channels";
@@ -45,6 +46,12 @@ function plural(n: number, one: string, few: string, many: string) {
 /** Объявление уйдёт на площадку: включено и с непустыми заголовком и текстом (как publishable на сервере) */
 const publishable = (a: PlanAd) => a.enabled && Boolean(a.title?.trim()) && Boolean(a.text?.trim());
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const fmt = (n: number) => new Intl.NumberFormat("ru-RU").format(Math.round(n));
+/** Спрос округляем до двух значащих цифр: точнее Wordstat всё равно не скажет */
+const round2 = (n: number) => (n >= 10_000 ? Math.round(n / 1000) * 1000 : n >= 1000 ? Math.round(n / 100) * 100 : n >= 100 ? Math.round(n / 10) * 10 : Math.round(n));
+const approx = (n: number) => fmt(round2(n));
+const span = (r: Range) => (r[0] === r[1] ? fmt(r[0]) : `${fmt(r[0])}–${fmt(r[1])}`);
+const pct = (r: Range) => `${Math.round(r[0] * 100)}–${Math.round(r[1] * 100)}%`;
 type Progress = PublishStep["progress"];
 
 function progressOf(plan: LaunchPlan | null): Progress | null {
@@ -56,7 +63,7 @@ function progressOf(plan: LaunchPlan | null): Progress | null {
 }
 
 type Props = {
-  business: { name: string; niche: string; monthlyBudget: number; siteUrl: string | null };
+  business: { name: string; niche: string; monthlyBudget: number; siteUrl: string | null; medical?: boolean };
   host: string;
   accounts: { id: string; platform: string; login: string; status: string; statusNote: string | null }[];
   flags: { yandex: boolean; vk: boolean; demo: boolean; ai: boolean };
@@ -92,7 +99,7 @@ function Section({ id, title, done, active, note, children, aside }: { id: strin
 
 /** Семантика поиска от движка (GET /api/launch/semantics) — если эндпоинта нет, блок просто не показываем.
  *  layer — подпись слоя: «Услуги», «Проблемы клиентов», «Смежные запросы», «Аудитории» */
-type Semantics = { name: string; keywords: string[]; layer?: string }[];
+type Semantics = { name: string; keywords: string[]; layer?: string; demand?: number }[];
 function parseSemantics(data: unknown): Semantics | null {
   const raw = (data && typeof data === "object" && "groups" in data ? (data as { groups: unknown }).groups : data) as unknown;
   if (!Array.isArray(raw)) return null;
@@ -103,7 +110,8 @@ function parseSemantics(data: unknown): Semantics | null {
     const name = String(o.name ?? o.title ?? o.group ?? "").trim();
     const kw = (Array.isArray(o.keywords) ? o.keywords : Array.isArray(o.phrases) ? o.phrases : []).map((k) => (typeof k === "string" ? k : String((k as { phrase?: string; text?: string })?.phrase ?? (k as { text?: string })?.text ?? ""))).filter(Boolean);
     const layer = typeof o.layerLabel === "string" ? o.layerLabel : undefined;
-    if (name || kw.length) out.push({ name: name || "Без названия", keywords: kw, ...(layer ? { layer } : {}) });
+    const demand = typeof o.demand === "number" ? o.demand : undefined;
+    if (name || kw.length) out.push({ name: name || "Без названия", keywords: kw, ...(layer ? { layer } : {}), ...(demand !== undefined ? { demand } : {}) });
   }
   return out.length ? out : null;
 }
@@ -126,6 +134,8 @@ export function LaunchWizard(p: Props) {
   const [progress, setProgress] = useState<Progress | null>(() => progressOf(p.plan));
   const fileRef = useRef<HTMLInputElement>(null);
   const [semantics, setSemantics] = useState<Semantics | null>(null);
+  /** Спрос по Wordstat (POST /api/launch/demand): сбор идёт на сервере порциями, мастер его подталкивает */
+  const [demand, setDemand] = useState<DemandView | null>(null);
 
   const real = p.accounts.filter((a) => a.platform !== "demo");
   const usable = real.length ? real.filter((a) => a.status === "ok") : p.accounts;
@@ -142,9 +152,36 @@ export function LaunchWizard(p: Props) {
   // Если в плане канал выключен, его доля уходит оставшимся — показываем ту же раскладку, что получит запуск
   const planChannels = plan?.channels.filter((c) => c.enabled).map((c) => c.channel) ?? [];
   const alloc = allocate(budget, planChannels.length && budget === savedBudget ? planChannels : channels.length ? channels : ["search"]);
-  const fc = forecast(budget, p.business.niche);
   const minBudget = minMonthlyFor(channels.length ? channels : ["search"]);
   const hasAccounts = usable.length > 0;
+  const demandReady = demand?.status === "done" && demand.summary ? demand.summary.total : null;
+  const fc = forecastWithDemand({ monthly: budget, niche: p.business.niche, medical: demand?.medical ?? p.business.medical, regionIds: demand?.regionIds, allocation: alloc.allocation, demand: demandReady });
+
+  // Сбор спроса: каждый POST продвигает его (до ~40 с), пока не готово. Не блокирует страницу; кабинет поменялся — заново
+  const accKey = usable.map((a) => `${a.id}:${a.status}`).join(",");
+  useEffect(() => {
+    if (!accKey) return;
+    let off = false;
+    (async () => {
+      let last: DemandView | null = null;
+      for (let i = 0; i < 8 && !off; i++) {
+        try {
+          const r = await fetch("/api/launch/demand", { method: "POST" });
+          if (!r.ok) break;
+          last = (await r.json()) as DemandView;
+          if (off) return;
+          setDemand(last);
+          if (last.status !== "running") return;
+          await sleep(1500);
+        } catch {
+          break;
+        }
+      }
+      // Не досчитали за отведённые попытки — показываем грубую оценку; досчитаем при следующем заходе
+      if (!off && last?.status === "running") setDemand({ ...last, status: "unavailable", note: "Wordstat отвечает долго — спрос досчитаем при следующем открытии страницы." });
+    })();
+    return () => { off = true; };
+  }, [accKey]);
 
   async function saveBudget(v: number) {
     setBudget(v);
@@ -376,7 +413,7 @@ export function LaunchWizard(p: Props) {
       </Section>
 
       <Section id="budget" title="Бюджет в месяц" done={false} active={hasAccounts} note={hasAccounts ? undefined : "После кабинета"}>
-        <div className="grid lg:grid-cols-[1fr_17rem] gap-6">
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_20rem] gap-6">
           <div>
             <div className="flex items-end gap-3">
               <input
@@ -410,11 +447,49 @@ export function LaunchWizard(p: Props) {
               ))}
             </div>
           </div>
-          <div className="rounded-xl bg-mark-soft p-4 self-start">
-            <div className="text-sm text-ink-2">Ожидаем за месяц</div>
-            <div className="text-3xl font-extrabold mt-1">{fc.min}–{fc.max}</div>
-            <div className="font-semibold">обращений</div>
-            <p className="text-xs text-ink-2 mt-2 leading-relaxed">Оценка по нише: обращение обычно стоит {rub(fc.cplLo)}–{rub(fc.cplHi)}. Первые 1–2 недели дороже — робот учится, потом цена снижается.</p>
+          <div className="rounded-xl bg-mark-soft p-4 self-start grid gap-3 min-w-0" aria-live="polite">
+            {hasAccounts && (!demand || demand.status === "running") ? (
+              <div className="text-sm text-ink-2 flex items-center gap-2 pb-3 border-b border-ink/10">
+                <Loader2 size={14} className="spin shrink-0" />
+                <span>Считаем спрос по Wordstat…{demand?.progress.total ? ` ${demand.progress.done} из ${demand.progress.total} фраз` : ""}</span>
+              </div>
+            ) : demandReady !== null && demand ? (
+              <div className="pb-3 border-b border-ink/10">
+                <div className="text-sm text-ink-2">Спрос {demand.cityIn}</div>
+                <div className="mt-0.5"><span className="text-2xl font-extrabold">~{approx(demandReady)}</span> <span className="font-semibold">{plural(round2(demandReady), "запрос", "запроса", "запросов")} в месяц</span></div>
+                <div className="text-xs text-ink-2 mt-1 leading-relaxed">
+                  {demand.source === "demo" ? <><b className="font-semibold">Демо-данные</b> — с кабинетом Директа здесь будет Wordstat.</> : <><b className="font-semibold text-good">Данные Wordstat</b> за прошлый месяц.</>}{" "}
+                  Только запросы об услугах, без «фото», «обучения» и других нецелевых.
+                </div>
+                {demand.note ? <div className="text-xs text-muted mt-1">{demand.note}</div> : null}
+              </div>
+            ) : null}
+            <div>
+              <div className="text-sm text-ink-2">Ожидаем за месяц</div>
+              <div className="text-3xl font-extrabold mt-1">{fc.leads[1] < 1 ? "меньше 1" : span(fc.leads)}</div>
+              <div className="font-semibold">{plural(fc.leads[1], "обращение", "обращения", "обращений")}</div>
+              {fc.kind === "demand" ? (
+                <>
+                  <ul className="text-xs text-ink-2 mt-2 grid gap-1 leading-relaxed">
+                    <li>Поиск: ~{span(fc.search.clicks)} {plural(fc.search.clicks[1], "клик", "клика", "кликов")} → {span(fc.search.leads)} {plural(fc.search.leads[1], "обращение", "обращения", "обращений")}</li>
+                    {fc.other ? <li>{fc.other.channels.some((c) => c === "vk" || c === "retarget_vk") ? "РСЯ и ВКонтакте" : "РСЯ"}: {span(fc.other.leads)} — оценка по нише ({fmt(fc.other.cpl[0])}–{fmt(fc.other.cpl[1])} ₽ за обращение)</li> : null}
+                  </ul>
+                  <p className="text-xs text-ink-2 mt-2 leading-relaxed">При цене клика ~{fmt(fc.search.cpc[0])}–{fmt(fc.search.cpc[1])} ₽ и записи у {pct(fc.search.conv)} посетителей — оценка, уточнится после запуска по данным аукциона.</p>
+                  <p className="text-xs font-semibold text-ink mt-2 leading-relaxed">
+                    {fc.search.limit === "demand"
+                      ? `Бюджет поиска выбирается не весь: спроса больше нет — уйдёт ~${fmt(fc.search.spend[0])}–${fmt(fc.search.spend[1])} ₽ из ${fmt(fc.search.budget)} ₽.`
+                      : fc.search.limit === "budget"
+                        ? "Спроса больше, чем позволяет бюджет: с бюджетом побольше поиск приведёт больше клиентов."
+                        : "Бюджет поиска примерно совпадает со спросом."}
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-ink-2 mt-2 leading-relaxed">
+                  <b className="font-semibold">Грубая оценка по нише</b>, без данных о спросе: обращение обычно стоит {rub(fc.cpl[0])}–{rub(fc.cpl[1])}. Первые 1–2 недели дороже — робот учится, потом цена снижается.
+                  {demand?.note && demand.status !== "running" ? <span className="block text-muted mt-1">{demand.note}</span> : null}
+                </p>
+              )}
+            </div>
           </div>
         </div>
         <p className="hint mt-4">Бюджет — жёсткая граница: робот следит за расходами каждый день и не выйдет за неё. Пополнять кабинеты нужно самим, примерно на эту сумму в месяц.</p>
@@ -459,7 +534,7 @@ export function LaunchWizard(p: Props) {
                           {g.layer} · {semantics.filter((x) => x.layer === g.layer).length} {plural(semantics.filter((x) => x.layer === g.layer).length, "группа", "группы", "групп")}, {semantics.filter((x) => x.layer === g.layer).reduce((n, x) => n + x.keywords.length, 0)} {plural(semantics.filter((x) => x.layer === g.layer).reduce((n, x) => n + x.keywords.length, 0), "запрос", "запроса", "запросов")}
                         </div>
                       ) : null}
-                      <div className="font-semibold">{g.name} <span className="font-normal text-muted">· {g.keywords.length}</span></div>
+                      <div className="font-semibold">{g.name} <span className="font-normal text-muted">· {g.keywords.length}{typeof g.demand === "number" ? ` · ~${approx(g.demand)} в мес.` : ""}</span></div>
                       <div className="text-muted leading-relaxed [overflow-wrap:anywhere]">{g.keywords.join(", ")}</div>
                     </li>
                   ))}

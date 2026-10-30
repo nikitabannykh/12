@@ -1,7 +1,7 @@
 import "server-only";
 import { and, eq } from "drizzle-orm";
 import { createHash } from "crypto";
-import type { AuctionRow, AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy } from "./types";
+import type { AuctionRow, AdLimits, AdSpec, AdState, CampaignSpec, Channel, GroupSpec, LaunchHooks, LaunchResult, PlatformClient, QueryRow, StatRow, Strategy, WordstatPhrase } from "./types";
 import { PlatformError } from "./types";
 import { getDb, schema } from "../db";
 import { addDays, isoDay, pl, uid } from "../util";
@@ -477,6 +477,33 @@ export class DemoPlatform implements PlatformClient {
       keywords: 8,
       tiers: TIERS.map((t) => ({ trafficVolume: t.tv, price: tierPrice(g, t.m), bid: Math.round(tierPrice(g, t.m) * 1.18) })),
     }));
+  }
+
+  /**
+   * Демо-Wordstat: детерминированные «частоты» (одинаковые при каждом вызове) — короткие фразы частые, длинные редкие,
+   * в Москве и Петербурге больше. Среди хвостов есть и нецелевые («фото», «обучение»), чтобы видно было, как их отсекаем.
+   * Это не данные Яндекса — в интерфейсе подписываем как демо.
+   */
+  async wordstat(phrases: string[], regionIds: number[]): Promise<WordstatPhrase[]> {
+    const scale = regionIds.includes(213) ? 4 : regionIds.includes(2) ? 2.5 : 1;
+    const TAILS = ["цена", "рядом", "запись", "недорого", "отзывы", "фото", "обучение", "салон", "сделать", "стоимость"];
+    return phrases.map((p) => {
+      const phrase = p.toLowerCase().replace(/ё/g, "е").replace(/[^\p{L}\p{N}\s-]/gu, " ").replace(/\s+/g, " ").trim();
+      const words = phrase.split(" ").filter((w) => w.length > 2).length || 1;
+      const r = rng(`ws:${phrase}:${regionIds.join(",")}`);
+      const base = words <= 1 ? 1800 + r() * 6000 : words === 2 ? 120 + r() * 800 : words === 3 ? 20 + r() * 180 : r() * 50;
+      const shows = Math.round(base * scale);
+      const searchedWith = [{ phrase, shows }];
+      let left = shows * 0.55;
+      for (const t of TAILS) {
+        if (phrase.includes(t)) continue;
+        const n = Math.round(left * (0.18 + r() * 0.2));
+        if (n < 3) break;
+        searchedWith.push({ phrase: `${phrase} ${t}`, shows: n });
+        left -= n;
+      }
+      return { phrase, shows, searchedWith };
+    });
   }
 
   async getSearchQueries(campaignExts: string[]): Promise<QueryRow[]> {

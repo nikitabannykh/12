@@ -155,6 +155,24 @@ export type AuctionRow = { groupExt: string; keywords: number; tiers: AuctionTie
 export type QueryRow = { campaignExt: string; query: string; impressions: number; clicks: number; cost: number };
 
 /**
+ * Wordstat по одной фразе: shows — запросов в месяц с этой фразой (широкое соответствие: все словоформы и запросы,
+ * где есть эти слова), searchedWith — что именно искали вместе с ней (первые строки — сама фраза и самые частые хвосты).
+ */
+export type WordstatItem = { phrase: string; shows: number };
+export type WordstatPhrase = { phrase: string; shows: number; searchedWith: WordstatItem[] };
+
+/**
+ * Отчёты Wordstat API Директа v4 (CreateNewWordstatReport → GetWordstatReportList → GetWordstatReport → DeleteWordstatReport).
+ * Отчёт готовится до минуты, поэтому методы раздельные: движок спроса (engine/demand) ведёт их порциями между запросами.
+ */
+export interface WordstatReports {
+  wordstatCreate(phrases: string[], regionIds: number[]): Promise<number>;
+  wordstatList(): Promise<{ id: number; status: "Done" | "Pending" | "Failed" | string }[]>;
+  wordstatGet(reportId: number): Promise<WordstatPhrase[]>;
+  wordstatDelete(reportId: number): Promise<void>;
+}
+
+/**
  * Колбэки запуска: ID кампании, групп и объявлений сохраняем в БД сразу, как площадка их вернула, —
  * чтобы таймаут не оставил «сирот», а повтор продолжил с места обрыва.
  */
@@ -207,6 +225,12 @@ export interface PlatformClient {
   getStats(campaignExts: string[], from: string, to: string, goalIds: number[]): Promise<StatRow[]>;
   getAuction?(campaignExt: string): Promise<AuctionRow[]>;
   getSearchQueries?(campaignExts: string[], from: string, to: string): Promise<QueryRow[]>;
+  /**
+   * Спрос по фразам в регионах (Wordstat): на каждую фразу — запросов в месяц и что искали вместе с ней.
+   * Синхронный вариант (демо; Директ — с ожиданием отчёта не дольше timeoutMs). Движок спроса для Директа
+   * пользуется раздельными методами WordstatReports, чтобы не упираться в лимит времени функции.
+   */
+  wordstat?(phrases: string[], regionIds: number[], opts?: { timeoutMs?: number }): Promise<WordstatPhrase[]>;
 }
 
 export class PlatformError extends Error {

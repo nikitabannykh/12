@@ -58,13 +58,97 @@ export function minMonthlyFor(channels: Channel[]) {
   return Math.ceil((MIN_WEEKLY[firstChannel(channels)] * WEEKS_IN_LONG_MONTH) / 100) * 100;
 }
 
-/** Грубый прогноз обращений в месяц — для подсказки при выборе бюджета */
-export function forecast(monthly: number, niche: string) {
-  // Средняя стоимость обращения по нишам для малых городов и районов мегаполисов (интервью и открытые кейсы), ₽
-  const cpl: Record<string, [number, number]> = {
-    nails: [250, 600], brows: [250, 600], hair: [350, 900], barber: [300, 700], massage: [400, 1000],
-    cosmetology: [600, 1500], yoga: [400, 1100], fitness: [500, 1300], dance: [400, 1000], other: [400, 1200],
-  };
-  const [lo, hi] = cpl[niche] ?? cpl.other;
+export type Range = [number, number];
+
+/**
+ * Допущения прогноза по нишам — всё, что в прогнозе НЕ из данных, собрано здесь. Источники: интервью с владельцами,
+ * открытые кейсы агентств по Директу для услуг «рядом» (2024–2026), справка Директа о ценах клика. Для городов-миллионников
+ * без Москвы и Петербурга (их цены — CITY_CPC_FACTOR). После запуска робот считает по настоящим данным аукциона.
+ *
+ *  cpc  — цена клика на поиске, ₽ (с НДС, так платит владелец);
+ *  ctr  — доля целевых запросов месяца, которые станут НАШИМИ кликами: объявление показывается не на каждом запросе
+ *         (аукцион, места, расписание), а из увиденных кликают 5–12 %; итог — несколько процентов всего спроса;
+ *  conv — доля посетителей, которые записываются или звонят (страница записи / сайт);
+ *  cpl  — цена обращения, ₽: для каналов без измеримого спроса (РСЯ, VK, ретаргетинг) и грубой оценки без Wordstat.
+ */
+export const FORECAST: Record<string, { cpc: Range; ctr: Range; conv: Range; cpl: Range }> = {
+  nails: { cpc: [25, 60], ctr: [0.04, 0.09], conv: [0.06, 0.12], cpl: [250, 600] },
+  brows: { cpc: [25, 60], ctr: [0.04, 0.09], conv: [0.06, 0.12], cpl: [250, 600] },
+  hair: { cpc: [30, 70], ctr: [0.04, 0.08], conv: [0.05, 0.1], cpl: [350, 900] },
+  barber: { cpc: [25, 60], ctr: [0.04, 0.09], conv: [0.06, 0.12], cpl: [300, 700] },
+  massage: { cpc: [35, 90], ctr: [0.04, 0.08], conv: [0.05, 0.1], cpl: [400, 1000] },
+  cosmetology: { cpc: [50, 140], ctr: [0.03, 0.07], conv: [0.04, 0.08], cpl: [600, 1500] },
+  yoga: { cpc: [30, 80], ctr: [0.03, 0.07], conv: [0.04, 0.09], cpl: [400, 1100] },
+  fitness: { cpc: [40, 110], ctr: [0.03, 0.07], conv: [0.03, 0.08], cpl: [500, 1300] },
+  dance: { cpc: [30, 80], ctr: [0.03, 0.07], conv: [0.04, 0.09], cpl: [400, 1000] },
+  other: { cpc: [40, 100], ctr: [0.03, 0.07], conv: [0.04, 0.09], cpl: [400, 1200] },
+  // Медицинские услуги (остеопатия, мануальная терапия, лечебный массаж — в анкете ниша «Массаж» или «Другое», isMedical):
+  // аукцион дороже (клиники), решение о записи взвешеннее, приём дороже — и обращение дороже
+  medical: { cpc: [60, 120], ctr: [0.03, 0.07], conv: [0.05, 0.1], cpl: [800, 2000] },
+};
+
+/** Цена клика в Москве и Петербурге выше, чем в остальных городах (те же кейсы, Москва ≈ ×1,6) */
+const CITY_CPC_FACTOR: Record<number, number> = { 213: 1.6, 1: 1.6, 2: 1.3, 10174: 1.3 };
+
+export function forecastAssumptions(niche: string, medical = false, regionIds: number[] = []) {
+  const a = medical ? FORECAST.medical : FORECAST[niche] ?? FORECAST.other;
+  const k = Math.max(1, ...regionIds.map((r) => CITY_CPC_FACTOR[r] ?? 1));
+  return { ...a, cpc: [Math.round(a.cpc[0] * k), Math.round(a.cpc[1] * k)] as Range };
+}
+
+/** Грубый прогноз обращений в месяц — для подсказки при выборе бюджета, когда спроса из Wordstat нет */
+export function forecast(monthly: number, niche: string, medical = false) {
+  const [lo, hi] = (medical ? FORECAST.medical : FORECAST[niche] ?? FORECAST.other).cpl;
   return { min: Math.max(0, Math.floor(monthly / hi)), max: Math.max(1, Math.floor(monthly / lo)), cplLo: lo, cplHi: hi };
+}
+
+export type DemandForecast = {
+  kind: "demand";
+  /** Поиск: спрос — данные (Wordstat), остальное — допущения FORECAST */
+  search: {
+    demand: number; budget: number; cpc: Range; ctr: Range; conv: Range;
+    /** Кликов позволяет спрос (спрос × ctr) и бюджет (бюджет / cpc) */
+    reachable: Range; affordable: Range; clicks: Range; leads: Range;
+    /** Что ограничивает: бюджет (спроса больше), спрос (бюджет выбирается не весь) или оба примерно равны */
+    limit: "budget" | "demand" | "both";
+    /** Сколько поиск потратит за месяц, ₽ (меньше бюджета, когда упираемся в спрос) */
+    spend: Range;
+  };
+  /** РСЯ, VK, ретаргетинг: бюджет / цена обращения по нише */
+  other: { budget: number; cpl: Range; leads: Range; channels: Channel[] } | null;
+  leads: Range;
+};
+export type RoughForecast = { kind: "rough"; leads: Range; cpl: Range };
+
+/**
+ * Прогноз на месяц со спросом. Поиск: кликов не больше, чем даёт спрос (спрос × ctr), и не больше, чем позволяет бюджет
+ * (бюджет / цена клика); обращения = клики × conv. Нижняя граница — от осторожных допущений (дорогой клик, низкий ctr
+ * и conv), верхняя — от оптимистичных. Остальные каналы — по цене обращения в нише. Нет спроса — грубая оценка (forecast).
+ */
+export function forecastWithDemand(p: { monthly: number; niche: string; medical?: boolean; regionIds?: number[]; allocation: Allocation; demand: number | null }): DemandForecast | RoughForecast {
+  const a = forecastAssumptions(p.niche, p.medical, p.regionIds);
+  const s = p.allocation.find((x) => x.channel === "search");
+  if (p.demand === null || !s) {
+    const f = forecast(p.monthly, p.niche, p.medical);
+    return { kind: "rough", leads: [f.min, f.max], cpl: [f.cplLo, f.cplHi] };
+  }
+  const budget = Math.round(s.weekly * WEEKS_IN_MONTH);
+  const reachable: Range = [p.demand * a.ctr[0], p.demand * a.ctr[1]];
+  const affordable: Range = [budget / a.cpc[1], budget / a.cpc[0]];
+  const clicks: Range = [Math.min(reachable[0], affordable[0]), Math.min(reachable[1], affordable[1])];
+  const leads: Range = [clicks[0] * a.conv[0], clicks[1] * a.conv[1]];
+  const midA = (affordable[0] + affordable[1]) / 2, midR = (reachable[0] + reachable[1]) / 2;
+  const limit: DemandForecast["search"]["limit"] =
+    affordable[0] >= reachable[1] || midA > midR * 1.25 ? "demand" : reachable[0] >= affordable[1] || midR > midA * 1.25 ? "budget" : "both";
+  const spend: Range = [Math.min(budget, clicks[0] * a.cpc[0]), Math.min(budget, clicks[1] * a.cpc[1])];
+  const rest = p.allocation.filter((x) => x.channel !== "search");
+  const otherBudget = Math.round(rest.reduce((n, x) => n + x.weekly, 0) * WEEKS_IN_MONTH);
+  const other = rest.length && otherBudget > 0 ? { budget: otherBudget, cpl: a.cpl, leads: [otherBudget / a.cpl[1], otherBudget / a.cpl[0]] as Range, channels: rest.map((x) => x.channel) } : null;
+  const r = (x: Range): Range => [Math.floor(x[0]), Math.max(Math.floor(x[0]), Math.round(x[1]))];
+  return {
+    kind: "demand",
+    search: { demand: p.demand, budget, cpc: a.cpc, ctr: a.ctr, conv: a.conv, reachable: r(reachable), affordable: r(affordable), clicks: r(clicks), leads: r(leads), limit, spend: r(spend) },
+    other: other ? { ...other, leads: r(other.leads) } : null,
+    leads: r([leads[0] + (other?.leads[0] ?? 0), leads[1] + (other?.leads[1] ?? 0)]),
+  };
 }

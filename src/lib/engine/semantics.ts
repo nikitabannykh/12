@@ -65,10 +65,15 @@ export type SemanticGroup = {
   layer: Layer;
   /** Слои проблем, смежных и аудиторий: из чего строим объявление «проблема → решение» */
   hook?: LayerHook;
+  /** Целевых запросов в месяц по Wordstat (engine/wordstat.ts); нет — данных не собрали */
+  demand?: number;
 };
 export type LayerHook = { entry: string; ask: string; when?: string; noun: string };
 export type SemanticChecks = {
-  volume?: { checked: number; dropped: number; examples: string[] } | null;
+  /** none — фразы без показов, оставленные ради минимума группы (их может убрать Wordstat, если и он показывает ноль) */
+  volume?: { checked: number; dropped: number; examples: string[]; none?: string[] } | null;
+  /** Wordstat: фраз с данными, добавлено хвостов, убрано нулевых, целевой спрос в месяц; null — данных нет (note — почему) */
+  wordstat?: { phrases: number; added: number; dropped: number; total: number; source: string | null } | { phrases: 0; note: string } | null;
   dedup?: { merged: number } | null;
   ai?: { added: number } | null;
 };
@@ -835,13 +840,15 @@ export async function refineWithDirect(core: SemanticCore, api: DirectResearch, 
     const vol = new Map<string, boolean>();
     for (let i = 0; i < all.length; i += 10_000) for (const [k, v] of await api.hasSearchVolume(all.slice(i, i + 10_000), regionIds)) vol.set(k, v);
     const dropped: string[] = [];
+    const none: string[] = [];
     for (const g of out.groups) {
       const keep = g.keywords.filter((k) => vol.get(k) !== false);
       const restore = g.keywords.filter((k) => !keep.includes(k)).slice(0, Math.max(0, SEM.keepMin - keep.length));
+      none.push(...restore);
       dropped.push(...g.keywords.filter((k) => !keep.includes(k) && !restore.includes(k)));
       g.keywords = g.keywords.filter((k) => keep.includes(k) || restore.includes(k));
     }
-    out.checks.volume = { checked: all.length, dropped: dropped.length, examples: dropped.slice(0, 8).map(displayKeyword) };
+    out.checks.volume = { checked: all.length, dropped: dropped.length, examples: dropped.slice(0, 8).map(displayKeyword), ...(none.length ? { none: none.slice(0, 200) } : {}) };
   } catch {
     out.checks.volume = null;
   }
@@ -883,7 +890,7 @@ export function networkInterests(core: SemanticCore, max = 3): { name: string; s
 
 export type SemanticsView = {
   total: number;
-  groups: { id?: string; name: string; services: string[]; count: number; sample: string[]; keywords: string[]; negatives: string[]; layer: Layer; layerLabel: string }[];
+  groups: { id?: string; name: string; services: string[]; count: number; sample: string[]; keywords: string[]; negatives: string[]; layer: Layer; layerLabel: string; demand?: number }[];
   /** Итоги по слоям: группы и запросы */
   layers: { id: Layer; label: string; groups: number; count: number }[];
   negatives: string[];
@@ -894,7 +901,7 @@ export type SemanticsView = {
 
 /** То, что показываем владельцу: фразы без операторов, примеры, минус-слова */
 export function semanticsView(core: {
-  groups: { id?: string; name: string; service?: string; services?: string[]; keywords: string[]; negatives?: string[]; layer?: Layer }[];
+  groups: { id?: string; name: string; service?: string; services?: string[]; keywords: string[]; negatives?: string[]; layer?: Layer; demand?: number }[];
   negatives: string[];
   geo: SemanticCore["geo"];
   checks: SemanticChecks;
@@ -903,7 +910,7 @@ export function semanticsView(core: {
   const groups = core.groups.map((g) => {
     const keywords = uniq(g.keywords.map(displayKeyword));
     const layer = g.layer ?? "service";
-    return { id: g.id, name: g.name, services: g.services ?? (g.service ? [g.service] : [g.name]), count: keywords.length, sample: keywords.slice(0, 12), keywords, negatives: g.negatives ?? [], layer, layerLabel: LAYER_LABEL[layer] };
+    return { id: g.id, name: g.name, services: g.services ?? (g.service ? [g.service] : [g.name]), count: keywords.length, sample: keywords.slice(0, 12), keywords, negatives: g.negatives ?? [], layer, layerLabel: LAYER_LABEL[layer], ...(typeof g.demand === "number" ? { demand: g.demand } : {}) };
   });
   // Порядок: услуги, проблемы, смежные, аудитории
   groups.sort((a, b) => LAYERS.indexOf(a.layer) - LAYERS.indexOf(b.layer));
