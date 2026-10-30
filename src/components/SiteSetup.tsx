@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Check, Circle, TriangleAlert } from "lucide-react";
+import { Check, Globe, TriangleAlert } from "lucide-react";
 import type { SiteTrackingStatus } from "@/lib/engine/site-tracking";
 
 /**
@@ -65,7 +65,7 @@ export function SiteSetupBanner({ status }: { status: SiteTrackingStatus }) {
   if (sum.done) return null;
   return (
     <section className={`rounded-[var(--radius-card)] border p-4 sm:p-5 flex items-start gap-3 ${sum.tone === "bad" ? "bg-bad-soft border-bad/30" : "bg-warn-soft border-warn/30"}`} role="status">
-      {sum.tone === "bad" ? <TriangleAlert size={22} className="shrink-0 mt-0.5 text-bad" /> : <Circle size={22} className="shrink-0 mt-0.5 text-warn" />}
+      {sum.tone === "bad" ? <TriangleAlert size={22} className="shrink-0 mt-0.5 text-bad" /> : <Globe size={22} className="shrink-0 mt-0.5 text-warn" />}
       <div className="flex-1 min-w-0">
         <div className="font-bold leading-snug">{sum.title}</div>
         <p className="text-sm text-ink-2 mt-1 leading-relaxed max-w-2xl">{sum.text}</p>
