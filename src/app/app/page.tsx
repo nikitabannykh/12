@@ -374,8 +374,13 @@ export default async function Dashboard() {
                           aud!.state === "off" ? <span className="pill bg-paper text-muted">автозапуск выключен</span> : <AudienceBar size={aud!.size} need={aud!.need} compact />
                         ) : s?.stopped ? (
                           <span className={`pill ${s.stopped === "guard" || s.stopped === "error" || s.stopped === "platform" ? "bg-bad-soft text-bad" : "bg-paper text-muted"}`} title={s.note ?? undefined}>
-                            {s.stopped === "platform" ? (/средств|пополн/i.test(s.note ?? "") ? "не показывается: нет денег" : /модерац/i.test(s.note ?? "") ? "на модерации" : "не показывается") : s.stopped === "guard" ? (overBudget ? "стоит: кончился бюджет" : "стоит: не хватает бюджета") : s.stopped === "error" ? "ошибка площадки" : s.stopped === "owner" ? "на паузе — вы остановили" : "на паузе — остановил робот"}
+                            {s.stopped === "platform" ? (() => {
+                              const why = [/средств|пополн/i.test(s.note ?? "") ? "нет денег" : "", blockedAds.some((a) => a.campaignId === x.id && /документ/i.test(a.statusNote ?? "")) ? "нужна лицензия" : ""].filter(Boolean);
+                              return /модерац/i.test(s.note ?? "") && !why.length ? "на модерации" : `не показывается${why.length ? `: ${why.join(", ")}` : ""}`;
+                            })() : s.stopped === "guard" ? (overBudget ? "стоит: кончился бюджет" : "стоит: не хватает бюджета") : s.stopped === "error" ? "ошибка площадки" : s.stopped === "owner" ? "на паузе — вы остановили" : "на паузе — остановил робот"}
                           </span>
+                        ) : blockedAds.some((a) => a.campaignId === x.id && /документ/i.test(a.statusNote ?? "")) ? (
+                          <span className="pill bg-bad-soft text-bad">не показывается: нужна лицензия</span>
                         ) : s && s.learningLeft > 0 ? (
                           <span className="pill bg-info-soft text-ink-2" title={`Площадка подбирает аудиторию: после запуска до ${pl(LEARNING_DAYS[x.channel] ?? 14, "дня", "дней", "дней")}, после изменения бюджета — до 7. Робот в это время не трогает настройки`}>
                             <GraduationCap size={13} /> обучается — {pl(s.learningLeft, "день", "дня", "дней")}
@@ -403,15 +408,20 @@ export default async function Dashboard() {
                 </li>
               ) : null}
             </ul>
-            {learning.length ? (
+            {learning.length && !platformStopped.length && !blockedAds.length ? (
               <p className="hint mt-3">Пока площадка обучается, цифры скачут — это нормально. Чтобы не сбить обучение, робот не меняет у такой кампании стратегию, ставки и недельный лимит (лимит снизит, только если иначе выйдем за бюджет месяца); объявления и аудитории проверяет как обычно.</p>
             ) : null}
-            <dl className="mt-4 pt-4 border-t border-line grid grid-cols-3 gap-3 text-center">
-              <div><dt className="text-xs text-muted">Показываются</dt><dd className="text-2xl font-extrabold">{active}</dd></div>
-              <div><dt className="text-xs text-muted">На проверке</dt><dd className="text-2xl font-extrabold">{moderation}</dd></div>
-              <div><dt className="text-xs text-muted">Отклонены</dt><dd className="text-2xl font-extrabold">{rejected}</dd></div>
+            {/* Объявления: сколько прошло модерацию и сколько из них реально показывается — чтобы «0» не выглядел как «ничего не работает» */}
+            <dl className="mt-4 pt-4 border-t border-line grid grid-cols-2 gap-x-3 gap-y-4">
+              <div><dt className="text-xs text-muted">Прошли модерацию</dt><dd className="text-2xl font-extrabold">{mod.active}</dd></div>
+              <div>
+                <dt className="text-xs text-muted">Показываются</dt>
+                <dd className={`text-2xl font-extrabold ${mod.active && !active ? "text-bad" : ""}`}>{active}</dd>
+                {mod.active && !active && (platformStopped.length || blockedAds.length) ? <dd className="text-xs text-bad mt-0.5">{(() => { const m = platformStopped.some((x) => /средств|пополн/i.test(states.get(x.id)?.note ?? "")); return m && blockedDocs ? "ждут денег и лицензии" : m ? "ждут денег на счёте" : blockedDocs ? "ждут проверки лицензии" : "площадка их не показывает"; })()} — причины выше</dd> : null}
+              </div>
+              <div><dt className="text-xs text-muted">На проверке</dt><dd className="text-2xl font-extrabold">{mod.moderation}</dd></div>
+              <div><dt className="text-xs text-muted">Отклонены</dt><dd className="text-2xl font-extrabold">{mod.rejected}</dd></div>
             </dl>
-            <p className="text-xs text-faint text-center mt-1">объявлений</p>
             <Link href="/app/ads" className="btn btn-ghost btn-sm w-full mt-3">Смотреть объявления</Link>
           </div>
           {isDemo ? (
