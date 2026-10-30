@@ -13,6 +13,7 @@ import { getDb, schema } from "@/lib/db";
 import { ActionButton } from "@/components/client";
 import { ChangeItem } from "@/components/ChangeItem";
 import { ModerationCheck } from "@/components/ModerationCheck";
+import { isMedical } from "@/lib/niches";
 import { DaysChart, Delta } from "@/components/charts";
 import { ClientsWeek } from "@/components/ClientsWeek";
 import { CHANNEL_NAME } from "@/lib/platforms";
@@ -52,6 +53,14 @@ export default async function Dashboard() {
   const toSite = Boolean(b.siteUrl) && camps.some((x) => landingFor(b, x.channel).kind === "site");
   const tracked = await db.select({ id: schema.leads.id }).from(schema.leads).where(eq(schema.leads.businessId, b.id)).limit(1);
   const health = await healthCheck(b);
+  // Что робот сделал за 30 дней — те же три рычага, что на лендинге
+  const monthAgo = new Date(r.now.getTime() - 30 * 86400_000);
+  const recent = (await db.select({ kind: schema.changes.kind, details: schema.changes.details, revertedAt: schema.changes.revertedAt }).from(schema.changes)
+    .where(and(eq(schema.changes.businessId, b.id), gte(schema.changes.at, monthAgo), inArray(schema.changes.kind, ["negatives", "test_start", "test_end", "budget"])))).filter((x) => !x.revertedAt);
+  const negWords = [...new Set(recent.filter((x) => x.kind === "negatives").flatMap((x) => (Array.isArray(x.details?.words) ? (x.details.words as string[]) : [])))];
+  const tests = recent.filter((x) => x.kind === "test_start").length;
+  const testsDone = recent.filter((x) => x.kind === "test_end").length;
+  const moved = recent.filter((x) => x.kind === "budget" && typeof x.details?.move === "number").reduce((sum, x) => sum + (x.details.move as number), 0);
   const lowBalance = health.balances.filter((x) => x.daysLeft !== null && x.daysLeft <= LOW_DAYS && camps.some((c) => c.accountId === x.accountId && c.status === "active"));
 
   const c = r.cur, p = r.prev;
@@ -98,7 +107,7 @@ export default async function Dashboard() {
     <div className="grid gap-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-extrabold tracking-tight">Главное</h1>
+          <h1 className="text-[2.2rem] sm:text-[2.6rem] font-semibold tracking-[-0.045em] leading-none">Главное</h1>
           <p className="text-muted mt-1">Последние 7 дней{isDemo ? " · демо-данные" : ""}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -149,15 +158,6 @@ export default async function Dashboard() {
           <ActionButton url="/api/campaigns/resume" body={{ ids: ownerStopped.map((x) => x.id) }} done="Реклама включена" className={`btn btn-sm ${allStopped ? "btn-primary" : "btn-ghost bg-white"}`}>Включить</ActionButton>
         </StopBanner>
       ) : null}
-      {platformStopped.map((x) => {
-        const note = states.get(x.id)?.note ?? "Площадка сейчас не показывает кампанию.";
-        const money = /средств|пополн/i.test(note);
-        return (
-          <StopBanner key={x.id} tone="bad" icon={money ? "wallet" : undefined} title={`${SHORT[x.channel] ?? x.channel}: реклама не показывается`} text={`${note} Кампания у нас включена — как только площадка начнёт показ, статус обновится сам.`}>
-            {money ? <a className="btn btn-primary btn-sm" href={x.platform === "vk" ? "https://ads.vk.ru/hq/budget/transactions" : "https://direct.yandex.ru/"} target="_blank" rel="noreferrer">Пополнить кабинет</a> : null}
-          </StopBanner>
-        );
-      })}
       {errorStopped.map((x) => (
         <StopBanner key={x.id} tone="bad" title={`${SHORT[x.channel] ?? x.channel}: показы не идут`} text={x.statusNote || "Площадка вернула ошибку. Робот попробует ещё раз при следующей проверке."}>
           <Link href="/app/settings" className="btn btn-ghost btn-sm bg-white">Настройки</Link>
@@ -189,68 +189,109 @@ export default async function Dashboard() {
         );
       })() : null}
 
-      {blockedDocs ? (
-        <StopBanner
-          tone="bad"
-          title="Директ просит документы — объявления не показываются"
-          text={`Модерацию ${pl(blockedDocs, "объявление прошло", "объявления прошли", "объявлений прошли")}, но для медицинских услуг Директ показывает рекламу только после проверки лицензии. Откройте кабинет Директа → любое объявление со статусом «предоставьте документы» → «Отправить документы» и приложите лицензию со всеми приложениями (адрес приёма — как в рекламе, юрлицо — как на сайте). Проверка обычно занимает до двух рабочих дней, после неё показы начнутся сами.`}
-        >
-          <a href="https://direct.yandex.ru/" target="_blank" rel="noreferrer" className="btn btn-primary btn-sm">Открыть Директ <ExternalLink size={14} /></a>
-          <a href="https://yandex.ru/support/tooltips-direct/moderation-warning-data-forms.html" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm bg-white">Как отправить</a>
-        </StopBanner>
-      ) : blockedAds.length && !platformStopped.length ? (
+      {/* Один кабинет — одна плашка: все причины, почему площадка не показывает рекламу, списком */}
+      {(["yandex", "vk"] as const).map((pf) => {
+        const off = platformStopped.filter((x) => x.platform === pf);
+        const notes = off.map((x) => states.get(x.id)?.note ?? "");
+        const money = notes.some((n) => /средств|пополн/i.test(n)) || health.balances.some((x) => x.platform === pf && x.daysLeft === 0 && !x.demo);
+        const other = [...new Set(notes.filter((n) => n && !/средств|пополн/i.test(n)))];
+        const docs = pf === "yandex" ? blockedDocs : 0;
+        const licenseUnknown = pf === "yandex" && !docs && isMedical(b) && camps.some((x) => x.platform === "yandex" && x.status === "active") && monthCost === 0 && !c.cost;
+        const reasons: { text: string; bad: boolean }[] = [];
+        if (money) reasons.push({ text: "Нет денег на счёте — пополните кабинет", bad: true });
+        if (docs) reasons.push({ text: "Нужна лицензия — Директ не показывает медицинскую рекламу, пока её не проверит. Объявление → «Отправить документы»", bad: true });
+        if (licenseUnknown) reasons.push({ text: "Лицензия — проверьте, что она отправлена и проверка закончилась, иначе показов не будет и с деньгами", bad: false });
+        for (const n of other) reasons.push({ text: n.replace(/^Не показывается:\s*/, ""), bad: true });
+        if (!reasons.length) return null;
+        const blocking = money || docs || other.length || off.length;
+        return (
+          <StopBanner key={pf} tone={blocking ? "bad" : "warn"} icon={money ? "wallet" : undefined}
+            title={`${pf === "vk" ? "VK Реклама" : "Яндекс Директ"}: ${blocking ? "реклама не показывается" : "проверьте лицензию"}`}
+            text={<ul className="space-y-1">{reasons.map((r) => <li key={r.text} className="flex gap-2"><span className={r.bad ? "text-bad" : "text-warn"}>•</span><span>{r.text}</span></li>)}</ul>}>
+            {money ? <a className="btn btn-primary btn-sm" href={pf === "vk" ? "https://ads.vk.ru/hq/budget/transactions" : "https://direct.yandex.ru/"} target="_blank" rel="noreferrer">Пополнить кабинет</a> : null}
+            {docs || licenseUnknown ? <a href="https://yandex.ru/support/tooltips-direct/moderation-warning-data-forms.html" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm bg-white">Как отправить лицензию</a> : null}
+          </StopBanner>
+        );
+      })}
+      {blockedAds.length && !platformStopped.length && !blockedDocs ? (
         <StopBanner tone="warn" title="Часть объявлений не показывается" text={`Модерацию прошли, но ${pl(blockedAds.length, "объявление сейчас не показывается", "объявления сейчас не показываются", "объявлений сейчас не показываются")}. Причина — у каждого объявления в разделе «Реклама».`}>
           <Link href="/app/ads" className="btn btn-ghost btn-sm bg-white">Смотреть объявления</Link>
         </StopBanner>
       ) : null}
 
-      {lowBalance.map((x) => (
+      {lowBalance.filter((x) => x.daysLeft !== 0 || x.demo).map((x) => (
         <StopBanner key={x.accountId} tone={x.daysLeft === 0 ? "bad" : "warn"} icon="wallet" title={x.daysLeft === 0 ? "Кончились деньги в рекламном кабинете" : "Скоро кончатся деньги в рекламном кабинете"} text={`${balanceText(x)}${x.demo ? " В демо пополнение происходит само." : " Пополнение — в самом кабинете площадки."} Пока денег мало, робот не поднимает недельные лимиты — расход ниже плана из-за остатка, а не из-за площадки.`}>
           {TOPUP_URL[x.platform] && !x.demo ? <a href={TOPUP_URL[x.platform]} target="_blank" rel="noreferrer" className="btn btn-primary btn-sm">Пополнить <ExternalLink size={14} /></a> : null}
         </StopBanner>
       ))}
 
-      {/* Итог одной фразой */}
-      <section className="card p-5 sm:p-7">
-        <p className="text-xl sm:text-2xl leading-snug font-semibold max-w-3xl">
+      {/* Итог — в той же подаче, что на лендинге: деньги ÷ цена клиента = клиенты */}
+      <section className="rounded-[1.75rem] bg-white ring-1 ring-black/[0.05] p-6 sm:p-8">
+        <div className="text-sm text-muted">Итог за 7 дней</div>
+        <div className="mt-2 text-[1.6rem] sm:text-[2.1rem] font-semibold tracking-[-0.03em] leading-tight max-w-3xl">
           {c.cost > 0 ? (
-            <>
-              Реклама привела <span className="marked">{pl(c.leads, "обращение", "обращения", "обращений")}</span>
-              {c.clients ? <>, из них {c.clientsEstimated ? "примерно " : ""}{pl(c.clients, "клиент", "клиента", "клиентов")}</> : null}.{" "}
-              {cpc ? <>Клиент обошёлся в <span className="whitespace-nowrap">{rub(cpc)}</span>.</> : <>Потрачено <span className="whitespace-nowrap">{rub(c.cost)}</span>.</>}
-            </>
+            c.clients ? (
+              <>На {rub(c.cost)} — <span className="bg-mark px-1.5 rounded-lg">{c.clientsEstimated ? "≈ " : ""}{pl(c.clients, "клиент", "клиента", "клиентов")}</span></>
+            ) : (
+              <>На {rub(c.cost)} — <span className="bg-mark px-1.5 rounded-lg">{pl(c.leads, "обращение", "обращения", "обращений")}</span></>
+            )
           ) : moderation && !stopped.length ? (
-            <>Объявления на модерации. Как только площадки их проверят, начнутся показы — обычно в течение суток.</>
+            <>Объявления на модерации — показы начнутся после проверки, обычно в течение суток</>
+          ) : platformStopped.length || blockedAds.length ? (
+            <>Показов пока нет — площадка не показывает рекламу, причины выше</>
           ) : allStopped ? (
-            <>За неделю показов не было — реклама на паузе.</>
+            <>За неделю показов не было — реклама на паузе</>
           ) : (
-            <>Показов пока не было. Статистика появится в течение суток после старта.</>
+            <>Показов пока не было — цифры появятся в течение суток после старта</>
           )}
-        </p>
-        {c.otherLeads ? (
-          <p className="text-sm text-muted mt-2 max-w-3xl">
-            Ещё {pl(c.otherLeads, "обращение", "обращения", "обращений")} {c.otherLeads % 10 === 1 && c.otherLeads % 100 !== 11 ? "пришло" : "пришли"} не из рекламы — {c.otherLeads === 1 ? "оно не входит" : "они не входят"} в стоимость клиента.
+        </div>
+        {c.cost > 0 ? (
+          <p className="mt-3 text-ink-2 leading-relaxed max-w-2xl">
+            {pl(c.leads, "обращение", "обращения", "обращений")} из рекламы{c.clients ? `, из них ${c.clientsEstimated ? "примерно " : ""}${pl(c.clients, "клиент", "клиента", "клиентов")}` : ""}.
+            {cpc && cpcPrev ? (cpc < cpcPrev ? ` Клиент стал дешевле: было ${rub(cpcPrev)}, стало ${rub(cpc)}.` : cpc > cpcPrev ? ` Клиент подорожал: было ${rub(cpcPrev)}, стало ${rub(cpc)}.` : "") : ""}
+            {c.otherLeads ? ` Ещё ${pl(c.otherLeads, "обращение", "обращения", "обращений")} не из рекламы — в цену клиента не входят.` : ""}
           </p>
         ) : null}
-        <div className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-5">
-          {[
-            { label: "Потрачено", value: rub(c.cost), delta: <Delta cur={c.cost} prev={p.cost} inverse /> },
-            { label: "Обращения из рекламы", value: num(c.leads), delta: <Delta cur={c.leads} prev={p.leads} /> },
-            { label: c.clientsEstimated ? "Клиенты, оценка" : "Клиенты", value: num(c.clients), delta: <Delta cur={c.clients} prev={p.clients} /> },
-            { label: "Стоимость клиента", value: cpc ? rub(cpc) : "—", delta: cpc && cpcPrev ? <Delta cur={cpc} prev={cpcPrev} inverse /> : null },
-          ].map((m) => (
-            <div key={m.label} className="min-w-0">
-              <div className="text-sm text-muted">{m.label}</div>
-              <div className="text-2xl sm:text-3xl font-extrabold tracking-tight mt-0.5">{m.value}</div>
-              <div className="h-4">{m.delta}</div>
+
+        <div className="mt-6 grid sm:grid-cols-2 gap-3">
+          <div className="rounded-2xl bg-paper p-5">
+            <div className="text-[13px] text-muted">Прошлые 7 дней</div>
+            <div className="mt-2 text-[15px] text-muted">{cpcPrev ? `${rub(p.cost)} ÷ ${rub(cpcPrev)} за клиента` : `Потрачено ${rub(p.cost)}`}</div>
+            <div className="mt-1 text-4xl font-semibold tracking-[-0.04em] text-ink/45">{num(p.clients || p.leads)} <span className="text-lg font-medium tracking-normal">{p.clients ? "клиентов" : "обращений"}</span></div>
+          </div>
+          <div className="rounded-2xl bg-white ring-1 ring-black/[0.08] p-5">
+            <div className="text-[13px] text-muted">Эти 7 дней</div>
+            <div className="mt-2 text-[15px] text-ink-2">{cpc ? `${rub(c.cost)} ÷ ${rub(cpc)} за клиента` : `Потрачено ${rub(c.cost)}`}</div>
+            <div className="mt-1 flex items-baseline gap-3 flex-wrap">
+              <span className="text-4xl font-semibold tracking-[-0.04em]">{num(c.clients || c.leads)} <span className="text-lg font-medium tracking-normal">{c.clients ? "клиентов" : "обращений"}</span></span>
+              <Delta cur={c.clients || c.leads} prev={p.clients || p.leads} />
             </div>
-          ))}
+          </div>
         </div>
+
+        <div className="mt-3 grid md:grid-cols-3 gap-3">
+          <div className="rounded-2xl ring-1 ring-black/[0.06] p-5 flex flex-col gap-3">
+            <div className="font-semibold tracking-tight leading-snug">Не платит за тех, кто не станет клиентом</div>
+            {negWords.length ? (
+              <div className="flex flex-wrap gap-1.5">{negWords.slice(0, 4).map((w) => <span key={w} className="rounded-full bg-paper px-2.5 py-1 text-[12.5px] line-through decoration-ink/40">{w}</span>)}</div>
+            ) : null}
+            <div className="mt-auto text-sm text-muted">{negWords.length ? `Убрано ${pl(negWords.length, "лишнее слово", "лишних слова", "лишних слов")} за месяц` : "Лишних запросов пока не нашли"}</div>
+          </div>
+          <div className="rounded-2xl ring-1 ring-black/[0.06] p-5 flex flex-col gap-3">
+            <div className="font-semibold tracking-tight leading-snug">Проверяет, какой текст работает лучше</div>
+            <div className="mt-auto text-sm text-muted">{tests || testsDone ? `${tests ? `Запущено ${pl(tests, "сравнение", "сравнения", "сравнений")}` : ""}${tests && testsDone ? ", " : ""}${testsDone ? `${tests ? "з" : "З"}авершено ${testsDone}` : ""} за месяц` : "Начнёт, когда наберутся показы"}</div>
+          </div>
+          <div className="rounded-2xl ring-1 ring-black/[0.06] p-5 flex flex-col gap-3">
+            <div className="font-semibold tracking-tight leading-snug">Переводит деньги туда, где клиенты дешевле</div>
+            <div className="mt-auto text-sm text-muted">{moved ? `Перенесено ${rub(moved)} в неделю за месяц` : "Пока переносить нечего — нужна статистика"}</div>
+          </div>
+        </div>
+
         <div className="mt-6">
           <DaysChart series={r.series} />
         </div>
         <p className="hint mt-3">
-          Те же цифры — в <Link href="/app/stats" className="underline">«Статистике»</Link> за 7 дней. Сравнение — с предыдущими 7 днями.
+          Подробно — в <Link href="/app/stats" className="underline">«Статистике»</Link>. Сравнение — с предыдущими 7 днями.
         </p>
       </section>
 
@@ -404,7 +445,7 @@ export default async function Dashboard() {
   );
 }
 
-function StopBanner({ tone, title, text, children, icon }: { tone: "bad" | "warn" | "info"; title: string; text: string; children?: React.ReactNode; icon?: "wallet" }) {
+function StopBanner({ tone, title, text, children, icon }: { tone: "bad" | "warn" | "info"; title: string; text: React.ReactNode; children?: React.ReactNode; icon?: "wallet" }) {
   const cls = tone === "bad" ? "bg-bad-soft border-bad/30" : tone === "warn" ? "bg-warn-soft border-warn/30" : "bg-info-soft border-line-2";
   const ic = tone === "bad" ? "text-bad" : tone === "warn" ? "text-warn" : "text-ink-2";
   return (
@@ -412,7 +453,7 @@ function StopBanner({ tone, title, text, children, icon }: { tone: "bad" | "warn
       {icon === "wallet" ? <Wallet size={22} className={`shrink-0 mt-0.5 ${ic}`} /> : <PauseCircle size={22} className={`shrink-0 mt-0.5 ${ic}`} />}
       <div className="flex-1 min-w-[14rem]">
         <div className="font-bold leading-snug">{title}</div>
-        <p className="text-sm text-ink-2 mt-1 leading-relaxed max-w-2xl">{text}</p>
+        <div className="text-sm text-ink-2 mt-1 leading-relaxed max-w-2xl">{text}</div>
       </div>
       {children ? <div className="flex flex-wrap gap-2 sm:self-center">{children}</div> : null}
     </section>

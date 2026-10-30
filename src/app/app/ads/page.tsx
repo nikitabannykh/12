@@ -484,19 +484,40 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
               </div>
               <p className="text-sm text-muted mt-0.5"><Purpose type={typeOf(ch)} /></p>
 
-              {states.get(camp.id)?.stopped === "platform" ? (() => {
-                const note = states.get(camp.id)?.note ?? "Площадка сейчас не показывает кампанию.";
-                const money = /средств|пополн/i.test(note);
+              {(() => {
+                // Все причины, по которым кампания не показывается, — сразу, а не только первая (деньги И лицензия)
+                const st = states.get(camp.id);
+                const note = st?.note ?? "Площадка сейчас не показывает кампанию.";
+                const platformOff = st?.stopped === "platform";
+                const money = platformOff && /средств|пополн/i.test(note);
+                const campAds = ads.filter((x) => x.campaignId === camp.id && x.status !== "archived");
+                const docs = campAds.filter((x) => x.status === "active" && /документ/i.test(x.statusNote ?? "")).length;
+                const everShown = campAds.some((x) => (scores.get(x.id)?.s.impressions ?? 0) > 0) || row.s.cost > 0;
+                // Медицина в Директе: пока показов не было ни разу, лицензия могла ещё не пройти проверку — напоминаем,
+                // даже если Директ не отдал это через API
+                const licenseUnknown = !docs && camp.platform === "yandex" && isMedical(b) && !everShown && camp.status === "active";
+                const issues: { title: string; text: React.ReactNode; action?: React.ReactNode; tone: "bad" | "warn" }[] = [];
+                if (money) issues.push({ tone: "bad", title: "На балансе нет денег", text: `Пополните кабинет ${PLATFORM_NAME[camp.platform] ?? ""} — показы начнутся сами.`, action: <a className="btn btn-primary btn-sm" href={camp.platform === "vk" ? "https://ads.vk.ru/hq/budget/transactions" : "https://direct.yandex.ru/"} target="_blank" rel="noreferrer">Пополнить</a> });
+                else if (platformOff) issues.push({ tone: "bad", title: "Площадка не показывает рекламу", text: note });
+                if (docs) issues.push({ tone: "bad", title: "Директ ждёт лицензию", text: `Показы запрещены, пока Директ не проверит медицинскую лицензию (${pl(docs, "объявление", "объявления", "объявлений")}). В кабинете Директа: объявление → «Отправить документы».`, action: <a className="btn btn-ghost btn-sm bg-white" href="https://yandex.ru/support/tooltips-direct/moderation-warning-data-forms.html" target="_blank" rel="noreferrer">Как отправить</a> });
+                else if (licenseUnknown) issues.push({ tone: "warn", title: "Лицензия: проверьте в Директе", text: "Медицинскую рекламу Директ показывает только после проверки лицензии. Если вы её ещё не отправляли или проверка не закончилась — показов не будет даже с деньгами на счёте.", action: <a className="btn btn-ghost btn-sm bg-white" href="https://yandex.ru/support/tooltips-direct/moderation-warning-data-forms.html" target="_blank" rel="noreferrer">Как отправить</a> });
+                if (!issues.length) return null;
+                const bad = issues.some((x) => x.tone === "bad");
                 return (
-                  <div className="mt-3 rounded-xl border border-bad/25 bg-bad-soft px-4 py-3 flex flex-wrap items-center gap-3">
-                    <div className="flex-1 min-w-[14rem] text-sm">
-                      <div className="font-semibold text-bad">{money ? "Реклама стоит: на балансе нет денег" : "Площадка не показывает рекламу"}</div>
-                      <div className="text-ink-2">{money ? `Пополните кабинет ${PLATFORM_NAME[camp.platform] ?? ""} — показы начнутся сами.` : note}</div>
-                    </div>
-                    {money ? <a className="btn btn-primary btn-sm" href={camp.platform === "vk" ? "https://ads.vk.ru/hq/budget/transactions" : "https://direct.yandex.ru/"} target="_blank" rel="noreferrer">Пополнить</a> : null}
+                  <div className={`mt-3 rounded-xl border px-4 py-3 grid gap-3 ${bad ? "border-bad/25 bg-bad-soft" : "border-warn/25 bg-warn-soft"}`}>
+                    <div className={`text-sm font-semibold ${bad ? "text-bad" : "text-warn"}`}>{bad ? (issues.length > 1 ? `Реклама стоит — причин: ${issues.length}` : "Реклама стоит") : "Проверьте перед запуском показов"}</div>
+                    {issues.map((x, i) => (
+                      <div key={i} className="flex flex-wrap items-center gap-3">
+                        <div className="flex-1 min-w-[14rem] text-sm">
+                          <div className="font-semibold">{issues.length > 1 ? `${i + 1}. ` : ""}{x.title}</div>
+                          <div className="text-ink-2">{x.text}</div>
+                        </div>
+                        {x.action ?? null}
+                      </div>
+                    ))}
                   </div>
                 );
-              })() : null}
+              })()}
 
               {waiting ? (
                 <div className="mt-3 rounded-xl bg-good-soft/50 border border-good/15 p-4">
@@ -740,6 +761,13 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                         const inTest = running.some((e) => e.controlId === ad.id || e.variantId === ad.id);
                         const V = VERDICT[sc.verdict];
                         const blocked = ad.status === "active" && /^Не показывается/.test(ad.statusNote ?? "");
+                        // Коротко, в чём дело: сначала лицензия, потом деньги на счёте, потом пояснение площадки
+                        const campNote = states.get(camp.id)?.note ?? "";
+                        const blockedWhy = !blocked ? "" : /документ|лиценз/i.test(ad.statusNote ?? "") ? "Нужна лицензия — отправьте её в Директе"
+                          : /средств|пополн/i.test(campNote) ? "Нет денег на счёте Директа"
+                          : /сайт недоступен/i.test(ad.statusNote ?? "") ? "Сайт недоступен — Директ остановил показы"
+                          : /причина в статусе|кампания остановлена/i.test(ad.statusNote ?? "") ? (campNote ? campNote.replace(/^Не показывается:\s*/, "") : "Кампания остановлена в Директе")
+                          : (ad.statusNote ?? "").replace(/^Не показывается:\s*/, "");
                         const special = waiting && ad.status === "moderation" ? { text: "Ждёт включения", cls: "bg-paper text-muted" } : campOff && ad.status !== "archived" ? { text: "Не показывается — канал выключен", cls: "bg-paper text-muted" } : blocked ? { text: /документ/i.test(ad.statusNote ?? "") ? "Нужны документы" : "Не показывается", cls: "bg-bad-soft text-bad" } : STATUS[ad.status];
                         const layout = ad.imageId ? layoutOf.get(ad.imageId) : null;
                         return (
@@ -761,7 +789,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                                     {ch === "search" && tvOf([ad.id]) !== null ? <span className="pill bg-paper text-muted">Место: {placeName(tvOf([ad.id])!).replace(" над результатами", "")}</span> : null}
                                   </div>
                                   <p className="text-sm text-muted mt-1.5 leading-snug">
-                                    {ad.status === "rejected" ? <span className="text-bad">{cleanNote(ad.statusNote) ?? "Модерация не пропустила объявление — что делать, ниже"}</span> : blocked ? <span className="text-bad">Модерацию прошло. {ad.statusNote}</span> : sc.why}
+                                    {ad.status === "rejected" ? <span className="text-bad">{cleanNote(ad.statusNote) ?? "Модерация не пропустила объявление — что делать, ниже"}</span> : blocked ? <span className="text-bad">{blockedWhy.replace(/\.$/, "")}. <a href={`#c-${camp.id}`} className="underline">Подробнее</a></span> : sc.why}
                                   </p>
                                 </div>
                                 <div className="col-start-2 sm:col-start-3 sm:row-start-1 grid gap-1.5">
