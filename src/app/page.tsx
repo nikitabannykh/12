@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Reveal } from "@/components/Reveal";
 import { ArrowUpRight, Check, CircleCheck, Clock, Dumbbell, FlaskConical, Flower2, Hand, Music, PauseCircle, Scale, Scissors, Search, Sparkles, Stethoscope, Undo2, X } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import { HeroBg } from "@/components/HeroBg";
@@ -312,18 +313,21 @@ export default async function Home() {
             <Eyebrow>Как работает</Eyebrow>
             <h2 className="mt-6 text-[2.4rem] sm:text-[4rem] font-semibold tracking-[-0.05em] leading-[0.95]">Три шага — <span className="text-white/40">и дальше без вас.</span></h2>
           </div>
-          <ol className="mt-16 grid md:grid-cols-3 gap-4">
+          {/* Лесенка: шаги разной высоты стоят ступеньками и всплывают по очереди — как путь от анкеты к запуску */}
+          <ol className="mt-16 grid md:grid-cols-3 gap-4 items-start">
             {[
               ["Расскажите о бизнесе", "Услуги, цены, адрес. Есть сайт — заполним анкету по нему.", <div key="s" className="flex items-center gap-2 rounded-xl bg-white/[0.04] ring-1 ring-white/10 px-3 h-11 text-sm"><Search size={15} strokeWidth={1.75} className="text-white/40" />studia-lak.ru<span className="ml-auto rounded-lg bg-mark text-ink px-2.5 py-1 text-xs font-semibold">Заполнить</span></div>],
               ["Подключите кабинеты", "Яндекс Директ и VK Реклама — в пару кликов. Деньги остаются у вас.", <div key="a" className="flex gap-2">{[["Я", "#fc3f1d"], ["VK", "#0077ff"]].map(([l, c]) => <span key={l} className="flex-1 flex items-center gap-2 rounded-xl bg-white/[0.04] ring-1 ring-white/10 px-3 h-11 text-sm"><span className="w-6 h-6 rounded-md grid place-items-center text-[10px] font-bold" style={{ background: c }}>{l}</span><CircleCheck size={15} strokeWidth={1.75} className="ml-auto text-[#3ddc97]" /></span>)}</div>],
               ["Проверьте и запустите", "Посмотрите объявления так, как их увидят люди. Дальше робот работает сам.", <div key="l" className="flex items-center gap-2 rounded-xl bg-mark text-ink px-4 h-11 text-sm font-semibold justify-center"><Sparkles size={15} strokeWidth={1.75} />62 объявления готовы</div>],
             ].map(([t, d, ui], i) => (
-              <li key={t as string}>
+              <li key={t as string} className={i === 1 ? "md:mt-16" : i === 2 ? "md:mt-32" : ""}>
+                <Reveal delay={i * 180}>
                 <Bezel dark inner="p-6 flex flex-col gap-5 h-full">
                   <div className="flex items-center justify-between"><span className="text-[13px] text-white/40">Шаг {i + 1}</span><span className="text-[13px] text-white/40 flex items-center gap-1.5"><Clock size={13} strokeWidth={1.75} />≈ 5 мин</span></div>
                   <div><div className="text-xl font-semibold tracking-tight">{t as string}</div><p className="mt-2 text-white/55 leading-relaxed">{d as string}</p></div>
                   <div className="mt-auto">{ui as React.ReactNode}</div>
                 </Bezel>
+                </Reveal>
               </li>
             ))}
           </ol>
