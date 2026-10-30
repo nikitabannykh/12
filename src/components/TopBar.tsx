@@ -53,12 +53,13 @@ export function BellMenu() {
     if (next) {
       await load();
       fetch("/api/inbox", { method: "POST" }).catch(() => {});
-      setData((d) => (d ? { ...d, unread: d.items.filter((x) => x.group === "now" && x.tone === "bad").length } : d));
+      setData((d) => (d ? { ...d, unread: 0 } : d));
     }
   };
   const now = data?.items.filter((x) => x.group === "now") ?? [];
   const events = data?.items.filter((x) => x.group === "event") ?? [];
   const badge = data?.unread ?? 0;
+  const fresh = data?.items.filter((x) => x.unread).length ?? 0;
   return (
     <div className="relative" ref={ref}>
       <button type="button" onClick={toggle} aria-expanded={open} aria-label={`Уведомления${badge ? `: ${badge}` : ""}`}
@@ -68,7 +69,10 @@ export function BellMenu() {
       </button>
       {open ? (
         <div className="absolute right-0 mt-2 w-[min(92vw,26rem)] max-h-[75vh] overflow-y-auto rounded-2xl bg-card ring-1 ring-black/[0.08] shadow-xl z-50">
-          <div className="px-4 pt-4 pb-2 font-bold">Уведомления</div>
+          <div className="px-4 pt-4 pb-2 flex items-baseline justify-between gap-3">
+            <span className="font-bold">Уведомления</span>
+            {fresh ? <span className="text-xs text-muted">{fresh} новых — отмечены прочитанными</span> : <span className="text-xs text-muted">новых нет</span>}
+          </div>
           {!data ? <p className="px-4 pb-4 text-sm text-muted">Загружаем…</p> : null}
           {now.length ? (
             <div className="px-2 pb-2">
@@ -92,11 +96,14 @@ export function BellMenu() {
 function Row({ x, onGo }: { x: Item; onGo: () => void }) {
   const I = ICON[x.tone];
   const body = (
-    <div className={`flex gap-2.5 rounded-xl px-2 py-2 ${x.href ? "hover:bg-paper" : ""} `}>
-      <I size={17} className={`shrink-0 mt-0.5 ${TONE[x.tone]}`} />
+    <div className={`flex gap-2.5 rounded-xl px-2 py-2 ${x.unread ? "bg-paper" : ""} ${x.href ? "hover:bg-paper" : ""}`}>
+      <I size={17} className={`shrink-0 mt-0.5 ${x.unread ? TONE[x.tone] : "text-faint"}`} />
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-semibold leading-snug flex items-start gap-1.5"><span className="flex-1">{x.title}</span>{x.unread ? <span className="mt-1.5 w-2 h-2 rounded-full bg-bad shrink-0" aria-label="новое" /> : null}</div>
-        {x.text ? <div className="text-[13px] text-ink-2 leading-snug mt-0.5 line-clamp-3">{x.text}</div> : null}
+        <div className={`text-sm leading-snug flex items-start gap-1.5 ${x.unread ? "font-semibold text-ink" : "font-medium text-ink-2"}`}>
+          <span className="flex-1">{x.title}</span>
+          {x.unread ? <span className="shrink-0 rounded-full bg-bad text-white text-[10px] font-bold px-1.5 py-0.5 leading-none mt-0.5">новое</span> : null}
+        </div>
+        {x.text ? <div className={`text-[13px] leading-snug mt-0.5 line-clamp-3 ${x.unread ? "text-ink-2" : "text-muted"}`}>{x.text}</div> : null}
         {x.group === "event" ? <div className="text-xs text-faint mt-0.5">{ago(x.at)}</div> : null}
       </div>
     </div>

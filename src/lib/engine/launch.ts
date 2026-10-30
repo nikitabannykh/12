@@ -378,13 +378,16 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
     const own = await listPhotos(b.id);
     photoIds = own.filter((p) => p.kind === "photo").map((p) => p.id);
     const generatedBefore = own.filter((p) => p.kind === "generated").map((p) => p.id);
-    if (photoIds.length < 3) {
-      if (generatedBefore.length) photoIds = [...photoIds, ...generatedBefore].slice(0, 4);
-      else {
-        const g = await generatePhotos(b, plan.imageIdeas, 3 - photoIds.length);
-        photoIds = [...photoIds, ...g.ids];
-        if (g.errors.length) warnings.push(`Часть картинок не сгенерировалась: ${g.errors[0]}`);
-      }
+    // Фото с карточки (2ГИС, Яндекс Карты) — максимум два; остальное — сгенерированные кадры под услуги.
+    // Объявления в группе получают разные картинки, и робот A/B-тестом оставляет ту, после которой чаще обращаются
+    const own2 = photoIds.slice(0, 2);
+    const wantGen = 4 - own2.length;
+    if (generatedBefore.length >= Math.min(2, wantGen)) photoIds = [...own2, ...generatedBefore].slice(0, 4);
+    else {
+      const g = await generatePhotos(b, plan.imageIdeas, wantGen);
+      photoIds = [...own2, ...g.ids, ...generatedBefore].slice(0, 4);
+      if (!g.ids.length) photoIds = [...own.filter((p) => p.kind === "photo").map((p) => p.id), ...generatedBefore].slice(0, 4);
+      if (g.errors.length) warnings.push(`Часть картинок не сгенерировалась: ${g.errors[0]}`);
     }
   }
   const creatives: Record<string, string> = { ...(plan.creatives ?? {}) };

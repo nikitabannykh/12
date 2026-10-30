@@ -41,14 +41,26 @@ export async function pushInbox(businessId: string, events: Omit<InboxEvent, "id
   }
 }
 
-export async function markInboxSeen(businessId: string) {
-  await kvSet(seenKey(businessId), new Date().toISOString());
+type Seen = { at: string; now: string[] };
+async function getSeen(businessId: string): Promise<Seen> {
+  const v = await kvGet<Seen | string>(seenKey(businessId));
+  if (!v) return { at: "1970-01-01T00:00:00.000Z", now: [] };
+  return typeof v === "string" ? { at: v, now: [] } : v;
 }
+
+/** Открыли колокольчик: события до этого момента и текущие «требует внимания» — прочитаны */
+export async function markInboxSeen(b: Business) {
+  const { items } = await inboxFor(b);
+  await kvSet(seenKey(b.id), { at: new Date().toISOString(), now: items.filter((x) => x.group === "now").map(nowKey) });
+}
+/** «Сейчас» помечаем прочитанным вместе с текстом: изменилось (стало больше отклонённых) — снова новое */
+const nowKey = (x: { id: string; title: string }) => `${x.id}|${x.title}`;
 
 /** Лента для колокольчика */
 export async function inboxFor(b: Business): Promise<{ items: InboxItem[]; unread: number }> {
   const db = await getDb();
-  const seen = (await kvGet<string>(seenKey(b.id))) ?? "1970-01-01T00:00:00.000Z";
+  const seenAll = await getSeen(b.id);
+  const seen = seenAll.at;
   const now = new Date().toISOString();
   const items: InboxItem[] = [];
 
@@ -96,5 +108,7 @@ export async function inboxFor(b: Business): Promise<{ items: InboxItem[]; unrea
   }
   events.sort((x, y) => (x.at < y.at ? 1 : -1));
   const feed = events.slice(0, 40);
-  return { items: [...items, ...feed], unread: feed.filter((x) => x.unread).length + items.filter((x) => x.tone === "bad").length };
+  const seenNow = new Set(seenAll.now);
+  for (const x of items) x.unread = !seenNow.has(nowKey(x));
+  return { items: [...items, ...feed], unread: feed.filter((x) => x.unread).length + items.filter((x) => x.unread).length };
 }

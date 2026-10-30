@@ -9,6 +9,6 @@ export const GET = route(async ({ business }) => {
 
 /** Открыли колокольчик — всё прочитано */
 export const POST = route(async ({ business }) => {
-  if (business) await markInboxSeen(business.id);
+  if (business) await markInboxSeen(business);
   return json({ ok: true });
 });

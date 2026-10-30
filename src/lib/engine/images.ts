@@ -6,7 +6,7 @@ import { uid } from "../util";
 import { imageSize } from "../creative/imagesize";
 import { renderCreative, renderLogo, type Layout } from "../creative/render";
 import type { Business } from "../db/schema";
-import { aiConfigured, art } from "../ai/yandex";
+import { aiConfigured, art, gptJson } from "../ai/yandex";
 import { nicheById } from "../niches";
 
 /**
@@ -94,12 +94,37 @@ export function photoPrompts(b: Business, ideas: string[] = []) {
   return [...fromServices, ...ideas, scene].slice(0, 3);
 }
 
-/** Реалистичные фото через YandexART: детали процесса, атмосфера места. Без текста и крупных лиц. */
+/**
+ * Нешаблонные сюжеты: YandexGPT придумывает разные кадры под услуги этого бизнеса — деталь, атмосфера,
+ * результат, эмоция, необычный ракурс. Не вышло — запасные промпты по нише.
+ */
+async function creativeConcepts(b: Business, ideas: string[], count: number): Promise<string[]> {
+  const n = nicheById(b.niche);
+  const services = spreadServices((b.services ?? []).filter((s) => s.name), 5).map((s) => s.name);
+  try {
+    const r = await gptJson<{ scenes: string[] }>(
+      "Ты арт-директор рекламы для малого бизнеса. Придумываешь кадры для рекламных фото, которые цепляют в ленте: живые, конкретные, не стоковые. " +
+        "Каждый кадр — свой приём: макро-деталь, атмосфера места, результат «после», момент процесса, необычный ракурс сверху, натюрморт с инструментами, игра света и цвета. " +
+        "Нельзя: текст, надписи, логотипы, лица крупным планом, медицинские страшилки, обнажёнка. Люди — только руки, силуэты, спина, размытый фон. " +
+        'Ответ — JSON {"scenes": ["...", ...]}, каждая сцена — 1–2 предложения на русском: что в кадре, свет, цвет, ракурс.',
+      `Бизнес: ${b.name}, ${n.label}, город ${b.city}.\nУслуги: ${services.join("; ") || "основные услуги ниши"}.\n${ideas.length ? `Идеи из плана: ${ideas.join("; ")}.\n` : ""}Нужно ${count} разных кадров, у каждого — своя услуга или свой приём.`,
+      { temperature: 0.9, maxTokens: 1200, timeoutMs: 15_000 },
+    );
+    const scenes = (r.scenes ?? []).map((x) => String(x).trim()).filter((x) => x.length > 20);
+    if (scenes.length >= Math.min(2, count)) return scenes.slice(0, count);
+  } catch {
+    // запасной вариант ниже
+  }
+  return photoPrompts(b, ideas);
+}
+
+/** Реалистичные фото через YandexART: каждый кадр — свой сюжет и приём. Без текста и крупных лиц. */
 export async function generatePhotos(b: Business, ideas: string[], count: number) {
   if (!aiConfigured() || count <= 0) return { ids: [] as string[], errors: [] as string[] };
-  const prompts = photoPrompts(b, ideas).slice(0, count);
-  const style = "Фотореализм, естественный свет, настоящие материалы, полнокадровая камера, объектив 35 мм. Без текста, без надписей, без логотипов, без водяных знаков";
-  const results = await Promise.allSettled(prompts.map((p, i) => art(`${p}. ${style}`, { w: 1, h: 1 }, 1000 + i)));
+  const prompts = (await creativeConcepts(b, ideas, count)).slice(0, count);
+  const style = "Рекламная фотосъёмка, фотореализм, выразительная композиция, живые цвета, глубина резкости, настоящие материалы. Без текста, без надписей, без логотипов, без водяных знаков";
+  const seed = Math.floor(Math.random() * 1e6);
+  const results = await Promise.allSettled(prompts.map((p, i) => art(`${p}. ${style}`, { w: 1, h: 1 }, seed + i)));
   const ids: string[] = [];
   const errors: string[] = [];
   for (const [i, r] of results.entries()) {

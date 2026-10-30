@@ -4,7 +4,7 @@ import { getDb, schema } from "../db";
 import type { Ad, AdGroup, Business, Campaign, Change, Experiment, UndoOp } from "../db/schema";
 import { clientFor, CHANNEL_NAME } from "../platforms";
 import { demoNow } from "../platforms/demo";
-import { ensureLogo, getImage, imageSet, makeCreative, ownerPhotoCreative, ownerPhotoIds } from "./images";
+import { ensureLogo, generatePhotos, getImage, imageSet, listPhotos, makeCreative, ownerPhotoCreative, ownerPhotoIds } from "./images";
 import { adExtras, responsiveAssets } from "./extras";
 import { liftBy, pickByThompson, placeName } from "./insights";
 import { availableLayouts, LAYOUT_NAME, type Layout } from "../creative/render";
@@ -1102,6 +1102,11 @@ async function creativeTests(cx: Ctx, onlyOwnerPhotos = false) {
         photoId = freshPhoto;
         const was = !img.photoId ? "иллюстрация" : cx.ownPhotos.includes(img.photoId) ? "другое ваше фото" : "сгенерированная картинка";
         hypothesis = `привлечёт ли ваше фото больше людей, чем ${was}, при том же тексте`;
+      } else if ((img.layout === "photo" || img.layout === "tag") && (await nextPhoto(cx, live, img.photoId))) {
+        // Картинка с фото лидирует — пробуем другой кадр (сгенерированный под услугу или ваш), макет тот же
+        layout = img.layout as Layout;
+        photoId = (await nextPhoto(cx, live, img.photoId))!;
+        hypothesis = `привлечёт ли другой кадр больше людей при том же тексте и макете`;
       } else {
         const usedHere = live.map((a) => cx.images.get(a.imageId!)?.layout).filter(Boolean) as string[];
         const options = availableLayouts(cx.b, cx.ownPhotos.length > 0 || !!img.photoId).filter((l) => l !== img.layout && !usedHere.includes(l));
@@ -1722,4 +1727,30 @@ export async function ownerVariant(b: Business, adId: string) {
     undo: [{ op: "adStatus", adId: v.ad.id, status: "paused" }],
   });
   return v.ad;
+}
+
+
+/**
+ * Следующий кадр для A/B-теста картинки: фото, которого ещё нет в группе (своё или сгенерированное).
+ * Свободных нет — генерируем новый кадр под услуги (не больше 8 сгенерированных на бизнес).
+ */
+const photoPick = new Map<string, string | null>();
+async function nextPhoto(cx: Ctx, live: Ad[], current: string | null | undefined): Promise<string | null> {
+  const k = `${cx.b.id}|${live.map((a) => a.id).join(",")}`;
+  if (photoPick.has(k)) return photoPick.get(k)!;
+  if (photoPick.size > 500) photoPick.clear();
+  const inGroup = new Set(live.map((a) => cx.images.get(a.imageId!)?.photoId).filter(Boolean) as string[]);
+  if (current) inGroup.add(current);
+  const pool = await listPhotos(cx.b.id);
+  let pick = pool.find((p) => !inGroup.has(p.id))?.id ?? null;
+  if (!pick && pool.filter((p) => p.kind === "generated").length < 8) {
+    try {
+      const g = await generatePhotos(cx.b, [], 1);
+      pick = g.ids[0] ?? null;
+    } catch {
+      pick = null;
+    }
+  }
+  photoPick.set(k, pick);
+  return pick;
 }
