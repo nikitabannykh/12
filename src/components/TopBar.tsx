@@ -45,7 +45,9 @@ export function BellMenu() {
   useEffect(() => {
     load();
     const t = setInterval(load, 120_000);
-    return () => clearInterval(t);
+    // Статусы с площадки поменялись (пополнили счёт, прошла модерация) — колокольчик обновляется сразу
+    window.addEventListener("pz:status", load);
+    return () => { clearInterval(t); window.removeEventListener("pz:status", load); };
   }, [load]);
   const toggle = async () => {
     const next = !open;

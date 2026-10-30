@@ -29,11 +29,11 @@ export const POST = route(async ({ business }) => {
   needBusiness(business);
   const before = await counts(business.id);
   // Проверяем, пока есть что ждать: модерация, «прошло, но не показывается» или кампании без подтверждённых показов
-  if (!isLaunched(business.status) || !(before.moderation || before.blocked || before.notServing)) return json({ checked: false, changed: false, ...before });
-  // Реклама стоит (нет денег, ждёт лицензию) — клиент сейчас это чинит в кабинете площадки: проверяем раз в минуту,
+  if (!isLaunched(business.status) || !(before.moderation || before.blocked || before.notServing)) return json({ checked: false, changed: false, fast: false, ...before, sig: undefined });
+  // Реклама стоит (нет денег, ждёт лицензию) — клиент сейчас это чинит в кабинете площадки: проверяем каждые 20 секунд,
   // иначе (только модерация) — раз в 5 минут. Вебхуков о пополнении у Директа нет, поэтому опрашиваем сами
   const fast = before.notServing > 0 || before.blocked > 0;
-  if (!(await hit(`modcheck:${business.id}`, 1, fast ? 60 : 300)).ok) return json({ checked: false, changed: false, ...before });
+  if (!(await hit(`modcheck:${business.id}`, 1, fast ? 20 : 300)).ok) return json({ checked: false, changed: false, fast, ...before, sig: undefined });
   await syncBusiness(business, { only: "states" }).catch((e) => console.error("modcheck", e));
   if (fast) await checkBalances(business, { force: true }).catch(() => null);
   const after = await counts(business.id);
