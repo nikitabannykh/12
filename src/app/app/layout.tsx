@@ -7,6 +7,7 @@ import { requireUser } from "@/lib/auth";
 import { getBusinessForUser, listProjects, projectLimit } from "@/lib/engine/launch";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { BellMenu, ProfileMenu } from "@/components/TopBar";
+import { ModerationCheck } from "@/components/ModerationCheck";
 import { and, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { familyOf } from "@/lib/channels";
@@ -33,6 +34,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <ToastProvider>
       <UrlNotice />
+      {launched ? <ModerationCheck /> : null}
       <div className="md:grid md:grid-cols-[240px_1fr] min-h-dvh">
         {/* Белый фон и граница — на всю высоту колонки, а меню внутри прилипает к верху экрана */}
         <aside className="hidden md:block border-r border-line bg-card">

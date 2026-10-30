@@ -12,7 +12,6 @@ import { recentChanges } from "@/lib/engine/ops";
 import { getDb, schema } from "@/lib/db";
 import { ActionButton } from "@/components/client";
 import { ChangeItem } from "@/components/ChangeItem";
-import { ModerationCheck } from "@/components/ModerationCheck";
 import { ServingIssues, servingIssues } from "@/components/ServingIssues";
 import { isMedical } from "@/lib/niches";
 import { DaysChart, Delta } from "@/components/charts";
@@ -164,7 +163,6 @@ export default async function Dashboard() {
           <Link href="/app/settings" className="btn btn-ghost btn-sm bg-white">Настройки</Link>
         </StopBanner>
       ))}
-      <ModerationCheck />
       {mod.moderation || mod.rejected ? (() => {
         const { active: passed, moderation: checking, rejected: declined } = mod;
         const total = checking + passed + declined;

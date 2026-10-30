@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { route, json, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { syncBusiness } from "@/lib/engine/sync";
+import { checkBalances } from "@/lib/engine/balance";
 import { hit } from "@/lib/ratelimit";
 import { isLaunched } from "@/lib/util";
 
@@ -15,7 +16,9 @@ async function counts(businessId: string) {
   const blocked = rows.filter((r) => r.status === "active" && /^Не показывается/.test(r.note ?? "")).length;
   const camps = await db.select({ status: schema.campaigns.status, meta: schema.campaigns.meta }).from(schema.campaigns).where(eq(schema.campaigns.businessId, businessId));
   const notServing = camps.filter((c) => c.status === "active" && (c.meta as { delivery?: { ok?: boolean } } | null)?.delivery?.ok !== true).length;
-  return { moderation: n("moderation"), active: n("active"), rejected: n("rejected"), blocked, notServing };
+  // Подпись состояния показа: поменялась причина (пополнили счёт, проверили лицензию) — странице надо обновиться
+  const sig = camps.map((c) => JSON.stringify((c.meta as { delivery?: { ok?: boolean; note?: string } } | null)?.delivery ?? null)).join("|");
+  return { moderation: n("moderation"), active: n("active"), rejected: n("rejected"), blocked, notServing, sig };
 }
 
 /**
@@ -27,9 +30,13 @@ export const POST = route(async ({ business }) => {
   const before = await counts(business.id);
   // Проверяем, пока есть что ждать: модерация, «прошло, но не показывается» или кампании без подтверждённых показов
   if (!isLaunched(business.status) || !(before.moderation || before.blocked || before.notServing)) return json({ checked: false, changed: false, ...before });
-  if (!(await hit(`modcheck:${business.id}`, 1, 600)).ok) return json({ checked: false, changed: false, ...before });
+  // Реклама стоит (нет денег, ждёт лицензию) — клиент сейчас это чинит в кабинете площадки: проверяем раз в минуту,
+  // иначе (только модерация) — раз в 5 минут. Вебхуков о пополнении у Директа нет, поэтому опрашиваем сами
+  const fast = before.notServing > 0 || before.blocked > 0;
+  if (!(await hit(`modcheck:${business.id}`, 1, fast ? 60 : 300)).ok) return json({ checked: false, changed: false, ...before });
   await syncBusiness(business, { only: "states" }).catch((e) => console.error("modcheck", e));
+  if (fast) await checkBalances(business, { force: true }).catch(() => null);
   const after = await counts(business.id);
-  const changed = after.moderation !== before.moderation || after.rejected !== before.rejected || after.active !== before.active || after.blocked !== before.blocked || after.notServing !== before.notServing;
-  return json({ checked: true, changed, ...after });
+  const changed = after.moderation !== before.moderation || after.rejected !== before.rejected || after.active !== before.active || after.blocked !== before.blocked || after.notServing !== before.notServing || after.sig !== before.sig;
+  return json({ checked: true, changed, fast, ...after, sig: undefined });
 });
