@@ -728,12 +728,26 @@ export class YandexDirect implements PlatformClient, WordstatReports {
   /** Последние сырые ответы v4 по методам (первые 500 символов) — для диагностики сбора спроса */
   v4Raw: Record<string, string> = {};
 
+  /** v4 и Live 4 — разные адреса; часть методов осталась только в Live (на «обычном» v4 — код 509) */
+  private v4Url = V4();
   async callV4<T = any>(method: string, param?: unknown): Promise<T> {
+    try {
+      return await this.callV4Once<T>(method, param);
+    } catch (e) {
+      const code = Number(((e as PlatformError).detail as { error_code?: number } | undefined)?.error_code);
+      if (code === 509 && !/\/live\//.test(this.v4Url) && !process.env.YANDEX_DIRECT_V4_URL) {
+        this.v4Url = this.v4Url.replace("/v4/json/", "/live/v4/json/");
+        return await this.callV4Once<T>(method, param);
+      }
+      throw e;
+    }
+  }
+  private async callV4Once<T = any>(method: string, param?: unknown): Promise<T> {
     const body: Record<string, unknown> = { method, token: this.token, locale: "ru" };
     if (param !== undefined) body.param = param;
     let res: Response;
     try {
-      res = await fetch(V4(), { method: "POST", headers: { "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
+      res = await fetch(this.v4Url, { method: "POST", headers: { "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
     } catch (e) {
       this.v4Raw[method] = `(нет ответа: ${(e as Error).name}: ${(e as Error).message})`.slice(0, 500);
       throw new PlatformError("yandex", `Директ v4 ${method}: нет ответа (${(e as Error).name})`);

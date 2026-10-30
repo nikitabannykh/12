@@ -208,7 +208,7 @@ function seedsOf(b: Business): { groups: DemandSeedGroup[]; negatives: string[];
 async function newJob(b: Business, ctx: Ctx): Promise<DemandJob> {
   const { groups, negatives, phrases } = seedsOf(b);
   const regionIds = ctx.regionIds ?? [];
-  const key = createHash("sha1").update(JSON.stringify([regionIds, phrases.map(phraseKey).sort(), ctx.sources])).digest("hex").slice(0, 16);
+  const key = createHash("sha1").update(JSON.stringify(["v2-live", regionIds, phrases.map(phraseKey).sort(), ctx.sources])).digest("hex").slice(0, 16);
   const base: DemandJob = {
     v: 1, rev: 0, key, regionIds, city: b.city, status: "running", sources: ctx.sources, used: null, accountId: ctx.yandex?.id ?? ctx.demo?.id ?? null,
     groups, negatives, queue: [], reports: [], failed: [], tries: {}, results: {}, total: phrases.length, note: ctx.note, lockUntil: 0, startedAt: now(), updatedAt: now(),
