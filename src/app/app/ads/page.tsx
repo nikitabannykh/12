@@ -20,6 +20,7 @@ import { ANGLES, LAYERS, LAYER_ITEM, LAYER_LABEL, type Layer } from "@/lib/niche
 import { LAYOUT_NAME, type Layout } from "@/lib/creative/render";
 import { adExtras, claimProblems, responsiveAssets, timeTargeting, withPlanCallouts } from "@/lib/engine/extras";
 import { isMedical } from "@/lib/niches";
+import { ServingIssues, servingIssues } from "@/components/ServingIssues";
 import { MedicalLicenseGuide } from "@/components/MedicalLicenseGuide";
 import { ageText, sexText, showOf } from "@/lib/engine/show";
 import { landingFor } from "@/lib/engine/landing";
@@ -515,27 +516,8 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                 // Медицина в Директе: пока показов не было ни разу, лицензия могла ещё не пройти проверку — напоминаем,
                 // даже если Директ не отдал это через API
                 const licenseUnknown = !docs && camp.platform === "yandex" && isMedical(b) && !everShown && camp.status === "active";
-                const issues: { title: string; text: React.ReactNode; action?: React.ReactNode; tone: "bad" | "warn" }[] = [];
-                if (money) issues.push({ tone: "bad", title: "На балансе нет денег", text: `Пополните кабинет ${PLATFORM_NAME[camp.platform] ?? ""} — показы начнутся сами.`, action: <a className="btn btn-primary btn-sm" href={camp.platform === "vk" ? "https://ads.vk.ru/hq/budget/transactions" : "https://direct.yandex.ru/"} target="_blank" rel="noreferrer">Пополнить</a> });
-                else if (platformOff) issues.push({ tone: "bad", title: "Площадка не показывает рекламу", text: note });
-                if (docs) issues.push({ tone: "bad", title: "Директ ждёт лицензию", text: `Показы запрещены, пока Директ не проверит медицинскую лицензию (${pl(docs, "объявление", "объявления", "объявлений")}). В кабинете Директа: объявление → «Отправить документы».`, action: <a className="btn btn-ghost btn-sm bg-white" href="https://yandex.ru/support/tooltips-direct/moderation-warning-data-forms.html" target="_blank" rel="noreferrer">Как отправить</a> });
-                else if (licenseUnknown) issues.push({ tone: "warn", title: "Лицензия: проверьте в Директе", text: "Медицинскую рекламу Директ показывает только после проверки лицензии. Если вы её ещё не отправляли или проверка не закончилась — показов не будет даже с деньгами на счёте.", action: <a className="btn btn-ghost btn-sm bg-white" href="https://yandex.ru/support/tooltips-direct/moderation-warning-data-forms.html" target="_blank" rel="noreferrer">Как отправить</a> });
-                if (!issues.length) return null;
-                const bad = issues.some((x) => x.tone === "bad");
-                return (
-                  <div className={`mt-3 rounded-xl border px-4 py-3 grid gap-3 ${bad ? "border-bad/25 bg-bad-soft" : "border-warn/25 bg-warn-soft"}`}>
-                    <div className={`text-sm font-semibold ${bad ? "text-bad" : "text-warn"}`}>{bad ? (issues.length > 1 ? `Реклама стоит — причин: ${issues.length}` : "Реклама стоит") : "Проверьте перед запуском показов"}</div>
-                    {issues.map((x, i) => (
-                      <div key={i} className="flex flex-wrap items-center gap-3">
-                        <div className="flex-1 min-w-[14rem] text-sm">
-                          <div className="font-semibold">{issues.length > 1 ? `${i + 1}. ` : ""}{x.title}</div>
-                          <div className="text-ink-2">{x.text}</div>
-                        </div>
-                        {x.action ?? null}
-                      </div>
-                    ))}
-                  </div>
-                );
+                const issues = servingIssues({ platform: camp.platform, money, docs, licenseUnknown, other: platformOff && !money ? [note] : [] });
+                return issues.length ? <div className="mt-3"><ServingIssues issues={issues} compact /></div> : null;
               })()}
 
               {waiting ? (
@@ -911,7 +893,12 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
     if (isRetarget(c.channel) && c.status === "paused" && a && a.state !== "on") {
       return a.state === "off" ? <span className="pill bg-paper text-muted">автозапуск выключен</span> : <AudienceBar size={a.size} need={a.need} compact />;
     }
-    return <CampaignPill s={states.get(c.id)} ch={c.channel} short />;
+    // Не показывается (нет денег, ждёт лицензию…) — один статус; подробности и что делать — в карточке кампании
+    const st = states.get(c.id);
+    const docs = ads.some((x) => x.campaignId === c.id && x.status === "active" && /документ/i.test(x.statusNote ?? ""));
+    if (st?.stopped === "platform" || (docs && !st?.stopped))
+      return <a href={`#${anchorOf(it.key)}`} className="pill bg-bad-soft text-bad hover:underline" title="Подробнее — в карточке кампании">Не показывается</a>;
+    return <CampaignPill s={st} ch={c.channel} short />;
   }
 }
 

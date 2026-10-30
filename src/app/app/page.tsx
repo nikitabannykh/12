@@ -13,6 +13,7 @@ import { getDb, schema } from "@/lib/db";
 import { ActionButton } from "@/components/client";
 import { ChangeItem } from "@/components/ChangeItem";
 import { ModerationCheck } from "@/components/ModerationCheck";
+import { ServingIssues, servingIssues } from "@/components/ServingIssues";
 import { isMedical } from "@/lib/niches";
 import { DaysChart, Delta } from "@/components/charts";
 import { ClientsWeek } from "@/components/ClientsWeek";
@@ -197,21 +198,8 @@ export default async function Dashboard() {
         const other = [...new Set(notes.filter((n) => n && !/средств|пополн/i.test(n)))];
         const docs = pf === "yandex" ? blockedDocs : 0;
         const licenseUnknown = pf === "yandex" && !docs && isMedical(b) && camps.some((x) => x.platform === "yandex" && x.status === "active") && monthCost === 0 && !c.cost;
-        const reasons: { text: string; bad: boolean }[] = [];
-        if (money) reasons.push({ text: "Нет денег на счёте — пополните кабинет", bad: true });
-        if (docs) reasons.push({ text: "Нужна лицензия — Директ не показывает медицинскую рекламу, пока её не проверит. Объявление → «Отправить документы»", bad: true });
-        if (licenseUnknown) reasons.push({ text: "Лицензия — проверьте, что она отправлена и проверка закончилась, иначе показов не будет и с деньгами", bad: false });
-        for (const n of other) reasons.push({ text: n.replace(/^Не показывается:\s*/, ""), bad: true });
-        if (!reasons.length) return null;
-        const blocking = money || docs || other.length || off.length;
-        return (
-          <StopBanner key={pf} tone={blocking ? "bad" : "warn"} icon={money ? "wallet" : undefined}
-            title={`${pf === "vk" ? "VK Реклама" : "Яндекс Директ"}: ${blocking ? "реклама не показывается" : "проверьте лицензию"}`}
-            text={<ul className="space-y-1">{reasons.map((r) => <li key={r.text} className="flex gap-2"><span className={r.bad ? "text-bad" : "text-warn"}>•</span><span>{r.text}</span></li>)}</ul>}>
-            {money ? <a className="btn btn-primary btn-sm" href={pf === "vk" ? "https://ads.vk.ru/hq/budget/transactions" : "https://direct.yandex.ru/"} target="_blank" rel="noreferrer">Пополнить кабинет</a> : null}
-            {docs || licenseUnknown ? <a href="https://yandex.ru/support/tooltips-direct/moderation-warning-data-forms.html" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm bg-white">Как отправить лицензию</a> : null}
-          </StopBanner>
-        );
+        const issues = servingIssues({ platform: pf, money, docs, licenseUnknown, other });
+        return issues.length ? <ServingIssues key={pf} heading={pf === "vk" ? "VK Реклама" : "Яндекс Директ"} issues={issues} /> : null;
       })}
       {blockedAds.length && !platformStopped.length && !blockedDocs ? (
         <StopBanner tone="warn" title="Часть объявлений не показывается" text={`Модерацию прошли, но ${pl(blockedAds.length, "объявление сейчас не показывается", "объявления сейчас не показываются", "объявлений сейчас не показываются")}. Причина — у каждого объявления в разделе «Реклама».`}>
