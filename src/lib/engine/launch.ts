@@ -456,7 +456,7 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
   let outOfTime = false;
   const timeUp = () => (outOfTime ||= Date.now() > deadline);
   const creative = async (p: { layout: Layout; photoId: string | null; width: number; height: number; headline?: string; price?: string; benefit?: string }) => {
-    const key = [p.layout, p.photoId ?? "-", p.width, p.height, p.headline ?? "", p.price ?? "", p.benefit ?? ""].join("|");
+    const key = ["v2", p.layout, p.photoId ?? "-", p.width, p.height, p.headline ?? "", p.price ?? "", p.benefit ?? ""].join("|");
     if (creatives[key]) return creatives[key];
     const img = await makeCreative(b, p);
     creatives[key] = img.id;

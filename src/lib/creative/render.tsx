@@ -173,7 +173,31 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
       break;
 
     case "tag": {
-      // Карточка на фото — ровная, без наклона (наклонная выглядела небрежно). Без фото — по центру, крупно.
+      // С фото: кадр и текст рядом, а не карточка поверх кадра — карточка закрывала то, что на фото
+      // (руки, блюдо), и было непонятно, что изображено. Широкая — фото справа, текст слева; квадрат и 3:4 — фото сверху
+      if (photo && dims?.width && dims?.height) {
+        const pw = wide ? Math.round(W * 0.56) : W;
+        const ph = wide ? H : Math.round(H * (W / H < 0.9 ? 0.62 : 0.6));
+        const k = Math.max(pw / dims.width, ph / dims.height);
+        const iw = Math.ceil(dims.width * k), ih = Math.ceil(dims.height * k);
+        const ix = Math.round((pw - iw) / 2), iy = Math.round((ph - ih) * 0.35);
+        const pad = (wide ? 48 : 56) * u;
+        el = (
+          <div style={{ width: W, height: H, display: "flex", flexDirection: wide ? "row-reverse" : "column", position: "relative", fontFamily: "Onest", background: "#FFFDF8", color: tagInk }}>
+            <div style={{ display: "flex", width: pw, height: ph, overflow: "hidden", position: "relative" }}>
+              <img src={photo} width={iw} height={ih} style={{ position: "absolute", left: ix, top: iy, width: iw, height: ih }} />
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", padding: `${pad}px ${pad * 1.1}px`, width: wide ? W - pw : W, height: wide ? H : H - ph, position: "relative" }}>
+              <div style={{ position: "absolute", left: 0, top: 0, ...(wide ? { width: 10 * u, height: H } : { width: W, height: 10 * u }), background: accent, display: "flex" }} />
+              <div style={{ fontSize: (wide ? (headline.length > 24 ? 44 : 52) : (headline.length > 24 ? 50 : 58)) * u, fontWeight: 800, lineHeight: 1.06, letterSpacing: -1 * u, display: "flex" }}>{headline}</div>
+              {inp.benefit ? <div style={{ fontSize: (wide ? 28 : 32) * u, fontWeight: 500, lineHeight: 1.25, marginTop: 14 * u, opacity: 0.85, display: "flex" }}>{inp.benefit}</div> : null}
+              <div style={{ fontSize: (wide ? 24 : 28) * u, fontWeight: 600, marginTop: (wide ? 22 : 18) * u, color: accent, display: "flex" }}>{`${inp.business.name} · ${place}`}</div>
+            </div>
+          </div>
+        );
+        break;
+      }
+      // Без фото — карточка на иллюстрации ниши
       const tw = (wide ? (inp.benefit ? 580 : 480) : 600) * u;
       const pos = { left: 60 * u, bottom: 64 * u };
       el = (
