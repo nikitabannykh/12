@@ -19,6 +19,11 @@ PENDING_MIGRATION=0
 [ ! -f $ROOT/migrated ] && grep -q '^NEON_DATABASE_URL=' /etc/polny-zal.env && PENDING_MIGRATION=1
 if [ "$NEW" = "$CUR" ] && [ -n "$RUNNING" ] && [ "$OLDENV" = "$NEWENV" ] && [ $PENDING_MIGRATION = 0 ]; then exit 0; fi
 git reset -q --hard "$NEW"
+# Обновились описания таймеров и служб — ставим новые
+for f in $APP/deploy/vm/systemd/*; do
+  cmp -s "$f" /etc/systemd/system/$(basename "$f") || { install -m 644 "$f" /etc/systemd/system/; RELOAD=1; }
+done
+[ "${RELOAD:-0}" = 1 ] && systemctl daemon-reload
 if ! docker image inspect polny-zal:"$NEW" >/dev/null 2>&1; then
 echo "build $NEW"
 docker build -q --build-arg NODE_IMAGE=mirror.gcr.io/library/node:22-bookworm-slim -t polny-zal:"$NEW" . >/dev/null

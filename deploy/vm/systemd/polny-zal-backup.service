@@ -6,3 +6,6 @@ After=docker.service
 Type=oneshot
 ExecStart=/usr/bin/bash /opt/polny-zal/app/deploy/vm/backup.sh
 TimeoutStartSec=1800
+# Ход и ошибки — и в журнал, и в последовательный порт (виден в консоли Yandex Cloud без SSH)
+StandardOutput=journal+console
+StandardError=journal+console

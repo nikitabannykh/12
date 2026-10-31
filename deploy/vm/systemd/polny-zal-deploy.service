@@ -6,3 +6,6 @@ After=network-online.target docker.service
 Type=oneshot
 ExecStart=/usr/bin/bash /opt/polny-zal/app/deploy/vm/deploy.sh
 TimeoutStartSec=1800
+# Ход и ошибки — и в журнал, и в последовательный порт (виден в консоли Yandex Cloud без SSH)
+StandardOutput=journal+console
+StandardError=journal+console

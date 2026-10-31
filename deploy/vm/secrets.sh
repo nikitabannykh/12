@@ -9,7 +9,11 @@ TMP=$(mktemp)
 chmod 600 "$TMP"
 if [ -n "$SID" ]; then
   TOKEN=$(curl -fsS -H "$H" $MD/service-accounts/default/token | jq -r .access_token)
-  curl -fsS -H "Authorization: Bearer $TOKEN" "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/$SID/payload" \
+  # Не смогли прочитать Lockbox (нет прав, сеть) — работаем с тем, что есть, и пишем причину в лог
+  PAYLOAD=$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $TOKEN" "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/$SID/payload" || true)
+  CODE=$(echo "$PAYLOAD" | tail -n1)
+  if [ "$CODE" != "200" ]; then echo "secrets: Lockbox $SID ответил $CODE: $(echo "$PAYLOAD" | head -c 300)"; PAYLOAD='{"entries":[]}'; else PAYLOAD=$(echo "$PAYLOAD" | sed '$d'); fi
+  echo "$PAYLOAD" \
     | jq -r '.entries[] | select((.textValue // "") | (length > 8 and (test("^(-|TODO|ВСТАВ|ЗАПОЛН)") | not))) | "\(.key)=\(.textValue | gsub("\n"; "\\n"))"' > "$TMP"
 fi
 # Несекретные настройки (ClientID приложений, каталог) — в метаданных ВМ, ключ app-env: строки KEY=VALUE
@@ -32,7 +36,8 @@ grep -q '^TRUSTED_IP_HEADER=' "$TMP" || echo "TRUSTED_IP_HEADER=x-real-ip" >> "$
 # База на этой же ВМ (если DATABASE_URL не задан в Lockbox)
 if ! grep -q '^DATABASE_URL=' "$TMP"; then
   PW=$(grep '^POSTGRES_PASSWORD=' /opt/polny-zal/db.env | cut -d= -f2-)
-  echo "DATABASE_URL=postgresql://polnyzal:$PW@polny-zal-db:5432/polnyzal" >> "$TMP"
+  # Локальная база в соседнем контейнере — без TLS (иначе клиент для «не localhost» требует шифрование)
+  echo "DATABASE_URL=postgresql://polnyzal:$PW@polny-zal-db:5432/polnyzal?sslmode=disable" >> "$TMP"
 else
   echo "PG_CA_CERT=/ca.pem" >> "$TMP"
 fi
