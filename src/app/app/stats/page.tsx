@@ -243,8 +243,8 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
                 { label: "Показы", hint: "увидели объявление", v: f.impressions },
                 { label: "Клики", hint: "перешли по объявлению", v: f.clicks },
                 { label: "Визиты", hint: "открыли страницу", v: f.visits, metrica: true },
-                { label: "Качественные визиты", hint: "не ушли сразу", v: f.quality, metrica: true },
-                { label: "Обращения", hint: "заявка, звонок, сообщение", v: f.leads },
+                { label: "Без отказа", hint: "не ушли сразу", v: f.quality, metrica: true },
+                { label: "Обращения", hint: "заявки и звонки", v: f.leads },
               ];
               return (
                 <div key={f.ch}>
@@ -255,18 +255,19 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
                       const share = i > 0 && prev > 0 ? st.v / prev : null;
                       const empty = st.metrica && !hasVisits;
                       return (
-                        <li key={st.label} className="rounded-xl bg-paper px-3.5 py-2.5 sm:py-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 sm:block">
-                          <div className="min-w-0">
-                            <div className="text-sm font-semibold leading-tight">{st.label}</div>
-                            <div className="text-xs text-muted leading-tight">{st.hint}</div>
+                        <li key={st.label} className="rounded-xl bg-paper px-3.5 py-2.5 sm:py-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 sm:flex sm:flex-col sm:items-stretch">
+                          {/* Высота подписи одинаковая у всех карточек — цифры и полоски стоят на одной линии */}
+                          <div className="min-w-0 sm:min-h-[2.6rem]">
+                            <div className="text-sm font-semibold leading-tight sm:truncate" title={st.label}>{st.label}</div>
+                            <div className="text-xs text-muted leading-tight sm:line-clamp-1" title={st.hint}>{st.hint}</div>
                           </div>
-                          <div className="text-right sm:text-left sm:mt-2">
+                          <div className="text-right sm:text-left sm:mt-1">
                             <div className="text-xl font-extrabold leading-tight">{empty ? "—" : num(st.v)}</div>
-                            <div className="text-xs text-muted">{empty || share === null ? (i === 0 ? "\u00a0" : "—") : `${share < 0.1 && share > 0 ? (share * 100).toFixed(1).replace(".", ",") : Math.round(share * 100)}% от «${steps[i - 1].label.toLowerCase()}»`}</div>
+                            <div className="text-xs text-muted truncate">{empty || share === null ? (i === 0 ? "\u00a0" : "—") : `${share < 0.1 && share > 0 ? (share * 100).toFixed(1).replace(".", ",") : Math.round(share * 100)}% от пред. шага`}</div>
                           </div>
-                          <div className="col-span-2 mt-2 h-1.5 rounded-full bg-line overflow-hidden" aria-hidden>
+                          <div className="col-span-2 mt-2 sm:mt-auto sm:pt-2" aria-hidden><div className="h-1.5 rounded-full bg-line overflow-hidden">
                             <div className="h-full rounded-full bg-ink" style={{ width: `${empty ? 0 : i === 0 ? 100 : Math.max(share ? 2 : 0, Math.min(100, (share ?? 0) * 100))}%` }} />
-                          </div>
+                          </div></div>
                         </li>
                       );
                     })}

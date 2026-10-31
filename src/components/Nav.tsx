@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { PlatformMark } from "./CampaignNav";
+import { SETTINGS_TABS } from "@/lib/settings-tabs";
 import { BarChart3, FileText, History, Home, Megaphone, Rocket, Settings } from "lucide-react";
 
 type Item = { href: string; label: string; short?: string; icon: typeof Home };
@@ -20,6 +21,20 @@ const SETUP: Item[] = [
   { href: "/app/launch", label: "Запуск рекламы", short: "Запуск", icon: Rocket },
   { href: "/app/settings", label: "Настройки", icon: Settings },
 ];
+
+/** Разделы настроек — подпункты «Настроек» в боковом меню (видны, когда открыты настройки) */
+function SettingsSubLinks() {
+  const sp = useSearchParams();
+  const cur = sp.get("tab") ?? "business";
+  return (
+    <div className="grid gap-0.5 pl-[2.6rem] -mt-0.5 mb-1">
+      {SETTINGS_TABS.map((t) => (
+        <Link key={t.id} href={`/app/settings?tab=${t.id}`} aria-current={cur === t.id ? "page" : undefined}
+          className={`flex items-center h-8 px-2 rounded-md text-sm font-semibold ${cur === t.id ? "bg-paper text-ink" : "text-muted hover:text-ink hover:bg-paper"}`}>{t.label}</Link>
+      ))}
+    </div>
+  );
+}
 
 /** Кампании по площадкам — подпункты «Рекламы» в боковом меню */
 export type AdsCounts = { yandex: number; vk: number };
@@ -79,6 +94,11 @@ export function Nav({ launched, variant, ads }: { launched: boolean; variant: "s
             <Icon size={18} strokeWidth={isActive(href) ? 2.3 : 1.8} />
             {label}
           </Link>
+          {href === "/app/settings" && path.startsWith("/app/settings") ? (
+            <Suspense fallback={null}>
+              <SettingsSubLinks />
+            </Suspense>
+          ) : null}
           {href === "/app/ads" && ads ? (
             <Suspense fallback={null}>
               <AdsSubLinks counts={ads} />

@@ -22,7 +22,7 @@ function SiteCodeNote({ code }: { code: SiteCode }) {
       <CircleAlert size={15} className="shrink-0" />
       <b className="font-semibold">{code === "missing" ? "Код на сайте не найден" : "Код на сайт ещё не установлен"}</b>
       <span className="text-ink-2">— заявки с сайта не считаются.</span>
-      <a href="/app/settings#site" className="font-semibold underline underline-offset-2" onClick={(e) => e.stopPropagation()}>Поставить код →</a>
+      <a href="/app/settings?tab=site#site" className="font-semibold underline underline-offset-2" onClick={(e) => e.stopPropagation()}>Поставить код →</a>
     </span>
   );
 }

@@ -1,8 +1,10 @@
+import Link from "next/link";
 import { isLaunched } from "@/lib/util";
 import { requireUser } from "@/lib/auth";
 import { getBusinessForUser, listProjects } from "@/lib/engine/launch";
 import { MAX_PHOTOS, ownerPhotoIds } from "@/lib/engine/images";
 import { NICHES } from "@/lib/niches";
+import { ArrowLeft } from "lucide-react";
 import { BusinessOnboarding } from "@/components/BusinessOnboarding";
 import { StageBar } from "@/components/StageBar";
 import { businessLinks } from "@/lib/links";
@@ -25,6 +27,7 @@ export default async function Start({ searchParams }: { searchParams: Promise<{ 
     <div className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:gap-6">
       {active ? null : <StageBar current={1} dataDone={editing} canLaunch={editing} />}
       <div>
+        {active ? <Link href="/app/settings?tab=business" className="inline-flex items-center gap-1 text-sm font-semibold text-muted hover:text-ink mb-2"><ArrowLeft size={15} /> Настройки</Link> : null}
         <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">{active ? "О бизнесе" : isNewProject ? "Новый проект: данные о бизнесе" : "Данные о бизнесе"}</h1>
         <p className="text-muted mt-2 max-w-2xl leading-relaxed max-sm:hidden">
           {active
@@ -40,7 +43,7 @@ export default async function Start({ searchParams }: { searchParams: Promise<{ 
         photoMax={MAX_PHOTOS}
         otherProjects={Math.max(0, projects.length - (b ? 1 : 0))}
         nicheLock={!b ? null : b.status !== "draft" || (b.launchPlan as { launch?: unknown } | null)?.launch ? "launched" : b.launchPlan ? "plan" : null}
-        next={editing && isLaunched(b?.status) ? "/app/settings" : "/app/launch"}
+        next={editing && isLaunched(b?.status) ? "/app/settings?tab=business" : "/app/launch"}
         saveLabel={editing && isLaunched(b?.status) ? "Сохранить изменения" : "Сохранить и перейти к запуску"}
         initialLinks={links.map((l) => l.url)}
         niches={NICHES.map((n) => ({ id: n.id, label: n.label, examples: n.examples }))}

@@ -301,7 +301,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                   <div className="font-semibold">Подключите кабинет {FAMILY_NAME[fp]} — робот сам создаст объявления</div>
                   <p className="text-sm text-muted mt-1">{fp === "vk" ? "ВКонтакте, Одноклассники и Дзен: тексты и картинки возьмём из уже готовой рекламы, бюджет поделим в пределах месячного." : "Поиск и сайты Яндекса: тексты и картинки возьмём из уже готовой рекламы, бюджет поделим в пределах месячного."}</p>
                 </div>
-                <Link href={fp === "vk" ? "/app/settings#vk" : "/app/settings"} className="btn btn-primary btn-sm">Подключить {FAMILY_NAME[fp]}</Link>
+                <Link href={fp === "vk" ? "/app/settings?tab=accounts#vk" : "/app/settings"} className="btn btn-primary btn-sm">Подключить {FAMILY_NAME[fp]}</Link>
               </div>
             ) : canAdd.length ? (
               <div className="mt-4 rounded-2xl bg-paper p-5">
@@ -380,7 +380,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                 ) : (
                   <p className="text-sm text-muted max-w-sm">
                     {x.need ? <>Нужен бюджет от {rub(x.need)} в месяц, сейчас {rub(b.monthlyBudget)}. </> : <>Не хватает бюджета. </>}
-                    <Link href="/app/settings#budget" className="font-semibold text-ink-2 underline">Изменить бюджет</Link>
+                    <Link href="/app/settings?tab=ads#budget" className="font-semibold text-ink-2 underline">Изменить бюджет</Link>
                   </p>
                 )}
               </li>
@@ -531,7 +531,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                   <p className="text-sm text-ink-2 mt-2.5 leading-relaxed max-w-2xl">
                     Копим тех, кто был на {b.siteUrl ? "сайте" : "странице записи"} за 30 дней и не записался. {aud!.state === "off" ? "Автозапуск выключен — робот кампанию не включит." : <>От {aud!.need} человек робот включит кампанию сам{plannedShort ? <>, если хватит бюджета ({rub(MIN_WEEKLY[ch])} в неделю)</> : <> — около {rub(plannedWeekly)} в неделю</>}. До этого деньги не тратятся.</>}
                   </p>
-                  {aud!.note ? <p className="text-sm text-warn mt-1.5">{aud!.note}{/бюджет/.test(aud!.note) ? <> · <Link href="/app/settings#budget" className="underline font-semibold">Изменить бюджет</Link></> : null}</p> : null}
+                  {aud!.note ? <p className="text-sm text-warn mt-1.5">{aud!.note}{/бюджет/.test(aud!.note) ? <> · <Link href="/app/settings?tab=ads#budget" className="underline font-semibold">Изменить бюджет</Link></> : null}</p> : null}
                 </div>
               ) : null}
 
@@ -589,7 +589,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                   <div className="mt-3 rounded-xl border border-line px-4 py-3">
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-xs font-semibold uppercase tracking-wide text-faint">Показ</div>
-                      <Link href="/app/settings#show" className="text-sm font-semibold text-ink-2 hover:text-ink underline underline-offset-2">Изменить</Link>
+                      <Link href="/app/settings?tab=ads#show" className="text-sm font-semibold text-ink-2 hover:text-ink underline underline-offset-2">Изменить</Link>
                     </div>
                     <div className="mt-2 grid sm:grid-cols-2 gap-x-6 gap-y-2.5">
                       <Row icon={<Users size={15} />} label="Кому">{who}</Row>

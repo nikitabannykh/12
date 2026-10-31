@@ -11,6 +11,8 @@ import { timeTargeting } from "@/lib/engine/extras";
 import { vkRadiusFor } from "@/lib/platforms/vk-formats";
 import type { ShowSettings } from "@/lib/engine/show";
 import Link from "next/link";
+import { SETTINGS_TABS, type SettingsTab } from "@/lib/settings-tabs";
+import { SettingsHashRedirect, DeleteProject } from "@/components/SettingsClient";
 import { redirect } from "next/navigation";
 import { Check, ExternalLink, TriangleAlert } from "lucide-react";
 import { requireUser, demoAllowed, isDemoEmail } from "@/lib/auth";
@@ -37,7 +39,12 @@ function contactEmail(): string | null {
   return m ? m[0] : null;
 }
 
-export default async function Settings() {
+/** Разделы настроек: каждый — отдельная страница (?tab=), в меню слева — подпункты «Настроек» */
+const TABS = SETTINGS_TABS;
+
+export default async function Settings({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
+  const q = await searchParams;
+  const tab = (TABS.find((t) => t.id === q.tab)?.id ?? "business") as SettingsTab;
   const user = await requireUser();
   const b = await getBusinessForUser(user.id);
   if (!b) redirect("/app/start");
@@ -56,7 +63,17 @@ export default async function Settings() {
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-6">
       <h1 className="text-3xl font-extrabold tracking-tight">Настройки</h1>
+      <SettingsHashRedirect />
+      {/* Разделы — вкладками (на телефоне, где нет бокового меню, это главная навигация) */}
+      <nav className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-1 -mt-2" aria-label="Разделы настроек">
+        {TABS.map((t) => (
+          <Link key={t.id} href={`/app/settings?tab=${t.id}`} scroll={false} aria-current={tab === t.id ? "page" : undefined}
+            className={`shrink-0 px-3.5 h-9 grid place-items-center rounded-lg text-sm font-semibold border ${tab === t.id ? "bg-ink text-white border-ink" : "bg-card border-line text-ink-2 hover:border-line-2"}`}>{t.label}</Link>
+        ))}
+      </nav>
 
+      {tab === "business" ? (
+        <>
       <section className="card p-5 sm:p-7">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -78,14 +95,13 @@ export default async function Settings() {
           <Link href="/app/start" className="btn btn-ghost btn-sm">Изменить описание</Link>
         </div>
       </section>
-
       <section id="links" className="card p-5 sm:p-7 scroll-mt-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-lg font-bold">Ссылки на бизнес</h2>
             <p className="hint mt-1 max-w-2xl">Сайт, карточки в Яндекс Картах и 2ГИС, онлайн-запись и соцсети — из них заполняется описание. Объявления ведут на {b.siteUrl ? "сайт" : "вашу страницу записи"}.</p>
             {site && site.needed ? (
-              <a href="#site" className={`mt-2 inline-flex items-center gap-1.5 text-sm font-semibold underline underline-offset-2 ${siteSummary(site).done ? "text-good" : "text-warn"}`}>{siteSummary(site).title} →</a>
+              <a href="/app/settings?tab=site#site" className={`mt-2 inline-flex items-center gap-1.5 text-sm font-semibold underline underline-offset-2 ${siteSummary(site).done ? "text-good" : "text-warn"}`}>{siteSummary(site).title} →</a>
             ) : null}
           </div>
           <Link href="/app/start#links" className="btn btn-ghost btn-sm">{links.length ? "Изменить" : "Добавить ссылки"}</Link>
@@ -108,65 +124,15 @@ export default async function Settings() {
           <p className="mt-3 text-sm text-warn max-w-2xl">Карточка в 2ГИС есть, а в Яндекс Картах — нет. Для показов на Картах и подсчёта звонков в Директе добавьте и ссылку на Яндекс Карты.</p>
         ) : null}
       </section>
-
-      <section id="notify" className="card p-5 sm:p-7 scroll-mt-6">
-        <h2 className="text-lg font-bold">Уведомления о заявках</h2>
-        <NotifySettings initial={notifyStatus} />
-      </section>
-
+        </>
+      ) : null}
+      {tab === "site" ? (
+        <>
       <section id="landing" className="card p-5 sm:p-7 scroll-mt-6">
         <h2 className="text-lg font-bold">Куда ведёт реклама</h2>
         <p className="hint mt-1 mb-5">Куда попадает человек после клика по объявлению. Можно одну ссылку для всех каналов и свою — для отдельного канала.</p>
         <LandingEditor siteCode={site ? site.state : null} initial={(b.landing ?? {}) as LandingSettings} siteUrl={b.siteUrl} pageUrl={pageUrl(b, appUrl())} channels={channels} live={b.status === "active" || b.status === "paused"} hasYandex={accounts.some((a) => a.platform === "yandex")} />
       </section>
-
-      <section id="show" className="card p-5 sm:p-7 scroll-mt-6">
-        <h2 className="text-lg font-bold">Где, кому и когда показывать</h2>
-        <p className="hint mt-1 mb-5">Регион, пол и возраст, дни и часы показа — для всех кампаний сразу. Что не задано, подбирает робот.</p>
-        <ShowSettingsEditor monthlyBudget={b.monthlyBudget} initial={(b.showSettings ?? {}) as ShowSettings} city={b.city} address={b.address} autoTime={timeTargeting({ ...b, showSettings: {} })?.note ?? null} autoRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null} live={b.status === "active" || b.status === "paused"} />
-      </section>
-
-      <section id="budget" className="card p-5 sm:p-7 scroll-mt-6">
-        <h2 className="text-lg font-bold">Бюджет</h2>
-        <p className="hint mt-1 mb-4">Сколько можно потратить на рекламу за месяц. При изменении робот пропорционально пересчитает лимиты всех каналов. Сейчас: {rub(b.monthlyBudget)}.</p>
-        <BudgetEditor monthly={b.monthlyBudget} min={minMonthlyFor(channels.length ? channels : ["search"])} />
-      </section>
-
-      <section className="card p-5 sm:p-7">
-        <h2 className="text-lg font-bold">Рекламные кабинеты</h2>
-        <ul className="mt-4 divide-y divide-line">
-          {accounts.map((a) => (
-            <li key={a.id} className="py-3 flex flex-wrap items-center gap-3">
-              <div className="flex-1 min-w-[12rem]">
-                <div className="font-semibold">{PLATFORM_NAME[a.platform]}</div>
-                {a.login && a.login !== PLATFORM_NAME[a.platform] ? <div className="text-sm text-muted">{a.login}</div> : null}
-              </div>
-              {a.status === "ok" ? (
-                <span className="pill bg-good-soft text-good"><Check size={13} /> Доступ есть</span>
-              ) : (
-                <span className="pill bg-bad-soft text-bad" title={a.statusNote ?? ""}><TriangleAlert size={13} /> Нет доступа</span>
-              )}
-              {a.platform === "yandex" || (a.platform === "vk" && vkConfigured()) ? <a className="btn btn-ghost btn-sm" href={`/api/connect/${a.platform}/start?back=/app/settings`}>Подключить заново</a> : null}
-              <ActionButton method="DELETE" url={`/api/accounts/${a.id}`} confirm="Отключить кабинет? Сервис перестанет управлять рекламой в нём." done="Кабинет отключён">Отключить</ActionButton>
-            </li>
-          ))}
-        </ul>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {yandexConfigured() && !accounts.some((a) => a.platform === "yandex") ? <a className="btn btn-primary btn-sm" href="/api/connect/yandex/start?back=/app/settings">Подключить Яндекс Директ</a> : null}
-
-          {demoAllowed() && !accounts.length ? <ActionButton url="/api/connect/demo" done="Демо-кабинет подключён" className="btn btn-ghost btn-sm">Подключить демо-кабинет</ActionButton> : null}
-        </div>
-        {!accounts.some((a) => a.platform === "vk") || accounts.some((a) => a.platform === "vk" && a.status !== "ok") ? (
-          <div id="vk" className="mt-5 pt-5 border-t border-line scroll-mt-6">
-            <div className="font-semibold">VK Реклама</div>
-            <p className="text-sm text-muted mt-0.5 mb-3">ВКонтакте, Одноклассники, Дзен. {vkConfigured() ? "Войдите через VK или подключите по ключам API своего кабинета." : "Подключается по ключам API вашего кабинета — это 2 минуты."}</p>
-            <VkConnect oauth={vkConfigured()} back="/app/settings" />
-          </div>
-        ) : null}
-        {accounts.some((a) => a.platform === "vk" && a.status === "ok") ? <div id="vk-pixel" className="mt-4 scroll-mt-6"><VkPixelSetup /></div> : null}
-        <p className="hint mt-4 max-w-2xl">Новые кабинеты используются для следующего запуска. Пополнение баланса — в самих кабинетах Директа и VK Рекламы. Маркировку рекламы площадки делают автоматически, если в кабинете заполнены данные рекламодателя.</p>
-      </section>
-
       <section id="site" className="card p-5 sm:p-7 scroll-mt-6">
         {/* старые ссылки (#counter) ведут сюда же */}
         <span id="counter" className="block scroll-mt-6" aria-hidden />
@@ -195,12 +161,6 @@ export default async function Settings() {
           <p className="text-muted mt-1 leading-relaxed max-w-2xl">Объявления ведут на вашу страницу записи — обращения с неё считаются автоматически, ничего ставить не нужно. Есть свой сайт? <Link href="/app/start#links" className="font-semibold text-ink-2 underline underline-offset-2">Добавьте ссылку</Link> — здесь появится код для него.</p>
         )}
       </section>
-
-      <section id="account" className="card p-5 sm:p-7 scroll-mt-6">
-        <h2 className="text-lg font-bold">Аккаунт</h2>
-        <AccountSettings email={user.email} hasPassword={Boolean(me?.passwordHash)} verified={Boolean(me?.emailVerifiedAt)} mail={mailConfigured()} demo={isDemoEmail(user.email)} />
-      </section>
-
       <section className="card p-5 sm:p-7">
         <h2 className="text-lg font-bold">Страница записи</h2>
         <p className="text-muted mt-1 leading-relaxed max-w-2xl">Простая страница с услугами, ценами, фото и кнопками связи. {b.siteUrl ? "Пригодится, если сайта не станет или захотите проверить её против сайта." : "На неё ведут все объявления."}</p>
@@ -209,6 +169,81 @@ export default async function Settings() {
           <CopyButton text={landing} label="Скопировать ссылку" />
         </div>
       </section>
+        </>
+      ) : null}
+      {tab === "ads" ? (
+        <>
+      <section id="show" className="card p-5 sm:p-7 scroll-mt-6">
+        <h2 className="text-lg font-bold">Где, кому и когда показывать</h2>
+        <p className="hint mt-1 mb-5">Регион, пол и возраст, дни и часы показа — для всех кампаний сразу. Что не задано, подбирает робот.</p>
+        <ShowSettingsEditor monthlyBudget={b.monthlyBudget} initial={(b.showSettings ?? {}) as ShowSettings} city={b.city} address={b.address} autoTime={timeTargeting({ ...b, showSettings: {} })?.note ?? null} autoRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null} live={b.status === "active" || b.status === "paused"} />
+      </section>
+      <section id="budget" className="card p-5 sm:p-7 scroll-mt-6">
+        <h2 className="text-lg font-bold">Бюджет</h2>
+        <p className="hint mt-1 mb-4">Сколько можно потратить на рекламу за месяц. При изменении робот пропорционально пересчитает лимиты всех каналов. Сейчас: {rub(b.monthlyBudget)}.</p>
+        <BudgetEditor monthly={b.monthlyBudget} min={minMonthlyFor(channels.length ? channels : ["search"])} />
+      </section>
+        </>
+      ) : null}
+      {tab === "accounts" ? (
+        <>
+      <section className="card p-5 sm:p-7">
+        <h2 className="text-lg font-bold">Рекламные кабинеты</h2>
+        <ul className="mt-4 divide-y divide-line">
+          {accounts.map((a) => (
+            <li key={a.id} className="py-3 flex flex-wrap items-center gap-3">
+              <div className="flex-1 min-w-[12rem]">
+                <div className="font-semibold">{PLATFORM_NAME[a.platform]}</div>
+                {a.login && a.login !== PLATFORM_NAME[a.platform] ? <div className="text-sm text-muted">{a.login}</div> : null}
+              </div>
+              {a.status === "ok" ? (
+                <span className="pill bg-good-soft text-good"><Check size={13} /> Доступ есть</span>
+              ) : (
+                <span className="pill bg-bad-soft text-bad" title={a.statusNote ?? ""}><TriangleAlert size={13} /> Нет доступа</span>
+              )}
+              {a.platform === "yandex" || (a.platform === "vk" && vkConfigured()) ? <a className="btn btn-ghost btn-sm" href={`/api/connect/${a.platform}/start?back=/app/settings?tab=accounts`}>Подключить заново</a> : null}
+              <ActionButton method="DELETE" url={`/api/accounts/${a.id}`} confirm="Отключить кабинет? Сервис перестанет управлять рекламой в нём." done="Кабинет отключён">Отключить</ActionButton>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {yandexConfigured() && !accounts.some((a) => a.platform === "yandex") ? <a className="btn btn-primary btn-sm" href="/api/connect/yandex/start?back=/app/settings?tab=accounts">Подключить Яндекс Директ</a> : null}
+
+          {demoAllowed() && !accounts.length ? <ActionButton url="/api/connect/demo" done="Демо-кабинет подключён" className="btn btn-ghost btn-sm">Подключить демо-кабинет</ActionButton> : null}
+        </div>
+        {!accounts.some((a) => a.platform === "vk") || accounts.some((a) => a.platform === "vk" && a.status !== "ok") ? (
+          <div id="vk" className="mt-5 pt-5 border-t border-line scroll-mt-6">
+            <div className="font-semibold">VK Реклама</div>
+            <p className="text-sm text-muted mt-0.5 mb-3">ВКонтакте, Одноклассники, Дзен. {vkConfigured() ? "Войдите через VK или подключите по ключам API своего кабинета." : "Подключается по ключам API вашего кабинета — это 2 минуты."}</p>
+            <VkConnect oauth={vkConfigured()} back="/app/settings?tab=accounts" />
+          </div>
+        ) : null}
+        {accounts.some((a) => a.platform === "vk" && a.status === "ok") ? <div id="vk-pixel" className="mt-4 scroll-mt-6"><VkPixelSetup /></div> : null}
+        <p className="hint mt-4 max-w-2xl">Новые кабинеты используются для следующего запуска. Пополнение баланса — в самих кабинетах Директа и VK Рекламы. Маркировку рекламы площадки делают автоматически, если в кабинете заполнены данные рекламодателя.</p>
+      </section>
+        </>
+      ) : null}
+      {tab === "notify" ? (
+        <>
+      <section id="notify" className="card p-5 sm:p-7 scroll-mt-6">
+        <h2 className="text-lg font-bold">Уведомления о заявках</h2>
+        <NotifySettings initial={notifyStatus} />
+      </section>
+        </>
+      ) : null}
+      {tab === "account" ? (
+        <>
+      <section id="account" className="card p-5 sm:p-7 scroll-mt-6">
+        <h2 className="text-lg font-bold">Аккаунт</h2>
+        <AccountSettings email={user.email} hasPassword={Boolean(me?.passwordHash)} verified={Boolean(me?.emailVerifiedAt)} mail={mailConfigured()} demo={isDemoEmail(user.email)} />
+      </section>
+      <section id="delete" className="card p-5 sm:p-7 scroll-mt-6 border-bad/30">
+        <h2 className="text-lg font-bold">Удалить проект «{b.name}»</h2>
+        <p className="hint mt-1 mb-4 max-w-2xl">Кампании проекта в Директе и VK остановим (их история останется в кабинетах — удалить её можно там же), а описание, объявления, статистику и историю в Самоходе сотрём. Вернуть будет нельзя.</p>
+        <DeleteProject id={b.id} name={b.name} />
+      </section>
+        </>
+      ) : null}
     </div>
   );
 }

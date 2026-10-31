@@ -24,7 +24,7 @@ type Issue = { title: string; text: string; tone: "bad" | "warn"; action?: React
 export function servingIssues(x: ServingInput): Issue[] {
   const out: Issue[] = [];
   if (x.site)
-    out.push({ tone: "bad", title: "Сайт не работает", text: `${x.site} не открывается — робот остановил рекламу и включит её сам, когда сайт заработает. Проверьте адрес сайта или переключите рекламу на страницу записи.`, action: <a className="btn btn-primary btn-sm" href="/app/settings#landing">Куда ведёт реклама</a> });
+    out.push({ tone: "bad", title: "Сайт не работает", text: `${x.site} не открывается — робот остановил рекламу и включит её сам, когда сайт заработает. Проверьте адрес сайта или переключите рекламу на страницу записи.`, action: <a className="btn btn-primary btn-sm" href="/app/settings?tab=site#landing">Куда ведёт реклама</a> });
   if (x.money)
     out.push({ tone: "bad", title: "Нет денег на счёте", text: `Пополните кабинет ${CABINET[x.platform] ?? ""} — показы начнутся сами.`, action: <a className="btn btn-primary btn-sm" href={TOPUP[x.platform] ?? TOPUP.yandex} target="_blank" rel="noreferrer">Пополнить кабинет</a> });
   if (x.docs)

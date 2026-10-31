@@ -83,7 +83,7 @@ export async function siteGuard(b: Business): Promise<{ paused: number; resumed:
           toPause.map((c) => ({ op: "campaignStatus" as const, campaignId: c.id, status: "paused" as const })),
         );
         for (const c of toPause) await patchBudgetMeta(c.id, { pausedBy: "robot", pausedBySite: url } as never);
-        await pushInbox(b.id, [{ tone: "bad", title: `Сайт ${host} не работает — реклама остановлена`, text: `${r.why[0].toUpperCase()}${r.why.slice(1)}. Деньги не тратим; включим рекламу сами, когда сайт откроется. Или переключите рекламу на страницу записи.`, href: "/app/settings#landing" }]);
+        await pushInbox(b.id, [{ tone: "bad", title: `Сайт ${host} не работает — реклама остановлена`, text: `${r.why[0].toUpperCase()}${r.why.slice(1)}. Деньги не тратим; включим рекламу сами, когда сайт откроется. Или переключите рекламу на страницу записи.`, href: "/app/settings?tab=site#landing" }]);
         paused += toPause.length;
         log.push(`сайт ${host} не работает — остановили ${toPause.length}`);
       }

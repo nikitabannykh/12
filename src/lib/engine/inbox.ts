@@ -86,7 +86,7 @@ export async function inboxFor(b: Business): Promise<{ items: InboxItem[]; unrea
   const siteOff = wanted.filter((c) => metaOf(c).pausedBySite);
   if (siteOff.length) {
     const host = String(metaOf(siteOff[0]).pausedBySite).replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-    items.push({ id: "site", at: now, group: "now", unread: false, tone: "bad", title: `Сайт ${host} не работает — реклама на паузе`, text: `Остановили ${siteOff.map((c) => CHANNEL_NAME[c.channel] ?? c.channel).join(", ")}, чтобы не тратить деньги впустую. Проверьте адрес сайта и сам сайт — или переключите рекламу на страницу записи. Как только сайт откроется, включим сами.`, href: "/app/settings#landing" });
+    items.push({ id: "site", at: now, group: "now", unread: false, tone: "bad", title: `Сайт ${host} не работает — реклама на паузе`, text: `Остановили ${siteOff.map((c) => CHANNEL_NAME[c.channel] ?? c.channel).join(", ")}, чтобы не тратить деньги впустую. Проверьте адрес сайта и сам сайт — или переключите рекламу на страницу записи. Как только сайт откроется, включим сами.`, href: "/app/settings?tab=site#landing" });
   }
   const offCamps = camps.filter((c) => c.status === "active" && metaOf(c).delivery?.ok === false);
   const balances = await getBalances(b);

@@ -69,7 +69,7 @@ export function SiteSetupBanner({ status }: { status: SiteTrackingStatus }) {
       <div className="flex-1 min-w-0">
         <div className="font-bold leading-snug">{sum.title}</div>
         <p className="text-sm text-ink-2 mt-1 leading-relaxed max-w-2xl">{sum.text}</p>
-        <Link href="/app/settings#site" className="btn btn-primary btn-sm mt-3">Открыть инструкцию и код</Link>
+        <Link href="/app/settings?tab=site#site" className="btn btn-primary btn-sm mt-3">Открыть инструкцию и код</Link>
       </div>
     </section>
   );

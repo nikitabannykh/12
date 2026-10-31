@@ -119,7 +119,7 @@ export async function healthCheck(b: Business): Promise<Health> {
       hint: !counterOk
         ? "Счётчик Метрики с целью «обращение» не настроен — Директ не может учиться на заявках."
         : "Рекламе есть расход, а обращений с сайта ни одного — похоже, код счётчика не стоит на сайте.",
-      fix: { href: "/app/settings#site", label: "Подключение сайта" },
+      fix: { href: "/app/settings?tab=site#site", label: "Подключение сайта" },
       weight: 15,
     });
   } else if (usesDirect) {
@@ -129,7 +129,7 @@ export async function healthCheck(b: Business): Promise<Health> {
       title: "Счётчик и цель на странице записи",
     todo: "Нет счётчика Метрики",
       hint: "Счётчик Метрики не создан — Директ показывает рекламу по кликам, а не по заявкам. Создадим при следующем запуске в Директе.",
-      fix: { href: "/app/settings#site", label: "Подробнее" },
+      fix: { href: "/app/settings?tab=site#site", label: "Подробнее" },
       weight: 15,
     });
   }
@@ -193,7 +193,7 @@ export async function healthCheck(b: Business): Promise<Health> {
     title: "Бюджета хватает на все каналы",
     todo: "Бюджета не хватает на все каналы",
     hint: guard.length ? "Часть каналов стоит: до конца месяца не хватает бюджета." : `Минимум для ваших каналов — ${minMonthly.toLocaleString("ru-RU")} ₽ в месяц.`,
-    fix: { href: "/app/settings#budget", label: "Изменить бюджет" },
+    fix: { href: "/app/settings?tab=ads#budget", label: "Изменить бюджет" },
     weight: 10,
   });
 

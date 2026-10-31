@@ -141,7 +141,7 @@ export default async function Dashboard() {
             );
           })()}
         >
-          <Link href="/app/settings#budget" className="btn btn-primary btn-sm">Поднять бюджет</Link>
+          <Link href="/app/settings?tab=ads#budget" className="btn btn-primary btn-sm">Поднять бюджет</Link>
         </StopBanner>
       ) : null}
       {ownerStopped.length > 0 && b.status !== "paused" ? (
@@ -157,7 +157,7 @@ export default async function Dashboard() {
             return `${one ? "Этот канал" : "Эти каналы"} остановили вы. Деньги на ${one ? "нём" : "них"} не тратятся, настройки и статистика сохранены.`;
           })()}
         >
-          {ownerStopped.some((x) => states.get(x.id)?.via) ? <Link href="/app/settings#budget" className="btn btn-ghost btn-sm bg-white">Поднять бюджет</Link> : null}
+          {ownerStopped.some((x) => states.get(x.id)?.via) ? <Link href="/app/settings?tab=ads#budget" className="btn btn-ghost btn-sm bg-white">Поднять бюджет</Link> : null}
           <ActionButton url="/api/campaigns/resume" body={{ ids: ownerStopped.map((x) => x.id) }} done="Реклама включена" className={`btn btn-sm ${allStopped ? "btn-primary" : "btn-ghost bg-white"}`}>Включить</ActionButton>
         </StopBanner>
       ) : null}
@@ -343,7 +343,7 @@ export default async function Dashboard() {
                 : monthShare >= 1
                   ? `Потрачено больше бюджета на ${rub(monthCost - b.monthlyBudget)} — площадки списывают с задержкой. Робот остановит показы при следующей проверке. `
                   : "Робот следит, чтобы расходы уложились в бюджет. "}
-              <Link href="/app/settings#budget" className="underline">Изменить бюджет</Link>
+              <Link href="/app/settings?tab=ads#budget" className="underline">Изменить бюджет</Link>
             </p>
           </div>
           <div className="card p-5 sm:p-6">
