@@ -138,6 +138,7 @@ export const yandexLoginId = () => process.env.YANDEX_LOGIN_CLIENT_ID || "";
 export const yandexLoginSecret = () => process.env.YANDEX_LOGIN_CLIENT_SECRET || "";
 export const yandexLoginConfigured = () => Boolean(yandexLoginId() && yandexLoginSecret());
 export const googleConfigured = () => Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
-export const demoAllowed = () => process.env.ALLOW_DEMO !== "false";
+// Демо (вход без регистрации и тренировочный кабинет) — только там, где явно включено ALLOW_DEMO=true; в продакшене выключено
+export const demoAllowed = () => process.env.ALLOW_DEMO === "true";
 export const DEMO_DOMAIN = "demo.polny-zal.local";
 export const isDemoEmail = (email: string) => email.endsWith("@" + DEMO_DOMAIN);

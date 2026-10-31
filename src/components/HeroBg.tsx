@@ -10,6 +10,8 @@
 import { useEffect, useRef } from "react";
 
 const COLS = 26, ROWS = 12;
+/** Длительность «роста» графика первого экрана, с — точки загораются, когда до них доходит линия */
+const REVEAL_S = 2.6;
 /** Детерминированный «случайный» набор: одинаковый на сервере и в браузере */
 const rnd = (i: number) => { const x = Math.sin(i * 9301 + 49297) * 233280; return x - Math.floor(x); };
 
@@ -87,19 +89,21 @@ export function HeroBg({ kind }: { kind: string }) {
     const sharp = kind === "line";
     return (
       <div className="pointer-events-none absolute inset-x-0 -top-10 h-[56rem] overflow-hidden" aria-hidden>
-        <svg viewBox="0 0 1440 900" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
+        {/* График «растёт» слева направо: открываем его маской, а не штрихом (stroke-dash с pathLength и non-scaling-stroke
+            в Chrome мигает концом линии в правом верхнем углу до старта анимации) */}
+        <svg viewBox="0 0 1440 900" preserveAspectRatio="none" className="lp-reveal absolute inset-0 w-full h-full">
           <defs>
             <linearGradient id="hb-a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#ffd84a" stopOpacity={sharp ? 0.22 : 0.4} /><stop offset="0.7" stopColor="#ffd84a" stopOpacity="0" /></linearGradient>
             <linearGradient id="hb-l" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="#ffd84a" stopOpacity="0" /><stop offset="0.35" stopColor="#ffd84a" stopOpacity="0.6" /><stop offset="1" stopColor="#ffd84a" /></linearGradient>
             <filter id="hb-b"><feGaussianBlur stdDeviation={sharp ? 18 : 28} /></filter>
           </defs>
-          <path d={area} fill="url(#hb-a)" filter="url(#hb-b)" className="lp-fadein" />
-          <path d={d} fill="none" stroke="url(#hb-l)" strokeWidth={sharp ? 26 : 60} strokeLinejoin="round" filter="url(#hb-b)" pathLength={1} className="lp-draw" opacity={sharp ? 0.6 : 0.55} />
-          {sharp ? <path d={d} fill="none" stroke="url(#hb-l)" strokeWidth="2.5" strokeLinejoin="round" pathLength={1} className="lp-draw" vectorEffect="non-scaling-stroke" /> : null}
+          <path d={area} fill="url(#hb-a)" filter="url(#hb-b)" />
+          <path d={d} fill="none" stroke="url(#hb-l)" strokeWidth={sharp ? 26 : 60} strokeLinejoin="round" filter="url(#hb-b)" opacity={sharp ? 0.6 : 0.55} />
+          {sharp ? <path d={d} fill="none" stroke="url(#hb-l)" strokeWidth="2.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" /> : null}
         </svg>
         {sharp ? pts.filter((_,i)=>i%2===1 || i===pts.length-1).map(([x,y],i,arr)=>(
           <span key={i} className="lp-pop absolute w-2.5 h-2.5 -ml-[5px] -mt-[5px] rounded-full bg-mark shadow-[0_0_14px_4px_rgba(255,216,74,0.6)]"
-            style={{ left: `${x/14.4}%`, top: `${y/9}%`, animationDelay: `${0.4 + (i/arr.length)*2.2}s`, opacity: 0.35 + 0.65*(i/(arr.length-1)) }} />
+            style={{ left: `${x/14.4}%`, top: `${y/9}%`, animationDelay: `${(0.2 + (x / 1440) * REVEAL_S).toFixed(2)}s`, opacity: 0.35 + 0.65*(i/(arr.length-1)) }} />
         )) : null}
         <div className="absolute inset-0" style={{ background: `radial-gradient(ellipse 48% 42% at 50% 45%, rgba(7,8,26,${sharp ? 0.92 : 0.75}), transparent)` }} />
       </div>

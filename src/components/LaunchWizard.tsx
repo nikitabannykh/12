@@ -418,7 +418,7 @@ export function LaunchWizard(p: Props) {
 
   // Одно главное действие этапа — внизу
   const action = !hasAccounts
-    ? { label: "Подготовить объявления", icon: <Sparkles size={18} />, run: prepare, disabled: true, cls: "btn-primary", note: "Сначала подключите рекламный кабинет — Яндекс Директ, VK или демо." }
+    ? { label: "Подготовить объявления", icon: <Sparkles size={18} />, run: prepare, disabled: true, cls: "btn-primary", note: `Сначала подключите рекламный кабинет — Яндекс Директ или VK${p.flags.demo ? " (или демо)" : ""}.` }
     : !ready || preparing
       ? { label: phase === "copy" ? "Пишем тексты и подбираем запросы…" : phase === "images" ? "Готовим картинки…" : "Подготовить объявления", icon: preparing ? <Loader2 size={18} className="spin" /> : <Sparkles size={18} />, run: prepare, disabled: preparing, cls: "btn-primary", note: preparing ? "Обычно это занимает до минуты." : "Робот напишет объявления и подберёт запросы — до минуты. Перед запуском вы всё увидите и сможете поправить." }
       : { label: phase === "publish" ? "Создаём кампании…" : resuming ? "Продолжить запуск" : "Запустить рекламу", icon: phase === "publish" ? <Loader2 size={18} className="spin" /> : <Rocket size={18} />, run: launch, disabled: phase === "publish" || !enabledAds, cls: "btn-mark", note: enabledAds ? `${enabledAds} ${plural(enabledAds, "объявление", "объявления", "объявлений")} в ${enabledChannels} ${plural(enabledChannels, "канале", "каналах", "каналах")} ${plural(enabledAds, "уйдёт", "уйдут", "уйдут")} на модерацию.` : "Включите хотя бы одно объявление." };
