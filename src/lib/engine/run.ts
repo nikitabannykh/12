@@ -1,5 +1,6 @@
 import { siteGuard } from "./site-guard";
 import { rekeyAccounts } from "./rekey";
+import { relinkLegacy } from "./landingApply";
 import "server-only";
 import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { getDb, schema } from "../db";
@@ -138,6 +139,8 @@ export async function runAll(deadlineMs = 50_000, concurrency = 3) {
   const db = await getDb();
   // После переезда: токены, зашифрованные прежним ключом, — на текущий (сбой не мешает проходу)
   await rekeyAccounts().catch((e) => console.error("rekey:", errorText(e)));
+  // После переезда: объявления со ссылками на старый адрес — на новый (один раз на бизнес)
+  await relinkLegacy().then((r) => { if (r.updated) console.log(`relink: ${r.updated} кампаний в ${r.businesses} бизнесах`, r.warnings.slice(0, 5)); }).catch((e) => console.error("relink:", errorText(e)));
   // На паузе тоже синхронизируем (статистика, баланс), но робот ничего не меняет — см. runBusiness
   const rows = await db.select().from(schema.businesses).where(inArray(schema.businesses.status, ["active", "launching", "paused"]));
   const stalled = new Set(rows.filter((b) => launchStalled(b, LAUNCH_IDLE_MS)).map((b) => b.id));
