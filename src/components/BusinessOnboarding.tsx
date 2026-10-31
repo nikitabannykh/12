@@ -90,6 +90,11 @@ function isOtherBusiness(f: BusinessInput, d: Draft): boolean {
   if (!hadData) return false;
   const a = norm(f.name), b = norm(d.name ?? "");
   if (a && b && !a.includes(b) && !b.includes(a)) return true;
+  // Другая сфера (определилась по ссылке) или ни одной общей услуги — тоже другой бизнес
+  if (d.niche && f.niche && d.niche !== f.niche) return true;
+  const mine = new Set(f.services.map((s) => norm(s.name)).filter(Boolean));
+  const found = d.services.map((s) => norm(s.name)).filter(Boolean);
+  if (mine.size >= 2 && found.length >= 2 && !found.some((x) => mine.has(x))) return true;
   const h1 = f.siteUrl ? hostOf(f.siteUrl).toLowerCase() : "", h2 = d.siteUrl ? hostOf(d.siteUrl).toLowerCase() : "";
   return Boolean(h1 && h2 && h1 !== h2);
 }
@@ -551,6 +556,16 @@ export function BusinessOnboarding({
           setSources((s) => ({ ...s, [c.field]: draft?.sources[c.field as DraftField] }));
           setChanges((ch) => (ch ? { ...ch, list: ch.list.map((y) => (y === c ? { ...y, kind: "added" as const } : y)) } : ch));
         }}
+        onReplaceAll={() => {
+          if (!draft) return;
+          const m = replaceDraft(f, draft, nicheLock === "launched");
+          setF(m.next);
+          setSources({ ...draft.sources });
+          setPhotos(draft.photos.slice(0, photoRoom));
+          setChanges({ list: m.changes, summary: m.summary });
+          toast("Заменили анкету данными по ссылке: адрес, сферу, услуги и фото прежнего бизнеса убрали");
+          if (!draft.niche && nicheLock !== "launched") setTried(true);
+        }}
         onManual={() => openForm("manual")}
         onOpen={() => { setLinkOpen(true); setImported(null); }}
         onClose={() => { setLinkOpen(false); setChanges(null); setRows([]); setImportError(null); }}
@@ -651,10 +666,10 @@ function Completeness({ pct, miss, todo, go }: { pct: number; miss: Req[]; todo:
 
 // ─── Ссылки ──────────────────────────────────────────────────────────
 
-function LinkBlock({ mode, links, all, setLinks, rows, running, onRun, draft, editing, changes, onReplace, onManual, onOpen, onClose, otherProjects, error }: {
+function LinkBlock({ mode, links, all, setLinks, rows, running, onRun, draft, editing, changes, onReplace, onReplaceAll, onManual, onOpen, onClose, otherProjects, error }: {
   mode: "intro" | "open" | "collapsed";
   links: string[]; all: SourceLink[]; setLinks: (v: string[] | ((l: string[]) => string[])) => void; rows: Row[]; running: boolean; onRun: () => void; draft: Draft | null; editing: boolean;
-  changes: { list: Change[]; summary: string[] } | null; onReplace: (c: Change) => void; onManual: () => void; onOpen: () => void; onClose: () => void; otherProjects: number; error: string | null;
+  changes: { list: Change[]; summary: string[] } | null; onReplace: (c: Change) => void; onReplaceAll: () => void; onManual: () => void; onOpen: () => void; onClose: () => void; otherProjects: number; error: string | null;
 }) {
   const setAt = (i: number, v: string) => setLinks((l) => l.map((x, j) => (j === i ? v : x)));
   const done = rows.filter((r) => r.state !== "loading").length;
@@ -805,6 +820,12 @@ function LinkBlock({ mode, links, all, setLinks, rows, running, onRun, draft, ed
                       </li>
                     ))}
                   </ul>
+                </div>
+              ) : null}
+              {draft && (kept.length || changes.summary.length) ? (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-1 border-t border-line">
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={onReplaceAll}>Заменить всё данными по ссылке</button>
+                  <span className="text-xs text-muted">если это другой бизнес: прежние адрес, сфера, услуги и фото уберём</span>
                 </div>
               ) : null}
             </div>
