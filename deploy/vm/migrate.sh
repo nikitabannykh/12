@@ -20,6 +20,6 @@ echo "migrate: копируем базу"
 # Ошибки вида «schema public already exists» безвредны, поэтому без --exit-on-error; проверяем результат по числу заявок
 $PG sh -c 'pg_dump --no-owner --no-acl -Fc "$SRC" -f /tmp/db.dump && pg_restore --no-owner --no-acl -d "$DST" /tmp/db.dump; \
   a=$(psql "$SRC" -tAc "select count(*) from businesses"); b=$(psql "$DST" -tAc "select count(*) from businesses"); \
-  echo "migrate: проектов в старой базе $a, в новой $b"; [ "$a" = "$b" ]'
+  echo "migrate: проектов в старой базе $a, в новой $b"; [ -n "$a" ] && [ "$a" = "$b" ]'
 date -Is > $ROOT/migrated
 echo "migrate: готово"
