@@ -10,7 +10,7 @@ if [ -f $ROOT/migrate-failed ] && [ "$(cat $ROOT/migrate-failed)" = "$SIG" ]; th
 trap 'rc=$?; [ $rc -ne 0 ] && echo "$SIG" > $ROOT/migrate-failed; exit $rc' EXIT
 # Строки старой базы ещё нет в Lockbox — сервис работает на пустой базе, перенос выполнится, когда её добавят
 if [ -z "${NEON_DATABASE_URL:-}" ]; then echo "migrate: NEON_DATABASE_URL нет — переносить пока нечего"; exit 0; fi
-PG="docker run --rm --network pz -e SRC=$NEON_DATABASE_URL -e DST=$DATABASE_URL mirror.gcr.io/library/postgres:17"
+PG="docker run --rm --network pz -e SRC=$(printf %s "$NEON_DATABASE_URL" | sed "s/-pooler\./\./") -e DST=$DATABASE_URL mirror.gcr.io/library/postgres:17"
 # Переносим, только если в новой базе ещё нет ни одного проекта (пустые таблицы, созданные самим сервисом, — не в счёт)
 has=$($PG sh -c 'psql "$DST" -tAc "select to_regclass('"'"'public.businesses'"'"') is not null"')
 n=0
