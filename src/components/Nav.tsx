@@ -15,12 +15,30 @@ const FULL: Item[] = [
   { href: "/app/history", label: "История", icon: History },
   { href: "/app/settings", label: "Настройки", icon: Settings },
 ];
-/** До запуска — два этапа подготовки (как в StageBar) и настройки */
+/** До запуска — только два этапа подготовки (как в StageBar): первым делом владелец запускает рекламу, остальные разделы откроются после */
 const SETUP: Item[] = [
   { href: "/app/start", label: "Данные о бизнесе", short: "Данные", icon: FileText },
   { href: "/app/launch", label: "Запуск рекламы", short: "Запуск", icon: Rocket },
-  { href: "/app/settings", label: "Настройки", icon: Settings },
 ];
+
+/** Разделы, которые появятся после запуска — без ссылок, чтобы не уводить с подготовки */
+function Later({ note }: { note: string }) {
+  const later = [
+    { label: "Реклама", icon: Megaphone },
+    { label: "Статистика", icon: BarChart3 },
+    { label: "История", icon: History },
+    { label: "Настройки", icon: Settings },
+  ];
+  return (
+    <div className="rounded-xl bg-paper p-3.5 text-sm text-muted leading-relaxed">
+      <div className="font-semibold text-ink-2">Дальше откроются</div>
+      <ul className="mt-2 grid gap-1.5">
+        {later.map(({ label, icon: Icon }) => <li key={label} className="flex items-center gap-2"><Icon size={15} strokeWidth={1.8} />{label}</li>)}
+      </ul>
+      <p className="mt-2.5 text-xs">{note}</p>
+    </div>
+  );
+}
 
 /** Разделы настроек — подпункты «Настроек» в боковом меню (видны, когда открыты настройки) */
 function SettingsSubLinks() {
@@ -71,12 +89,6 @@ function AdsSubLinks({ counts }: { counts: AdsCounts }) {
  * Вместо меню — что сейчас происходит и что откроется дальше (без кликабельных пунктов)
  */
 function Onboarding() {
-  const later = [
-    { label: "Реклама", icon: Megaphone },
-    { label: "Статистика", icon: BarChart3 },
-    { label: "История", icon: History },
-    { label: "Настройки", icon: Settings },
-  ];
   return (
     <div className="grid gap-5" aria-label="Подготовка проекта">
       <div className="grid gap-1">
@@ -87,13 +99,7 @@ function Onboarding() {
           <Rocket size={18} strokeWidth={1.8} /><span className="flex-1">Запуск рекламы</span><Lock size={14} />
         </div>
       </div>
-      <div className="rounded-xl bg-paper p-3.5 text-sm text-muted leading-relaxed">
-        <div className="font-semibold text-ink-2">Дальше откроются</div>
-        <ul className="mt-2 grid gap-1.5">
-          {later.map(({ label, icon: Icon }) => <li key={label} className="flex items-center gap-2"><Icon size={15} strokeWidth={1.8} />{label}</li>)}
-        </ul>
-        <p className="mt-2.5 text-xs">Сохраните данные о бизнесе — робот подготовит рекламу, и разделы станут доступны.</p>
-      </div>
+      <Later note="Сохраните данные о бизнесе — робот подготовит рекламу, и разделы станут доступны." />
     </div>
   );
 }
@@ -116,6 +122,7 @@ export function Nav({ launched, variant, ads, onboarding = false }: { launched: 
     );
   }
   return (
+    <div className="grid gap-5">
     <nav className="grid gap-1" aria-label="Разделы">
       {items.map(({ href, label, icon: Icon }) => (
         <div key={href} className="contents">
@@ -140,5 +147,7 @@ export function Nav({ launched, variant, ads, onboarding = false }: { launched: 
         </div>
       ))}
     </nav>
+    {launched ? null : <Later note="Запустите рекламу — и здесь появятся статистика, история изменений и настройки." />}
+    </div>
   );
 }

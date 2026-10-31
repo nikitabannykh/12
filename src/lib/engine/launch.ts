@@ -1174,6 +1174,40 @@ export async function publishStep(b: Business, plan: LaunchPlan, accounts: AdAcc
   return { done: true, ok: true, warnings: prog.warnings, progress, created };
 }
 
+export type PublishStatus = { launchId: string | null; startedAt: string | null; uploaded: number; total: number; errors: number };
+
+/**
+ * Сколько объявлений уже отправлено на площадки в идущем запуске — для полосы прогресса в мастере.
+ * Читается без блокировки, пока шаг запуска выполняется в соседнем запросе (счётчики шаг сохраняет после каждой пачки).
+ */
+export async function publishStatus(b: Business, accounts: AdAccount[]): Promise<PublishStatus> {
+  const plan = b.launchPlan as LaunchPlan | null;
+  const prog = plan?.launch;
+  if (!plan || !prog) return { launchId: null, startedAt: null, uploaded: 0, total: 0, errors: 0 };
+  const db = await getDb();
+  const camps = await db.select().from(schema.campaigns).where(and(eq(schema.campaigns.businessId, b.id), inArray(schema.campaigns.status, ["creating", "ready", "active", "paused", "error"])));
+  let uploaded = 0;
+  let total = 0;
+  let errors = 0;
+  for (const ch of plan.channels.filter((c) => c.enabled && c.groups.some((g) => g.ads.some(publishable)))) {
+    const platform = accounts.find((a) => a.id === ch.accountId)?.platform;
+    const cap = isDirectChannel(ch.channel) && platform !== "vk" ? DIRECT_ADS_PER_GROUP : Infinity;
+    const planned = ch.groups.reduce((s, g) => s + Math.min(g.ads.filter(publishable).length, cap), 0);
+    total += planned;
+    if (prog.done.includes(ch.channel) || prog.failed.includes(ch.channel)) {
+      uploaded += planned;
+      continue;
+    }
+    const c = camps.find((x) => x.channel === ch.channel && metaOf(x).launchId === prog.id);
+    const build = c ? (metaOf(c).build as BuildProgress | undefined) : undefined;
+    if (build) {
+      uploaded += Math.min(planned, build.ads + build.errors);
+      errors += build.errors;
+    }
+  }
+  return { launchId: prog.id, startedAt: prog.startedAt, uploaded, total, errors };
+}
+
 /** Все включённые кампании запуска (за все попытки включения), для итогов и «отменить» в истории */
 async function launchedBy(businessId: string, launchId: string) {
   const db = await getDb();

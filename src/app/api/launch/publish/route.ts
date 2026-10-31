@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { route, json, fail, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
-import { accountsFor, publishStep, PUBLISH_BUDGET_MS, type LaunchPlan } from "@/lib/engine/launch";
+import { accountsFor, publishStatus, publishStep, PUBLISH_BUDGET_MS, type LaunchPlan } from "@/lib/engine/launch";
 import { LAUNCH_LOCK, LAUNCH_LOCK_MS, releaseLock, runBusiness, tryLock } from "@/lib/engine/run";
 
 // Hobby-план Vercel — до 60 с на запрос. Поэтому за вызов делаем столько, сколько помещается в ~45 с
@@ -33,4 +33,13 @@ export const POST = route(async ({ user, business }) => {
   } finally {
     await releaseLock(business.id, LAUNCH_LOCK);
   }
+});
+
+/** Прогресс идущего запуска (сколько объявлений уже на площадках) — мастер опрашивает, пока ждёт ответа POST */
+export const GET = route(async ({ user, business }) => {
+  needBusiness(business);
+  const db = await getDb();
+  const [b] = await db.select().from(schema.businesses).where(eq(schema.businesses.id, business.id));
+  if (!b) return fail("Бизнес не найден", 404);
+  return json(await publishStatus(b, await accountsFor(user.id)));
 });

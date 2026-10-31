@@ -172,10 +172,38 @@ export function LaunchWizard(p: Props) {
   const [newAd, setNewAd] = useState<{ groupId: string; channel: Channel } | null>(null);
   const [rewriteFor, setRewriteFor] = useState<Channel | null>(null);
   const [progress, setProgress] = useState<Progress | null>(() => progressOf(p.plan));
+  /** Сколько объявлений уже на площадках (GET /api/launch/publish) и когда мы начали ждать — для полосы и «осталось ≈» */
+  const [pubCount, setPubCount] = useState<{ uploaded: number; total: number; errors: number; since: number; base: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [semantics, setSemantics] = useState<Semantics | null>(null);
   /** Спрос по Wordstat (POST /api/launch/demand): сбор идёт на сервере порциями, мастер его подталкивает */
   const [demand, setDemand] = useState<DemandView | null>(null);
+
+  // Пока идёт запуск — раз в 2,5 с спрашиваем, сколько объявлений уже отправлено (шаг запуска сохраняет счётчик после каждой пачки)
+  useEffect(() => {
+    if (phase !== "publish") return;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const r = await fetch("/api/launch/publish", { cache: "no-store" });
+        if (!r.ok || stop) return;
+        const d = (await r.json()) as { uploaded: number; total: number; errors: number };
+        if (!d.total) return;
+        setPubCount((u) => (u ? { ...u, uploaded: Math.max(u.uploaded, d.uploaded), total: d.total, errors: d.errors } : { ...d, since: Date.now(), base: d.uploaded }));
+      } catch {
+        /* следующий опрос */
+      }
+    };
+    tick();
+    const t = setInterval(tick, 2500);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [phase]);
+  useEffect(() => {
+    if (phase !== "publish") setPubCount(null);
+  }, [phase]);
 
   const real = p.accounts.filter((a) => a.platform !== "demo");
   const usable = real.length ? real.filter((a) => a.status === "ok") : p.accounts;
@@ -832,7 +860,7 @@ export function LaunchWizard(p: Props) {
       <div className="sticky bottom-[3.375rem] md:bottom-0 z-30 -mx-4 px-4 sm:mx-0 sm:px-0 pt-4 pb-2 md:pb-4 bg-linear-to-t from-paper from-65% to-paper/0">
         {launchError ? <LaunchErrorBox text={launchError} onClose={() => setLaunchError(null)} /> : null}
         <div className="card shadow-lg px-4 py-3 sm:px-5 grid gap-2.5 sm:flex sm:items-center sm:gap-4">
-          <p className="min-w-0 flex-1 text-sm text-ink-2 leading-snug">{action.note}</p>
+          {phase === "publish" ? <PublishMeter upload={pubCount} /> : <p className="min-w-0 flex-1 text-sm text-ink-2 leading-snug">{action.note}</p>}
           <button className={`btn ${action.cls} h-12 px-6 text-base shrink-0`} onClick={action.run} disabled={action.disabled}>
             {action.icon}
             {action.label}
@@ -1027,6 +1055,47 @@ function LaunchErrorBox({ text, onClose }: { text: string; onClose: () => void }
           <div className="mt-1.5 text-ink-2">Созданные черновики кампаний не задублируются: при следующем запуске сервис уберёт их и создаст заново.</div>
         </div>
         <button type="button" onClick={onClose} className="text-ink-2 hover:text-ink shrink-0" aria-label="Скрыть">✕</button>
+      </div>
+    </div>
+  );
+}
+
+/** Оценка «осталось ≈»: по фактической скорости этого запуска, а пока её нет — ~3 с на объявление */
+function etaText(u: { uploaded: number; total: number; since: number; base: number }) {
+  const left = Math.max(0, u.total - u.uploaded);
+  if (!left) return "включаем показы…";
+  const done = u.uploaded - u.base;
+  const elapsed = (Date.now() - u.since) / 1000;
+  const perAd = done >= 3 && elapsed > 5 ? elapsed / done : 3;
+  const sec = Math.round(left * perAd + 10);
+  if (sec < 60) return "осталось меньше минуты";
+  const min = Math.round(sec / 60);
+  return `осталось ≈ ${min} ${plural(min, "минута", "минуты", "минут")}`;
+}
+
+function PublishMeter({ upload }: { upload: { uploaded: number; total: number; errors: number; since: number; base: number } | null }) {
+  // Перерисовываем раз в секунду, чтобы «осталось ≈» не замирало между опросами
+  const [, setNow] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setNow((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  if (!upload) {
+    return <p className="min-w-0 flex-1 text-sm text-ink-2 leading-snug">Готовим кампании на площадках… Можно закрыть страницу — робот доведёт запуск сам.</p>;
+  }
+  const pctDone = Math.round((upload.uploaded / Math.max(upload.total, 1)) * 100);
+  return (
+    <div className="min-w-0 flex-1" role="status" aria-live="polite">
+      <div className="flex items-baseline justify-between gap-3 text-sm">
+        <span className="font-semibold text-ink">Загружено {upload.uploaded} из {upload.total} {plural(upload.total, "объявления", "объявлений", "объявлений")}</span>
+        <span className="text-muted shrink-0">{etaText(upload)}</span>
+      </div>
+      <div className="h-2 rounded-full bg-line overflow-hidden mt-1.5">
+        <div className="h-full bg-ink rounded-full transition-all duration-700" style={{ width: `${Math.max(3, pctDone)}%` }} />
+      </div>
+      <div className="text-xs text-muted mt-1">
+        {upload.errors ? `${upload.errors} ${plural(upload.errors, "объявление площадка не приняла", "объявления площадка не приняла", "объявлений площадка не приняла")} — остальные идут дальше. ` : ""}
+        Деньги не тратятся, пока не включим всё разом. Можно закрыть страницу — робот доведёт запуск сам.
       </div>
     </div>
   );
