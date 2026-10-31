@@ -79,14 +79,20 @@ export async function gptJson<T>(system: string, user: string, opts: { temperatu
   throw lastErr;
 }
 
-/** YandexART: асинхронная генерация, опрашиваем операцию до готовности. Возвращает JPEG. */
-export async function art(prompt: string, aspect: { w: number; h: number }, seed?: number): Promise<Buffer> {
-  const res = await fetch(`${LLM}/imageGenerationAsync`, {
+/**
+ * Модели YandexART по порядку: старое имя «yandex-art» Яндекс закрывает (доступ к нему отвечает «Access … denied»),
+ * актуальное — «yandex-art-2.0». Можно задать своё в YANDEX_ART_MODEL. Запоминаем, какая модель ответила.
+ */
+const ART_MODELS = [...new Set([process.env.YANDEX_ART_MODEL, "yandex-art-2.0/latest", "yandex-art/latest"].filter((x): x is string => Boolean(x)))];
+let artModel: string | null = null;
+
+async function startArt(model: string, prompt: string, aspect: { w: number; h: number }, seed?: number) {
+  return fetch(`${LLM}/imageGenerationAsync`, {
     signal: AbortSignal.timeout(20_000),
     method: "POST",
     headers: headers(),
     body: JSON.stringify({
-      modelUri: `art://${process.env.YANDEX_CLOUD_FOLDER_ID}/yandex-art/latest`,
+      modelUri: `art://${process.env.YANDEX_CLOUD_FOLDER_ID}/${model}`,
       generationOptions: {
         seed: String(seed ?? Math.floor(Math.random() * 1e9)),
         aspectRatio: { widthRatio: String(aspect.w), heightRatio: String(aspect.h) },
@@ -95,6 +101,23 @@ export async function art(prompt: string, aspect: { w: number; h: number }, seed
       messages: [{ weight: "1", text: prompt.slice(0, 500) }],
     }),
   });
+}
+
+/** YandexART: асинхронная генерация, опрашиваем операцию до готовности. Возвращает JPEG. */
+export async function art(prompt: string, aspect: { w: number; h: number }, seed?: number): Promise<Buffer> {
+  let res: Response | null = null;
+  for (const model of artModel ? [artModel] : ART_MODELS) {
+    res = await startArt(model, prompt, aspect, seed);
+    if (res.ok) {
+      artModel = model;
+      break;
+    }
+    // Нет доступа или нет такой модели — пробуем следующую; остальные ошибки (квота, промпт) — сразу владельцу
+    if (![403, 404, 400].includes(res.status)) break;
+    const peek = await res.clone().json().catch(() => ({}));
+    if (res.status === 400 && !/model|модел/i.test(String(peek?.error?.message ?? peek?.message ?? ""))) break;
+  }
+  res = res!;
   const op = await res.json().catch(() => ({}));
   if (!res.ok || !op.id) throw new Error(`YandexART: ${op?.error?.message || op?.message || res.status}`);
   const deadline = Date.now() + 55_000;

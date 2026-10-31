@@ -5,6 +5,7 @@ import path from "path";
 import type { Business } from "../db/schema";
 import { isMedical, nicheById } from "../niches";
 import { Illustration } from "./illustrations";
+import { imageSize } from "./imagesize";
 import { withoutSuperlatives } from "../engine/extras";
 
 /**
@@ -56,6 +57,19 @@ const dataUri = (p: { data: Buffer; mime: string }) => `data:${p.mime};base64,${
 /** Предупреждение для рекламы медуслуг (закон «О рекламе», ст. 24 ч. 7; Директ требует его на картинках и баннерах) */
 export const MEDICAL_WARNING = "Есть противопоказания. Посоветуйтесь с врачом";
 
+/**
+ * Заголовок на картинке — коротко: без уточнений в скобках («(новорожденные и дети до 14 лет)») и не длиннее ~34 символов,
+ * обрезаем по слову. Полное название услуги остаётся в тексте объявления
+ */
+export function shortHeadline(s: string): string {
+  let t = s.replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+/g, " ").trim();
+  if (t.length > 34) {
+    const cut = t.slice(0, 34);
+    t = (cut.includes(" ") ? cut.slice(0, cut.lastIndexOf(" ")) : cut).replace(/[\s,.;:–—-]+$/, "");
+  }
+  return t ? t[0].toUpperCase() + t.slice(1) : s;
+}
+
 export async function renderCreative(inp: RenderInput): Promise<Buffer> {
   const n = nicheById(inp.business.niche);
   const { bg, ink, accent } = n.palette;
@@ -68,7 +82,7 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
   const photo = inp.photo ? dataUri(inp.photo) : null;
   const svc = inp.business.services?.[0];
   // Без услуг от владельца — нейтральное название ниши, а не пример вроде «Пилатес на реформерах»
-  const headline = inp.headline || svc?.name || (n.id === "other" ? inp.business.name : n.generic);
+  const headline = shortHeadline(inp.headline || svc?.name || (n.id === "other" ? inp.business.name : n.generic));
   const variant = inp.variant ?? 0;
   // Цены на картинках не пишем: цена есть в тексте объявления и уточнениях, а на картинке она старит креатив
   // и путает, когда цена меняется. Картинка продаёт настроение, результат и преимущество
@@ -78,7 +92,13 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
   // На тёмных палитрах (барбершоп) «ink» светлый — для бумажного ценника берём тёмный текст
   const isLight = (hex: string) => parseInt(hex.slice(1, 3), 16) + parseInt(hex.slice(3, 5), 16) + parseInt(hex.slice(5, 7), 16) > 500;
   const tagInk = isLight(ink) ? bg : ink;
-  const box = { position: "absolute" as const, top: 0, left: 0, width: W, height: H, display: "flex" };
+  const box = { position: "absolute" as const, top: 0, left: 0, width: W, height: H, display: "flex", overflow: "hidden" as const };
+  const dims = inp.photo ? imageSize(inp.photo.data) : null;
+  const crop = dims && dims.width && dims.height ? (() => {
+    const k = Math.max(W / dims.width, H / dims.height);
+    const w = Math.ceil(dims.width * k), h = Math.ceil(dims.height * k);
+    return { w, h, x: Math.round((W - w) / 2), y: Math.round((H - h) * 0.22) };
+  })() : null;
 
   // Без фото вместо него — тематическая иллюстрация ниши
   // 4:3 тоже «широкая» картинка, но иллюстрацию считаем как для 16:9 — иначе она наезжает на текст
@@ -87,7 +107,9 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
   const Photo = ({ dim = 0, illo = "right" }: { dim?: number; illo?: "right" | "center" | "corner" | "none" }) =>
     photo ? (
       <div style={box}>
-        <img src={photo} width={W} height={H} style={{ width: W, height: H, objectFit: "cover" }} />
+        {/* Кадрируем чуть выше центра: вывески, лица и интерьер обычно в верхней части кадра, а пол и низ можно обрезать
+            (object-position рендерер картинок не понимает — считаем положение сами) */}
+        {crop ? <img src={photo} width={crop.w} height={crop.h} style={{ position: "absolute", left: crop.x, top: crop.y, width: crop.w, height: crop.h }} /> : <img src={photo} width={W} height={H} style={{ width: W, height: H, objectFit: "cover" }} />}
         {dim ? <div style={{ ...box, background: `rgba(14,12,24,${dim})` }} /> : null}
       </div>
     ) : (
@@ -131,8 +153,8 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
       break;
 
     case "tag": {
-      // Бумажный ценник, «приколотый» к фото. Без фото — по центру, крупно.
-      const tw = (wide ? 520 : 620) * u;
+      // Карточка на фото — ровная, без наклона (наклонная выглядела небрежно). Без фото — по центру, крупно.
+      const tw = (wide ? 480 : 600) * u;
       const pos = { left: 60 * u, bottom: 64 * u };
       el = (
         <div style={{ width: W, height: H, display: "flex", position: "relative", fontFamily: "Onest" }}>
@@ -141,7 +163,7 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
             style={{
               position: "absolute", ...pos, width: tw, display: "flex", flexDirection: "column",
               background: "#FFFDF8", color: tagInk, borderRadius: 22 * u, padding: `${40 * u}px ${46 * u}px ${36 * u}px`,
-              transform: "rotate(-3deg)", boxShadow: "0 24px 50px rgba(0,0,0,0.25)",
+              boxShadow: "0 24px 50px rgba(0,0,0,0.25)",
             }}
           >
             <div style={{ position: "absolute", top: 24 * u, right: 28 * u, width: 24 * u, height: 24 * u, borderRadius: 99, background: accent, display: "flex" }} />

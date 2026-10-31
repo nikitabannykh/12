@@ -428,8 +428,11 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
         const service = b.services?.find((x) => x.name === (g.service ?? g.name)) ?? svc;
         let imageId: string | null = null;
         try {
-          const layout: Layout = photoIds.length ? "tag" : layouts.includes("tag") ? "tag" : layouts[0] ?? "tag";
-          const photoId = photoIds.length ? photoIds[(service ? (b.services ?? []).indexOf(service) : k++) % photoIds.length] ?? photoIds[0] : null;
+          // Группы поиска чередуют: фото с карточкой услуги — и рисунок с преимуществом без фото,
+          // чтобы у разных услуг были разные картинки, а не одно и то же фото везде
+          const withPhoto = photoIds.length > 0 && (groups.length % 2 === 0 || !layouts.includes("benefit"));
+          const layout: Layout = withPhoto ? "tag" : layouts.includes("benefit") ? "benefit" : "tag";
+          const photoId = withPhoto ? photoIds[(service ? (b.services ?? []).indexOf(service) : k++) % photoIds.length] ?? photoIds[0] : null;
           imageId = await creative({ layout, photoId, width: 1080, height: 607, headline: service?.name ?? g.name, price: service?.price });
         } catch (e) {
           warnings.push(`Картинка для поиска «${g.name}»: ${errorText(e)}`);
@@ -449,11 +452,15 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
         }
         // Директ: чистое фото и фото с ценником; VK: все макеты по кругу — так тест покажет, что работает
         const net = formatOf(ch.channel) === "network";
+        // Разные макеты по кругу: чистое фото, фото с карточкой, рисунок с преимуществом, предложение — со сдвигом
+        // по каналу, чтобы РСЯ, VK и ретаргетинг не получили одинаковые картинки. Макеты без фото — с иллюстрацией
         const pool: Layout[] = net
-          ? photoIds.length ? ([...(["photo", "tag"] as Layout[]), ...layouts.filter((l) => l === "benefit")]) : layouts
+          ? photoIds.length ? ([...(["photo", "tag"] as Layout[]), ...layouts.filter((l) => l === "benefit" || l === "offer")]) : layouts
           : layouts.filter((l) => l !== "photo");
-        const layout = pool[(i + groups.length) % pool.length] ?? "tag";
-        const photoId = photoIds.length ? photoIds[(i + groups.length) % photoIds.length] : null;
+        const shift = i + groups.length + channels.length;
+        const layout = pool[shift % pool.length] ?? "tag";
+        const noPhoto = layout === "benefit" || layout === "offer";
+        const photoId = photoIds.length && !noPhoto ? photoIds[shift % photoIds.length] : null;
         const wide = net && i % 2 === 1;
         try {
           const imageId = await creative({ layout, photoId, width: 1080, height: wide ? 607 : 1080, headline: svc?.name, price: svc?.price });
