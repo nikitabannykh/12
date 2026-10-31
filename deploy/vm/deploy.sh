@@ -16,7 +16,10 @@ OLDENV=$(sha256sum /etc/polny-zal.env 2>/dev/null | cut -c1-64 || true)
 bash $APP/deploy/vm/secrets.sh
 NEWENV=$(sha256sum /etc/polny-zal.env | cut -c1-64)
 PENDING_MIGRATION=0
-[ ! -f $ROOT/migrated ] && grep -q '^NEON_DATABASE_URL=' /etc/polny-zal.env && PENDING_MIGRATION=1
+if [ ! -f $ROOT/migrated ] && grep -q '^NEON_DATABASE_URL=' /etc/polny-zal.env; then
+  SIG=$(grep '^NEON_DATABASE_URL=' /etc/polny-zal.env | cut -d= -f2- | tr -d '\n' | sha256sum | cut -c1-16)
+  [ "$(cat $ROOT/migrate-failed 2>/dev/null)" = "$SIG" ] || PENDING_MIGRATION=1
+fi
 if [ "$NEW" = "$CUR" ] && [ -n "$RUNNING" ] && [ "$OLDENV" = "$NEWENV" ] && [ $PENDING_MIGRATION = 0 ]; then exit 0; fi
 git reset -q --hard "$NEW"
 # Обновились описания таймеров и служб — ставим новые
@@ -31,7 +34,8 @@ fi
 # Перенос базы (один раз, как только в Lockbox появится NEON_DATABASE_URL): приложение на время останавливаем
 if [ ! -f $ROOT/migrated ] && grep -q '^NEON_DATABASE_URL=' /etc/polny-zal.env; then
   docker rm -f polny-zal >/dev/null 2>&1 || true
-  bash $APP/deploy/vm/migrate.sh
+  # Не удалось — сервис всё равно запускаем (на текущей базе), причина — в логе
+  bash $APP/deploy/vm/migrate.sh || echo "deploy: перенос базы не удался — сервис запущен без него"
 fi
 docker rm -f polny-zal >/dev/null 2>&1 || true
 docker run -d --name polny-zal --restart unless-stopped --network pz -p 127.0.0.1:8080:8080 \
