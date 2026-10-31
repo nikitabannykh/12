@@ -516,7 +516,9 @@ export const illustrationCount = (niche: string) => (SCENES[niche] ?? SCENES.oth
 
 /** variant — номер сюжета; меняется от объявления к объявлению, чтобы картинки без фото различались */
 export function Illustration({ niche, palette, size, variant = 0 }: { niche: string; palette: P; size: number; variant?: number }) {
-  const list = SCENES[niche] ?? SCENES.other;
+  // «Другая услуга» — общие рисунки записи (галочка, часы): к доставке еды или магазину они не подходят, лучше без рисунка
+  if (niche === "other" || !SCENES[niche]) return <div style={{ display: "flex", width: size, height: size }} />;
+  const list = SCENES[niche];
   const Scene = list[((variant % list.length) + list.length) % list.length];
   return (
     <svg width={size} height={size} viewBox="0 0 400 400">

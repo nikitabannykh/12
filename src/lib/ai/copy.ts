@@ -2,7 +2,7 @@ import "server-only";
 import type { Business, Service } from "../db/schema";
 import { groupServices, hasCategories } from "../services";
 import { ANGLES, isMedical, KIDS_RE, LAYER_LABEL, nicheById, type Layer } from "../niches";
-import { addressWithoutCity, adExtras, badChars, claimProblems, cleanText, factCallouts, hasClaims, hasSuperlative, parsePrice, parseWeekHours, SUPERLATIVE as SUPERLATIVE_ONE, withoutSuperlatives } from "../engine/extras";
+import { addressWithoutCity, adExtras, isOrderBusiness, badChars, claimProblems, cleanText, factCallouts, hasClaims, hasSuperlative, parsePrice, parseWeekHours, SUPERLATIVE as SUPERLATIVE_ONE, withoutSuperlatives } from "../engine/extras";
 import { pl, plural } from "../util";
 import { addPhrases, buildSemanticCore, displayKeyword, finalizeCore, networkInterests, conflicts, type SemanticCore, type SemanticGroup } from "../engine/semantics";
 import { aiConfigured, gptJson } from "./yandex";
@@ -308,15 +308,18 @@ export async function generateCopyPlan(b: Business, channels: { search: boolean;
   if (!aiConfigured()) return fallback;
 
   const medical = isMedical(b);
+  const order = isOrderBusiness(b);
+  const KIND_RULE = order
+    ? "Это продажа еды или товаров с доставкой/самовывозом: призыв — заказать («Закажите онлайн», «Доставим за 60 минут» — только если срок есть в описании), никаких «записаться», «запись», «удобное время»."
+    : "Это услуги по записи: призыв — записаться или выбрать время.";
   // Модели — только группы услуг: объявления групп проблем, смежных и аудиторий строим по шаблону «проблема → решение»
   // (проверенные формулировки, без обещаний), иначе модель пишет про услугу без связи с запросом
   const list = (gs: GroupDraft[]) => gs.filter((g) => (g.layer ?? "service") === "service").slice(0, AI_GROUPS).map((g, i) => `${i + 1}. ${g.name}${g.service && g.service !== g.name ? ` (услуга: ${g.service})` : ""}${g.services && g.services.length > 1 ? `; ещё: ${g.services.filter((x) => x !== g.service).slice(0, 4).join(", ")}` : ""}; запросы: ${[...new Set(g.keywords.map((k) => displayKeyword(k).replace(/"/g, "")))].slice(0, 5).join(", ")}`).join("\n");
+  void list;
   const user = `${bizBrief(b)}
 ${medical ? `\n${MEDICAL_RULES}\n` : ""}
-Группы поиска (семантика уже собрана, нужны только объявления):
-${list(fallback.search)}
-Группы РСЯ:
-${list(fallback.network)}
+${KIND_RULE}
+Объявления для поиска и РСЯ готовятся отдельно — здесь их не пиши (верни пустые массивы search и network).
 
 Три объявления группы должны отличаться не только заголовком: у каждого свой первый факт в тексте и свой второй заголовок.
 Например: 1) цена услуги и другие цены прайса; 2) для кого приём, описание или преимущество; 3) адрес, часы и запись. Не повторяй один и тот же текст в разных объявлениях и группах.
@@ -343,7 +346,47 @@ ${list(fallback.network)}
     type Raw = { search?: { group?: number; ads?: AdDraft[] }[]; network?: { group?: number; ads?: AdDraft[] }[]; vk?: GroupDraft[]; negatives?: string[]; callouts?: string[]; imageIdeas?: string[] };
     // Температура повыше — тексты живее; выдумки всё равно отсекает проверка фактов, а запасное четвёртое объявление
     // в группе даёт шанс заменить отброшенное не шаблоном, а другим текстом модели
-    const raw = await gptJson<Raw>(SYSTEM, user, { temperature: 0.75, maxTokens: 8000, timeoutMs: 45_000, until: opts.deadline });
+    // Каждая группа — свой короткий запрос к модели (параллельно): объявление пишется под запросы именно этой группы,
+    // и один долгий ответ на все группы больше не уходит в таймаут (тогда все объявления были шаблонными)
+    const until = opts.deadline ?? Date.now() + 45_000;
+    const perGroup = async (gs: GroupDraft[], ch: "search" | "network") => {
+      const list = gs.map((g, gi) => ({ g, gi })).filter(({ g }) => (g.layer ?? "service") === "service").slice(0, 16);
+      const out: { group: number; ads: AdDraft[] }[] = [];
+      let next = 0;
+      const worker = async () => {
+        while (next < list.length) {
+          const { g, gi } = list[next++];
+          const queries = [...new Set(g.keywords.map((k) => displayKeyword(k).replace(/"/g, "")))].slice(0, 8);
+          const svc = b.services?.find((x) => x.name === g.service);
+          const others = (g.services ?? []).filter((x) => x !== g.service).slice(0, 6);
+          try {
+            const r = await gptJson<{ ads: AdDraft[] }>(SYSTEM,
+              `${bizBrief(b)}
+${medical ? `\n${MEDICAL_RULES}\n` : ""}
+${KIND_RULE}
+
+Группа «${g.name}». Люди ищут: ${queries.join("; ")}.
+${svc ? `Позиция прайса: ${svc.name}${svc.price ? ` — ${svc.price}` : ""}${svc.note ? ` (${svc.note})` : ""}.` : "Это общий запрос о бизнесе, а не конкретная позиция прайса."}${others.length ? ` Связанные позиции: ${others.join(", ")}.` : ""}
+Напиши 4 объявления ${ch === "search" ? "для поиска Яндекса" : "для РСЯ (картинка + текст)"} ровно под эти запросы: главные слова первого запроса — в заголовке; ни слова о позициях и услугах, которые не относятся к этим запросам.
+Разные подходы (angle: price|offer|proof|convenience|result|emotion), у каждого свой первый факт в тексте.
+JSON: {"ads": [{"angle": "...", "title": "до 56 символов", ${ch === "search" ? '"title2": "до 30 символов", ' : ""}"text": "до 81 символа"}]}`,
+              { temperature: 0.7, maxTokens: 1200, timeoutMs: 25_000, until });
+            if (r.ads?.length) out.push({ group: gi + 1, ads: r.ads });
+          } catch {
+            /* у группы останутся шаблонные объявления */
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: 4 }, worker));
+      return out;
+    };
+    const [raw, searchAds, networkAds] = await Promise.all([
+      gptJson<Raw>(SYSTEM, user, { temperature: 0.75, maxTokens: 3000, timeoutMs: 40_000, until }).catch(() => ({}) as Raw),
+      channels.search ? perGroup(fallback.search, "search") : Promise.resolve([]),
+      channels.network ? perGroup(fallback.network, "network") : Promise.resolve([]),
+    ]);
+    raw.search = searchAds;
+    raw.network = networkAds;
     const facts = ownerFacts(b);
     // Объявления модели — в группы семантики по номеру; выдуманный факт — шаблонное объявление того же места
     const fill = (items: Raw["search"], ch: keyof typeof LIMITS, fb: GroupDraft[]): GroupDraft[] =>
@@ -784,8 +827,13 @@ function factsOf(b: Business, serviceName?: string, price?: string) {
     .filter((x) => x.length >= 12 && x.length <= 75 && ok(x) && titleKey(x) !== titleKey(name));
   const note = owned?.note && ok(cleanText(owned.note)) && cleanText(owned.note).length <= 60 ? cap(cleanText(owned.note)) : null;
   // Другие услуги с ценами — названия как в прайсе владельца; сначала из того же раздела
+  // Группа не про позицию прайса («Доставка еды», «Доставка пиццы») — другие позиции только если они про то же
+  // (пиццы к «доставке пиццы»); иначе в объявление о доставке попадала случайная панна-котта
+  const rootsOf = (x: string) => new Set(x.toLowerCase().replace(/ё/g, "е").split(/[^а-яa-z0-9]+/).filter((w) => w.length >= 4).map((w) => w.slice(0, 4)));
+  const topic = rootsOf(rawSvc);
+  const related = (s: Service) => owned || !serviceName || [...rootsOf(s.name)].some((r) => topic.has(r));
   const others = services
-    .filter((s) => s !== owned && s.price && cleanText(s.name).length <= 40 && ok(s.name))
+    .filter((s) => s !== owned && s.price && cleanText(s.name).length <= 40 && ok(s.name) && related(s))
     .sort((x, y) => Number((y.category ?? "") === (owned?.category ?? "")) - Number((x.category ?? "") === (owned?.category ?? "")))
     .map((s) => `${cap(cleanText(s.name))} — ${priceText(s.price)}`);
   // «Цены от …» — только если в прайсе несколько цен
@@ -971,7 +1019,20 @@ function adPool(b: Business, ch: keyof typeof LIMITS, serviceName?: string, pric
 }
 
 function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string, price?: string, set = 0): AdDraft[] {
-  return pickThree(adPool(b, ch, serviceName, price, set));
+  const ads = pickThree(adPool(b, ch, serviceName, price, set));
+  return isOrderBusiness(b) ? ads.map(toOrderWording) : ads;
+}
+
+/** Доставка, кафе: «заказ», а не «запись» — в шаблонных объявлениях (длина та же или короче) */
+function toOrderWording(a: AdDraft): AdDraft {
+  const fix = (x: string) => x
+    .replace(/Онлайн-запись на удобное время/g, "Заказ онлайн за минуту")
+    .replace(/Запишитесь онлайн/g, "Закажите онлайн").replace(/запишитесь онлайн/g, "закажите онлайн")
+    .replace(/Онлайн-запись/g, "Заказ онлайн").replace(/онлайн-запись/g, "заказ онлайн")
+    .replace(/Запись онлайн/g, "Заказ онлайн").replace(/запись онлайн/g, "заказ онлайн")
+    .replace(/Записаться/g, "Заказать").replace(/записаться/g, "заказать")
+    .replace(/Запись /g, "Заказ ").replace(/ запись\b/g, " заказ");
+  return { ...a, title: fix(a.title), ...(a.title2 ? { title2: fix(a.title2) } : {}), text: fix(a.text) };
 }
 
 /** Три объявления группы с разными подходами, разными заголовками и разными текстами */

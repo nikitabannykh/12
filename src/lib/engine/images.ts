@@ -173,16 +173,27 @@ export async function generateServicePhotos(b: Business, items: ServiceArt[]): P
   const style = "Рекламная фотосъёмка, фотореализм, как снял живой фотограф: естественный свет, настоящие материалы, лёгкая плёночная зернистость, неидеальные детали. Без текста, без надписей, без логотипов, без водяных знаков";
   const seed = Math.floor(Math.random() * 1e6);
   const errors: string[] = [];
-  const out = await Promise.all(items.map(async (it, i) => {
-    if (it.photoId) return it;
-    try {
-      const img = await art(`${style}. ${it.scene}`, { w: 1, h: 1 }, seed + i);
-      return { ...it, photoId: (await saveImage(b.id, "generated", img, { prompt: `${it.service} :: ${it.scene}` })).id };
-    } catch (e) {
-      errors.push(String((e as Error)?.message ?? e));
-      return it;
+  // По 2 одновременно и с повтором: на 6 параллельных YandexART отвечал «failed to execute calls to all endpoints»
+  const out = [...items];
+  let next = 0;
+  const one = async (i: number) => {
+    const it = out[i];
+    if (it.photoId) return;
+    let last: unknown = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const img = await art(`${style}. ${it.scene}`, { w: 1, h: 1 }, seed + i + attempt * 1000);
+        out[i] = { ...it, photoId: (await saveImage(b.id, "generated", img, { prompt: `${it.service} :: ${it.scene}` })).id };
+        return;
+      } catch (e) {
+        last = e;
+        if (!/endpoint|unavailable|internal|timeout|429|resource/i.test(String((e as Error)?.message ?? e))) break;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
     }
-  }));
+    errors.push(String((last as Error)?.message ?? last));
+  };
+  await Promise.all(Array.from({ length: 2 }, async () => { while (next < out.length) await one(next++); }));
   return { items: out, errors };
 }
 

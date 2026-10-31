@@ -271,6 +271,21 @@ async function newJob(b: Business, ctx: Ctx): Promise<DemandJob> {
 
 const reachOf = (b: Business): Reach => showOf(b).reach ?? recommendedReach(b.monthlyBudget);
 
+/** Итог под охват; уже охват — никогда не больше более широкого (точно ≤ оптимально ≤ широко), и по группам тоже */
+function reachSummary(job: DemandJob, b: Business): DemandSummary {
+  const geo = geoTerms(b);
+  const of = (r: Reach) => summarizeDemand(job.groups, job.results, job.negatives, { inReach: (p) => phraseInReach(p, r, geo) });
+  const reach = reachOf(b);
+  const out = of(reach);
+  const wider: Reach[] = reach === "precise" ? ["balanced", "wide"] : reach === "balanced" ? ["wide"] : [];
+  for (const w of wider) {
+    const x = of(w);
+    out.total = Math.min(out.total, x.total);
+    out.groups = out.groups.map((g, i) => (g.demand != null && x.groups[i]?.demand != null ? { ...g, demand: Math.min(g.demand, x.groups[i].demand!) } : g));
+  }
+  return out;
+}
+
 function view(job: DemandJob | null, b: Business, fallbackNote?: string | null): DemandView {
   const medical = isMedical(b);
   if (!job) return { status: "unavailable", source: null, city: b.city, cityIn: cityIn(b.city), regionIds: [], medical, progress: { done: 0, total: 0 }, summary: null, note: fallbackNote ?? null };
@@ -285,7 +300,7 @@ function view(job: DemandJob | null, b: Business, fallbackNote?: string | null):
     progress: { done: Object.keys(job.results).length + job.failed.length, total: job.total },
     // Пока идёт сбор, итог не показываем: частичная сумма занижала бы спрос
     // Итог — под выбранный охват поиска: при «Точно» общие запросы вроде «массаж» считаются только хвостами с ценой, городом, записью
-    summary: has && job.status !== "running" ? summarizeDemand(job.groups, job.results, job.negatives, { inReach: (p) => phraseInReach(p, reachOf(b), geoTerms(b)) }) : null,
+    summary: has && job.status !== "running" ? reachSummary(job, b) : null,
     reach: reachOf(b),
     note: job.note,
     // Диагностика — только при DEMAND_DEBUG=1 (по умолчанию выключена) и без токенов

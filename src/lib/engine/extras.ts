@@ -167,9 +167,10 @@ export function factCallouts(b: Pick<ExtrasBiz, "advantages" | "offer" | "whatsa
     }
   }
   if (b.offer) add(withoutSuperlatives(b.offer));
-  add("Онлайн-запись");
-  if (b.whatsapp && b.telegram) add("Запись в WhatsApp и Telegram");
-  else if (b.whatsapp || b.telegram) add(`Запись в ${b.whatsapp ? "WhatsApp" : "Telegram"}`);
+  const order = isOrderBusiness(b as ExtrasBiz);
+  add(order ? "Заказ онлайн" : "Онлайн-запись");
+  if (b.whatsapp && b.telegram) add(`${order ? "Заказ" : "Запись"} в WhatsApp и Telegram`);
+  else if (b.whatsapp || b.telegram) add(`${order ? "Заказ" : "Запись"} в ${b.whatsapp ? "WhatsApp" : "Telegram"}`);
   // Факты из прайса и часов работы: есть и детская, и взрослая услуга; часы — если короткие
   const svc = (b.services ?? []).map((s) => `${s.name ?? ""} ${s.category ?? ""}`.toLowerCase().replace(/ё/g, "е"));
   if (svc.some((x) => KIDS_RE.test(x)) && svc.some((x) => !KIDS_RE.test(x))) add(medical ? "Приём взрослых и детей" : "Для взрослых и детей");
@@ -236,7 +237,9 @@ export function isOrderBusiness(b: Pick<ExtrasBiz, "name" | "description"> & { s
 }
 
 /** Слова для сравнения услуг с запросами группы: основа слова (первые 5 букв) у слов от 4 букв */
-const roots = (x: string) => new Set(x.toLowerCase().replace(/ё/g, "е").split(/[^а-яa-z0-9]+/).filter((w) => w.length >= 4).map((w) => w.slice(0, 5)));
+/** Служебные слова запросов («цена», «запись», «рядом») — не про конкретную позицию */
+const STOP_ROOTS = new Set(["цена", "цены", "стои", "недо", "запи", "онла", "рядо", "побл", "отзы", "скол", "заказ".slice(0, 4), "быст", "дешё", "деше"]);
+const roots = (x: string) => new Set(x.toLowerCase().replace(/ё/g, "е").split(/[^а-яa-z0-9]+/).filter((w) => w.length >= 4 && !STOP_ROOTS.has(w.slice(0, 4))).map((w) => w.slice(0, 4)));
 
 export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; service?: string | null; text?: string; keywords?: string[] }): AdExtras {
   // Услуги — по близости к объявлению: сначала те, что про запросы группы и текст («доставка пиццы» → пиццы), а не первые по прайсу

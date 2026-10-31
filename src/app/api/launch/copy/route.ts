@@ -20,7 +20,7 @@ export const POST = route(async ({ user, business }) => {
   // Демо — только шаблонные объявления: модель не вызываем (дедлайн в прошлом — сразу шаблоны)
   const demo = isDemoEmail(user.email);
   // Модели — не дольше, чем позволяет лимит функции (60 с): не успела — шаблонные объявления
-  const plan = await prepareCopy(demo ? business : await ensureTopics(business), accounts, { deadline: demo ? 1 : started + 45_000 });
+  const plan = await prepareCopy(demo ? business : await ensureTopics(business), accounts, { deadline: demo ? 1 : started + 75_000 });
   // Сохраняем, только если запуск за это время не начался (иначе он потерял бы свой ход)
   await replacePlan(business.id, plan);
   // Старый черновик заменён — его картинки больше не нужны. Чистим после сохранения: упади оно — старые картинки целы

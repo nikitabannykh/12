@@ -394,7 +394,8 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
     const want = Math.min(5, Math.max(3, (b.services ?? []).filter((x) => x.name).length));
     // Картинки — под то, что ищут: сначала группы поиска (общая «Доставка еды», затем услуги), потом остальные услуги
     const subjects = [...new Set([...plan.channels.filter((c) => c.enabled).flatMap((c) => c.groups.filter((g) => (g.layer ?? "service") === "service").map((g) => g.service ?? g.name)), ...(b.services ?? []).map((s) => s.name)].filter(Boolean))];
-    arts = await serviceArt(b, plan.imageIdeas, Math.max(want, Math.min(6, subjects.length)), { until: deadline - 20_000, subjects });
+    // Сюжеты и генерация — своё время, не урезанное шагом картинок (иначе модель не успевала, и подписи были просто названиями)
+    arts = await serviceArt(b, plan.imageIdeas, Math.max(want, Math.min(6, subjects.length)), { until: Date.now() + 25_000, subjects });
     // Кадры, уже сгенерированные под ту же услугу (повторная подготовка), берём снова — не платим дважды
     const before = own.filter((p) => p.kind === "generated");
     // Своё фото с подписью позиции («Сет Свежесть» на сайте) — лучше любой генерации: берём его, а не рисуем
@@ -413,6 +414,7 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
     // Свои фото, совпавшие с позициями, — в общий набор (иначе их бы не было среди фото объявлений)
     photoIds = mix(own2, gen.length ? gen : before.map((p) => p.id));
     if (!photoIds.length) photoIds = own.filter((p) => p.kind === "photo").map((p) => p.id).slice(0, 4);
+    deadline = Math.max(deadline, Date.now() + 15_000);
     if (g.errors.length) warnings.push(/denied|доступ|permission|403/i.test(g.errors[0])
       ? "Новые картинки не сгенерировались: у сервисного аккаунта Yandex Cloud нет роли ai.imageGeneration.user — объявления пока только с вашими фото и макетами"
       : `Часть картинок не сгенерировалась: ${g.errors[0]}`);

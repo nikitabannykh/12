@@ -106,19 +106,20 @@ const lookup = (results: Record<string, WordstatPhrase>, p: string) => results[p
  * («маникюр и педикюр»). Это нижняя оценка пересечения, поэтому итог лежит между настоящим объединением и суммой.
  */
 /**
- * Спрос под охват: фраза вне охвата («массаж» при «Точно») считается не целиком, а только хвостами, которые в охват
- * попадают («массаж екатеринбург», «массаж цена»). Вложенные хвосты не складываем дважды.
+ * Спрос под охват: фраза вне охвата («массаж» при «Точно») считается не целиком, а долей хвостов, которые в охват
+ * попадают («массаж екатеринбург», «массаж цена»).
  */
 function withinReach(r: WordstatPhrase, inReach?: (p: string) => boolean): WordstatPhrase {
   if (!inReach || inReach(r.phrase)) return r;
+  // Доля хвостов, попадающих в охват, от всех хвостов фразы. Суммировать хвосты нельзя: они пересекаются
+  // («доставка еды екатеринбург» и «заказать доставку еды екатеринбург»), и сумма выходила больше самой фразы —
+  // а «Точно» больше «Широко». Доля даёт честную оценку и порядок: точно ≤ оптимально ≤ широко
   const self = phraseKey(r.phrase);
-  const tails = r.searchedWith.filter((t) => phraseKey(t.phrase) !== self && t.shows > 0 && inReach(t.phrase)).sort((a, b) => b.shows - a.shows);
-  const kept: { t: (typeof tails)[number]; w: string[] }[] = [];
-  for (const t of tails) {
-    const w = sig(t.phrase);
-    if (!kept.some((k) => within(k.w, w))) kept.push({ t, w });
-  }
-  return { ...r, shows: kept.reduce((s, k) => s + k.t.shows, 0), searchedWith: kept.map((k) => k.t) };
+  const tails = r.searchedWith.filter((t) => phraseKey(t.phrase) !== self && t.shows > 0);
+  const all = tails.reduce((s, t) => s + t.shows, 0);
+  const inside = tails.filter((t) => inReach(t.phrase));
+  const share = all ? inside.reduce((s, t) => s + t.shows, 0) / all : 0;
+  return { ...r, shows: Math.round(r.shows * Math.min(1, share)), searchedWith: inside };
 }
 
 export function summarizeDemand(seedGroups: DemandSeedGroup[], rawResults: Record<string, WordstatPhrase>, negatives: string[], opts: { inReach?: (phrase: string) => boolean } = {}): DemandSummary {
