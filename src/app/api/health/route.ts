@@ -57,6 +57,7 @@ export async function GET(req: Request) {
       telegram: tgConfigured(),
     },
     cron,
+    version: process.env.APP_VERSION ?? process.env.VERCEL_GIT_COMMIT_SHA ?? null,
   };
   // Подробности (какие интеграции включены, размер базы, крон) — только с CRON_SECRET; без него — лишь «живы/нет»
   const secret = process.env.CRON_SECRET;

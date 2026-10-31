@@ -1,0 +1,8 @@
+[Unit]
+Description=Samokhod cron
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash /opt/polny-zal/app/deploy/vm/cron.sh
+TimeoutStartSec=1800

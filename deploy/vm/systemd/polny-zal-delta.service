@@ -1,0 +1,8 @@
+[Unit]
+Description=Samokhod delta
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash /opt/polny-zal/app/deploy/vm/delta.sh
+TimeoutStartSec=1800

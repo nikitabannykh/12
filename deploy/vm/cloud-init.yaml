@@ -1,0 +1,10 @@
+#cloud-config
+# Первая загрузка ВМ в Yandex Cloud: ставит Git, забирает код из GitHub и запускает deploy/vm/setup.sh.
+# Секретов здесь нет — они в Lockbox (ID секрета — в метаданных ВМ, ключ lockbox-secret-id), ВМ читает их своим сервисным аккаунтом.
+package_update: true
+packages: [git, curl, jq]
+runcmd:
+  - mkdir -p /opt/polny-zal
+  - git clone --depth 50 https://github.com/nikitabannykh/12.git /opt/polny-zal/app
+  # Лог установки — и в файл, и в последовательный порт (виден в консоли Yandex Cloud: ВМ → «Последовательный порт»)
+  - bash -c "bash /opt/polny-zal/app/deploy/vm/setup.sh 2>&1 | tee /var/log/polny-zal-setup.log > /dev/ttyS0"

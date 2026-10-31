@@ -1,0 +1,9 @@
+[Unit]
+Description=Samokhod: copy new leads from the old database
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

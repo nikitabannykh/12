@@ -23,6 +23,14 @@ function originOf(v: string | null): string | null {
 /** Свои адреса: APP_URL и адрес, по которому реально пришёл запрос (превью-домены Vercel) */
 function ownOrigins(req: Request): Set<string> {
   const set = new Set<string>([new URL(appUrl()).origin]);
+  // Прежние адреса сервиса, которые после переезда проксируют страницы записи сюда (например, https://polny-zal.vercel.app)
+  for (const o of (process.env.LEGACY_ORIGINS ?? "").split(",")) {
+    try {
+      if (o.trim()) set.add(new URL(o.trim()).origin);
+    } catch {
+      /* неверный адрес в переменной — пропускаем */
+    }
+  }
   const host = req.headers.get("x-forwarded-host") || req.headers.get("host");
   if (host) {
     const proto = req.headers.get("x-forwarded-proto") || new URL(req.url).protocol.replace(":", "");
