@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Секреты из Lockbox → /etc/polny-zal.env (только root). ID секрета — в метаданных ВМ (lockbox-secret-id);
+# Секреты из Lockbox → /etc/polny-zal.env (пустые и заглушки вида «ВСТАВЬТЕ…» пропускаем) (только root). ID секрета — в метаданных ВМ (lockbox-secret-id);
 # токен — сервисного аккаунта ВМ через сервис метаданных (роль lockbox.payloadViewer).
 set -euo pipefail
 MD=http://169.254.169.254/computeMetadata/v1/instance
@@ -10,7 +10,7 @@ chmod 600 "$TMP"
 if [ -n "$SID" ]; then
   TOKEN=$(curl -fsS -H "$H" $MD/service-accounts/default/token | jq -r .access_token)
   curl -fsS -H "Authorization: Bearer $TOKEN" "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/$SID/payload" \
-    | jq -r '.entries[] | "\(.key)=\(.textValue // "" | gsub("\n"; "\\n"))"' > "$TMP"
+    | jq -r '.entries[] | select((.textValue // "") | (length > 8 and (test("^(-|TODO|ВСТАВ|ЗАПОЛН)") | not))) | "\(.key)=\(.textValue | gsub("\n"; "\\n"))"' > "$TMP"
 fi
 # Несекретные настройки (ClientID приложений, каталог) — в метаданных ВМ, ключ app-env: строки KEY=VALUE
 curl -fsS -H "$H" $MD/attributes/app-env 2>/dev/null | grep -E '^[A-Z_][A-Z0-9_]*=' | while IFS= read -r line; do
