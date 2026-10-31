@@ -85,16 +85,17 @@ export function LandingEditor({ initial, siteUrl, pageUrl, channels, live, hasYa
   const dirty = JSON.stringify(s) !== saved || Boolean(newSite.trim());
   const perCount = Object.keys(s.channels ?? {}).length;
 
-  async function save() {
+  async function save(next: LandingSettings = s, quiet = false) {
     setBusy(true);
     try {
-      if (!siteUrl && main.mode === "site" && !newSite.trim()) throw new Error("Впишите адрес сайта");
-      const r = await api<{ settings: LandingSettings; updated: number; warnings: string[] }>("PUT", "/api/landing", newSite.trim() ? { ...s, siteUrl: newSite.trim() } : s);
+      const m: LandingTarget = next.mode === "auto" ? { mode: siteUrl ? "site" : "page" } : next;
+      if (!siteUrl && m.mode === "site" && !newSite.trim()) throw new Error("Впишите адрес сайта");
+      const r = await api<{ settings: LandingSettings; updated: number; warnings: string[] }>("PUT", "/api/landing", newSite.trim() ? { ...next, siteUrl: newSite.trim() } : next);
       setNewSite("");
       setS(r.settings);
       setSaved(JSON.stringify(r.settings));
       if (r.warnings.length) toast(`Сохранили. Обратите внимание:\n${r.warnings.slice(0, 3).join("\n")}`, "error");
-      else toast(live && r.updated ? `Сохранили и поменяли ссылки в ${r.updated} кампаниях — объявления пройдут модерацию заново` : live ? "Сохранили" : "Сохранили — применим при запуске");
+      else if (!quiet) toast(live && r.updated ? `Сохранили и поменяли ссылки в ${r.updated} кампаниях — объявления пройдут модерацию заново` : live ? "Сохранили" : "Сохранили — применим при запуске");
       router.refresh();
     } catch (e) {
       toast((e as Error).message, "error");
@@ -103,11 +104,27 @@ export function LandingEditor({ initial, siteUrl, pageUrl, channels, live, hasYa
     }
   }
 
+  /**
+   * До запуска выбор сохраняем сразу — кнопка не нужна. Ждём только ввода: своя ссылка или адрес нового сайта.
+   * У идущей рекламы — по кнопке: смена ссылки отправляет объявления на повторную модерацию
+   */
+  const needsInput = (t: LandingSettings) => {
+    const all = [t.mode === "auto" ? null : t, ...Object.values(t.channels ?? {})].filter(Boolean) as LandingTarget[];
+    return all.some((x) => (x.mode === "link" && !String(x.url ?? "").trim()) || (x.mode === "site" && !siteUrl));
+  };
+  // Своя ссылка печатается по буквам — её сохраняем кнопкой, остальное сразу
+  const hasLink = (t: LandingSettings) => t.mode === "link" || Object.values(t.channels ?? {}).some((x) => x?.mode === "link");
+  const change = (next: LandingSettings) => {
+    setS(next);
+    if (!live && !needsInput(next) && !hasLink(next)) void save(next, true);
+  };
+  const showSave = live || dirty;
+
   return (
     <div className="grid gap-5">
       <div className="grid gap-2">
         <div className="font-semibold flex items-center gap-2"><Link2 size={16} /> Для всех каналов</div>
-        <TargetPicker siteCode={siteCode} value={main} onChange={(t) => setS({ ...s, ...t })} siteUrl={siteUrl} pageUrl={pageUrl} yandex={hasYandex} newSite={newSite} onNewSite={siteUrl ? undefined : setNewSite} />
+        <TargetPicker siteCode={siteCode} value={main} onChange={(t) => change({ ...s, ...t })} siteUrl={siteUrl} pageUrl={pageUrl} yandex={hasYandex} newSite={newSite} onNewSite={siteUrl ? undefined : setNewSite} />
       </div>
       {channels.length > 1 ? (
         <details className="rounded-xl border border-line" open={perCount > 0}>
@@ -122,18 +139,18 @@ export function LandingEditor({ initial, siteUrl, pageUrl, channels, live, hasYa
                     const next = { ...(s.channels ?? {}) };
                     if (t.mode === "auto") delete next[ch];
                     else next[ch] = t;
-                    setS({ ...s, channels: next });
+                    change({ ...s, channels: next });
                   }} />
               </div>
             ))}
           </div>
         </details>
       ) : null}
-      <div className="flex flex-wrap items-center gap-3">
-        <button type="button" className="btn btn-primary" disabled={!dirty || busy} onClick={save}>{busy ? <Loader2 size={16} className="spin" /> : null} Сохранить</button>
+      {showSave ? <div className="flex flex-wrap items-center gap-3">
+        <button type="button" className="btn btn-primary" disabled={!dirty || busy} onClick={() => save()}>{busy ? <Loader2 size={16} className="spin" /> : null} Сохранить</button>
         {dirty ? <button type="button" className="btn btn-ghost" onClick={() => { setS(JSON.parse(saved)); setNewSite(""); }}>Отменить</button> : null}
-        <span className="text-sm text-muted">{live ? "Ссылки поменяем в кабинетах сразу; объявления пройдут модерацию заново, статистика сохранится." : "Применим при запуске рекламы."}</span>
-      </div>
+        <span className="text-sm text-muted">{live ? "Ссылки поменяем в кабинетах сразу; объявления пройдут модерацию заново, статистика сохранится." : "Впишите адрес и сохраните."}</span>
+      </div> : <p className="text-sm text-muted inline-flex items-center gap-1.5">{busy ? <><Loader2 size={14} className="spin" /> Сохраняем…</> : "Выбор сохраняется сразу и применится при запуске."}</p>}
     </div>
   );
 }

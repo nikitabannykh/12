@@ -3,7 +3,7 @@
  * «Где, кому и когда показывать»: регион, пол и возраст, расписание.
  * Пустое = решает робот (город из анкеты, аудитории ниши, часы работы). Для идущей рекламы меняем сразу в кабинетах.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Clock, Loader2, MapPin, Plus, Target, Users, X } from "lucide-react";
 import { api, useToast } from "./client";
@@ -62,7 +62,7 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
     setRegion("");
   }
 
-  async function save() {
+  async function save(quiet = false) {
     setBusy(true);
     try {
       // В мастере охват живёт в своём блоке и сохраняется сразу — здесь его не трогаем
@@ -70,14 +70,26 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
       setS(r.settings);
       setSaved(JSON.stringify(r.settings));
       if (r.warnings.length) toast(`Сохранили. Обратите внимание:\n${r.warnings.slice(0, 3).join("\n")}`, "error");
-      else toast(live ? `Сохранили и обновили ${r.updated} ${r.updated === 1 ? "кампанию" : "кампании"} в кабинетах` : "Сохранили — применим при запуске");
-      router.refresh();
+      else if (!quiet) toast(live ? `Сохранили и обновили ${r.updated} ${r.updated === 1 ? "кампанию" : "кампании"} в кабинетах` : "Сохранили — применим при запуске");
+      // Тихое автосохранение до запуска — без перезагрузки страницы (иначе блок схлопывался бы на каждом клике)
+      if (!quiet) router.refresh();
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
       setBusy(false);
     }
   }
+
+  // До запуска настройки сохраняем сами через секунду после изменения — кнопка «Сохранить» не нужна.
+  // У идущей рекламы — по кнопке: изменения сразу уходят в кабинеты
+  const auto = !live && mode !== "reach";
+  const cur = JSON.stringify(sanitizeShow(s));
+  useEffect(() => {
+    if (!auto || cur === saved) return;
+    const t = setTimeout(() => { void save(true); }, 900);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cur, auto]);
 
   const rec = recommendedReach(monthlyBudget ?? 30000);
   const reach: Reach = s.reach ?? rec;
@@ -237,8 +249,9 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
       {summaryBox}
 
       <div className="flex flex-wrap items-center gap-3">
-        <button type="button" className="btn btn-primary" disabled={!dirty || busy} onClick={save}>{busy ? <Loader2 size={16} className="spin" /> : null} Сохранить</button>
-        {dirty ? <button type="button" className="btn btn-ghost" onClick={() => setS(JSON.parse(saved))}>Отменить</button> : null}
+        {auto ? <span className="text-sm text-muted inline-flex items-center gap-1.5">{busy || dirty ? <><Loader2 size={14} className="spin" /> Сохраняем…</> : "Сохраняется сразу"}</span> : <>
+        <button type="button" className="btn btn-primary" disabled={!dirty || busy} onClick={() => save()}>{busy ? <Loader2 size={16} className="spin" /> : null} Сохранить</button>
+        {dirty ? <button type="button" className="btn btn-ghost" onClick={() => setS(JSON.parse(saved))}>Отменить</button> : null}</>}
         {mode === "details" && !dirty ? <button type="button" className="btn btn-ghost" onClick={() => setOpen(false)}>Свернуть</button> : null}
         <span className="text-sm text-muted">{live ? "Изменения сразу уйдут в рекламные кабинеты — кампании не перезапускаются, статистика сохранится." : "Применим при запуске рекламы."}</span>
       </div>
