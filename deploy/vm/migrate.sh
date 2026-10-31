@@ -11,7 +11,9 @@ trap 'rc=$?; [ $rc -ne 0 ] && date -Is > $ROOT/migrate-failed; exit $rc' EXIT
 if [ -z "${NEON_DATABASE_URL:-}" ]; then echo "migrate: NEON_DATABASE_URL нет — переносить пока нечего"; exit 0; fi
 PG="docker run --rm --network pz -e SRC=$NEON_DATABASE_URL -e DST=$DATABASE_URL mirror.gcr.io/library/postgres:17"
 # Переносим, только если в новой базе ещё нет ни одного проекта (пустые таблицы, созданные самим сервисом, — не в счёт)
-n=$($PG sh -c 'psql "$DST" -tAc "select case when to_regclass('"'"'public.businesses'"'"') is null then 0 else (select count(*) from businesses) end"')
+has=$($PG sh -c 'psql "$DST" -tAc "select to_regclass('"'"'public.businesses'"'"') is not null"')
+n=0
+if [ "$has" = "t" ]; then n=$($PG sh -c 'psql "$DST" -tAc "select count(*) from businesses"'); fi
 if [ "$n" != "0" ]; then echo "migrate: в новой базе уже $n проектов — перенос пропускаем"; touch $ROOT/migrated; exit 0; fi
 $PG sh -c 'psql -q "$DST" -c "drop schema public cascade" -c "create schema public"' 
 echo "migrate: копируем базу"
