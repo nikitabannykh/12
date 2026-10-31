@@ -387,6 +387,7 @@ const normName = (x: string) => x.toLowerCase().replace(/ё/g, "е").replace(/[^
 const rootsOf = (x: string) => new Set(x.toLowerCase().replace(/ё/g, "е").split(/[^а-яa-z0-9]+/).filter((w) => w.length >= 3).map((w) => w.slice(0, 5)));
 
 export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Date.now() + 40_000): Promise<{ plan: LaunchPlan; done: boolean; made: number; total: number; steps: number; stepsDone: number }> {
+  const started = Date.now();
   const warnings = [...plan.warnings];
   let photoIds = plan.stage === "images" ? plan.photoIds : [];
   let arts: ServiceArt[] = plan.stage === "images" ? plan.art ?? [] : [];
@@ -413,7 +414,7 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
       const key = c.channel === "search" ? g.name : g.service ?? g.name;
       if (!queries[key]) queries[key] = (g.keywords ?? []).map((k) => k.replace(/\s-\S+/g, " ").replace(/["!+[\]]/g, "").trim()).filter(Boolean).slice(0, 4);
     }
-    arts = await serviceArt(b, plan.imageIdeas, Math.max(want, Math.min(20, subjects.length)), { until: Date.now() + 30_000, subjects, queries, alt: new Set(enabled.filter((c) => c.channel === "search").flatMap((c) => c.groups.map((g) => g.name))) });
+    arts = await serviceArt(b, plan.imageIdeas, Math.max(want, Math.min(20, subjects.length)), { until: Date.now() + 30_000, subjects, queries, alt: new Set(enabled.filter((c) => c.channel === "search").flatMap((c) => c.groups.filter((g) => g.ads.length > 1).map((g) => g.name))) });
     // Кадры, уже сгенерированные под ту же группу (повторная подготовка), берём снова — не платим дважды
     const before = own.filter((p) => p.kind === "generated");
     // Своё фото с подписью позиции («Сет Свежесть» на сайте) — лучше любой генерации: берём его, а не рисуем
@@ -435,30 +436,36 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
       const mine = ownFor(a.service);
       const ownId = mine && !usedOwn.has(mine) ? (usedOwn.add(mine), mine) : null;
       const prev = before.filter((p) => p.prompt?.startsWith(`${a.service} :: `));
-      return { ...a, photoId: ownId ?? prev.find((p) => p.prompt === `${a.service} :: ${a.scene}`)?.id ?? prev[0]?.id ?? null, photoId2: a.scene2 ? prev.find((p) => p.prompt === `${a.service} :: ${a.scene2}`)?.id ?? null : null };
+      const second = a.scene2 ? prev.find((p) => p.prompt === `${a.service} :: ${a.scene2}`)?.id ?? null : null;
+      return { ...a, photoId: ownId ?? prev.find((p) => p.prompt === `${a.service} :: ${a.scene}`)?.id ?? prev.find((p) => p.id !== second)?.id ?? null, photoId2: second };
     });
   }
   // Генерация кадров идёт шагами: не успели все — продолжим следующим вызовом, а картинки объявлений собираем,
   // только когда у каждой группы есть свой кадр (или он точно не получился). Иначе группы получали общий кадр
+  const firstCall = plan.stage !== "images";
   const pendingArt = () => arts.some((a) => (!a.photoId && !a.failed) || (a.scene2 && !a.photoId2 && !a.failed2));
+  // Кадры: основной + второй (A/B) у групп поиска — для прогресса в одних единицах на всех шагах
+  const framesTotal = () => arts.length + arts.filter((a) => a.scene2).length;
+  const framesDone = () => arts.filter((a) => a.photoId || a.failed).length + arts.filter((a) => a.scene2 && (a.photoId2 || a.failed2)).length;
+  const adsTotal = plan.channels.flatMap((c) => c.groups.flatMap((g) => g.ads)).length;
   if (pendingArt()) {
-    const g = await generateServicePhotos(b, arts, { until: Math.max(deadline - 8_000, Date.now() + 12_000) });
+    const g = await generateServicePhotos(b, arts, { until: Math.min(Math.max(deadline - 8_000, Date.now() + 12_000), started + 40_000) });
     arts = g.items;
     if (g.errors.length) warnings.push(/denied|доступ|permission|403/i.test(g.errors[0])
       ? "Новые картинки не сгенерировались: у сервисного аккаунта Yandex Cloud нет роли ai.imageGeneration.user — объявления пока только с вашими фото и макетами"
       : `Часть картинок не сгенерировалась (для них — карточка с текстом): ${g.errors[0]}`);
     // Ошибка доступа — не ждём остальных: всё равно не получится
-    if (g.errors.some((e) => /denied|permission|403/i.test(e))) arts = arts.map((a) => (a.photoId ? a : { ...a, failed: true }));
-    const pendingArt = () => arts.some((a) => (!a.photoId && !a.failed) || (a.scene2 && !a.photoId2 && !a.failed2));
-  if (pendingArt()) {
-      const made = arts.filter((a) => a.photoId || a.failed).length;
-      const total = plan.channels.flatMap((c) => c.groups.flatMap((g) => g.ads)).length;
-      const next: LaunchPlan = { ...plan, photoIds, art: arts, stage: "images", warnings: [...new Set(warnings)] };
-      return { plan: next, done: false, made: 0, total: 0, steps: total + arts.length, stepsDone: made };
-    }
+    if (g.errors.some((e) => /denied|permission|403/i.test(e))) arts = arts.map((a) => ({ ...a, failed: a.failed || !a.photoId, failed2: a.scene2 && !a.photoId2 ? true : a.failed2 }));
+  }
+  // Основной кадр не получился, а второй есть — второй становится основным
+  arts = arts.map((a) => (!a.photoId && a.photoId2 ? { ...a, photoId: a.photoId2, photoId2: null, failed2: true } : a));
+  // Первый вызов (сюжеты + генерация) уже долгий — картинки объявлений рисуем со следующего, чтобы уложиться во время
+  if (pendingArt() || firstCall) {
+    const next: LaunchPlan = { ...plan, photoIds, art: arts, stage: "images", warnings: [...new Set(warnings)] };
+    return { plan: next, done: false, made: 0, total: 0, steps: framesTotal() + adsTotal * 2, stepsDone: framesDone() };
   }
   photoIds = [...new Set([...photoIds, ...arts.flatMap((a) => [a.photoId, a.photoId2]).filter((x): x is string => Boolean(x))])];
-  deadline = Math.max(deadline, Date.now() + 15_000);
+  deadline = Math.min(Math.max(deadline, Date.now() + 15_000), started + 45_000);
   const ownSet = new Set(photoIds.filter((id) => !arts.some((a) => a.photoId === id || a.photoId2 === id)));
   const ownList = [...ownSet];
   const artFor = (name?: string | null) => (name ? arts.find((a) => a.service === name) : undefined);
@@ -498,13 +505,12 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
           // Своя картинка у каждой услуги: кадр, сгенерированный под неё, человеческая подпись и её выгода.
           // Макеты чередуются: подпись на фото — выгода с фото
           const own = artFor(g.name) ?? artFor(g.service ?? service?.name);
-          const a = own ?? artAt(k++);
           const layout: Layout = groups.length % 2 === 0 || !layouts.includes("benefit") ? "tag" : "benefit";
           // Кадр только свой: чужой группы не берём — лучше карточка с подписью этой группы, чем одинаковое фото везде
-          const photoId = own ? own.photoId ?? null : a?.photoId ?? null;
+          const photoId = own?.photoId ?? own?.photoId2 ?? null;
           imageId = await creative({ layout: photoId || layout === "benefit" ? layout : "tag", photoId, width: 1080, height: 607, headline: own?.headline ?? g.name, price: service?.price, benefit: own?.benefit || undefined });
           // Второй кадр группы — для A/B: объявления группы чередуют кадры, робот оставит тот, после которого чаще обращаются
-          if (own?.photoId2 && g.ads.length > 1) imageId2 = await creative({ layout: layout === "tag" ? "benefit" : "tag", photoId: own.photoId2, width: 1080, height: 607, headline: own.headline ?? g.name, price: service?.price, benefit: own.benefit || undefined });
+          if (own?.photoId2 && g.ads.length > 1) imageId2 = await creative({ layout, photoId: own.photoId2, width: 1080, height: 607, headline: own.headline ?? g.name, price: service?.price, benefit: own.benefit || undefined });
         } catch (e) {
           warnings.push(`Картинка для поиска «${g.name}»: ${errorText(e)}`);
         }
@@ -536,7 +542,8 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
         const a = exact ?? artAt(shift);
         // Фото под эту группу (своё с подписью позиции или сгенерированное под неё) — всегда оно; иначе каждое третье — своё фото
         const ownPick = !exact?.photoId && ownList.length && shift % 3 === 0 ? ownList[shift % ownList.length] : null;
-        const photoId = layout === "offer" ? null : ownPick ?? a?.photoId ?? (photoIds.length ? photoIds[shift % photoIds.length] : null);
+        // Своя группа без своего кадра — только фото владельца, не кадр другой группы. Общие группы (аудитории) — кадры по кругу
+        const photoId = layout === "offer" ? null : exact ? exact.photoId ?? ownPick ?? (ownList.length ? ownList[shift % ownList.length] : null) : ownPick ?? a?.photoId ?? (photoIds.length ? photoIds[shift % photoIds.length] : null);
         const wide = net && i % 2 === 1;
         try {
           const imageId = await creative({ layout, photoId, width: 1080, height: wide ? 607 : 1080, headline: a?.headline ?? svc?.name, price: svc?.price, benefit: a?.benefit || undefined });

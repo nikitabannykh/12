@@ -6,7 +6,8 @@ import { accountsFor, prepareCopy, replacePlan, type LaunchPlan } from "@/lib/en
 import { isDemoEmail } from "@/lib/auth";
 import { useQuota } from "@/lib/ratelimit";
 
-export const maxDuration = 60;
+// На ВМ лимита нет; на Vercel Pro — до 300 с. Модели работают до deadline ниже, потом — шаблоны
+export const maxDuration = 300;
 
 export const POST = route(async ({ user, business }) => {
   const started = Date.now();

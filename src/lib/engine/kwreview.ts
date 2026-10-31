@@ -14,8 +14,8 @@ import { conflicts, displayKeyword, phraseKey, stem, type SemanticCore } from ".
 
 const KEEP_MIN = 2;
 /** Единицы, которые без числа бессмысленны: число вырезали, слово осталось */
-const ORPHAN = /(^|\s)(лет|месяцев|мес|минут|мин|шт|см|кг|руб|р|т\.?\s?р)(\s|$)/;
-const KID = /(дет|ребен|ребён|малыш|новорожд|грудн|младен|подрост|школьн)/;
+const ORPHAN = /(?<!\d)(?<!\d\s)(^|\s)(лет|месяц\S*|мес|минут|мин|шт|см|кг|руб|р|т\.?\s?р)(?=\s|$)/;
+const KID = /(?<!\p{L})(дет(?!окс)|ребен|ребён|малыш|новорожд|грудн|младен|подрост|школьн)/u;
 const ADULT = /взросл/;
 
 /** Слова намерения: человек ищет, кто поможет, а не справку */
@@ -27,7 +27,7 @@ const INTENT = /(лечени|лечить|вылечить|врач|докто�
  */
 const SHELL = new Set(["для", "у", "в", "во", "на", "и", "с", "со", "к", "по", "при", "прием", "консультация", "консультации", "услуги", "услуга", "сеанс", "запись"]);
 export function intentKey(name: string): string {
-  return [...new Set(name.toLowerCase().replace(/ё/g, "е").split(/[^\p{L}]+/u).filter((w) => w.length >= 2 && !SHELL.has(w))
+  return [...new Set(name.toLowerCase().replace(/ё/g, "е").split(/[^\p{L}\p{N}]+/u).filter((w) => (w.length >= 2 || /\d/.test(w)) && !SHELL.has(w))
     .map((w) => (/^(дет|ребен)/.test(w) ? "дет" : /^взросл/.test(w) ? "взросл" : stem(w))))].sort().join(" ");
 }
 
@@ -44,7 +44,7 @@ export function cleanByRules(core: SemanticCore): { core: SemanticCore; dropped:
       const p = displayKeyword(k);
       if (ORPHAN.test(p)) return false;
       // Группа проблемы: фраза должна говорить, что человек ищет помощь (специалист, лечение, цена, город)
-      if (g.layer === "problem" && !INTENT.test(p) && !noun.some((n) => p.includes(n)) && !geo.some((c) => c.length >= 4 && p.includes(c))) return false;
+      if (g.layer === "problem" && !INTENT.test(p) && !noun.some((n) => p.includes(n)) && !geo.some((c) => c.length >= 3 && p.split(/\s+/).some((w) => w.startsWith(c)))) return false;
       if (kid && !adult && ADULT.test(p)) return false;
       if (adult && !kid && KID.test(p)) return false;
       return true;
@@ -91,7 +91,7 @@ export async function reviewKeywords(b: Business, core: SemanticCore, opts: { un
         { temperature: 0.1, maxTokens: 600, timeoutMs: 15_000, until: opts.until },
       );
       const nm = String(r.name ?? "").replace(/[«»"()]/g, "").replace(/\s+/g, " ").trim();
-      if (g.layer === "service" && nm.length >= 4 && nm.length <= 40 && !/\d/.test(nm)) proposed.set(gi, nm[0].toUpperCase() + nm.slice(1));
+      if (g.layer === "service" && !/\d/.test(g.name) && nm.length >= 4 && nm.length <= 40 && !/\d/.test(nm)) proposed.set(gi, nm[0].toUpperCase() + nm.slice(1));
       const drop = new Set((r.drop ?? []).map(Number).filter((n) => n >= 1 && n <= list.length).map((n) => list[n - 1]));
       if (list.length <= KEEP_MIN || drop.size >= list.length - 1) return; // модель выкинула почти всё — не верим
       const next = keep(g.keywords, g.keywords.filter((k) => !drop.has(k)));
@@ -114,12 +114,13 @@ export async function reviewKeywords(b: Business, core: SemanticCore, opts: { un
   groups.forEach((g, gi) => {
     const nm = proposed.get(gi);
     const key = intentKey(nm ?? g.name);
-    const into = g.layer === "service" && key ? merged.find((m) => m.layer === "service" && intentKey(m.name) === key) : undefined;
+    // Позиции с числами («Пицца 30 см», «Сеанс 60 минут») — разные товары с разной ценой, их не сливаем
+    const into = g.layer === "service" && key && !/\d/.test(g.name) ? merged.find((m) => m.layer === "service" && !/\d/.test(m.name) && intentKey(m.name) === key) : undefined;
     if (into) {
       const keys = new Set(into.keywords.map(phraseKey));
       into.keywords.push(...g.keywords.filter((k) => !keys.has(phraseKey(k))));
       into.services = [...new Set([...into.services, ...g.services])];
-      into.negatives = into.negatives.filter((n) => !into.keywords.some((k) => conflicts(n, k)));
+      into.negatives = [...new Set([...into.negatives, ...g.negatives])].filter((n) => !into.keywords.some((k) => conflicts(n, k)));
       if (into.demand != null || g.demand != null) into.demand = (into.demand ?? 0) + (g.demand ?? 0);
       return;
     }
@@ -127,10 +128,10 @@ export async function reviewKeywords(b: Business, core: SemanticCore, opts: { un
   });
   // Минус-слово: не аудитория и не намерение, не задевает оставшиеся фразы и слова прайса
   // Улица, город и район бизнеса — целевые слова, не минусуем («остеопат на чайковского»)
-  const own = `${services.join(" ")} ${merged.map((g) => g.name).join(" ")} ${b.address ?? ""} ${b.city ?? ""} ${[...core.geo.city, ...core.geo.local].join(" ")}`.toLowerCase().replace(/ё/g, "е");
+  const own = new Set(`${services.join(" ")} ${merged.map((g) => g.name).join(" ")} ${b.address ?? ""} ${b.city ?? ""} ${[...core.geo.city, ...core.geo.local].join(" ")}`.toLowerCase().replace(/ё/g, "е").split(/[^\p{L}]+/u).filter((w) => w.length >= 3).map(stem));
   const before = merged.flatMap((g) => g.keywords);
   const negatives = [...new Set(campaignNeg)]
-    .filter((n) => !KID.test(n) && !ADULT.test(n) && !INTENT.test(n) && !/беремен|мам|женщин|мужчин|пожил|спорт/.test(n) && !own.includes(n.slice(0, Math.max(4, n.length - 2))))
+    .filter((n) => !KID.test(n) && !ADULT.test(n) && !INTENT.test(n) && !/беремен|мам|женщин|мужчин|пожил|спорт/.test(n) && !own.has(stem(n)))
     .filter((n) => before.filter((k) => conflicts(n, k)).length <= Math.max(2, before.length * 0.02))
     .slice(0, 40);
   // Фразы с найденными именами и брендами («хамов остеопат екатеринбург») убираем и из тех групп, где модель их пропустила

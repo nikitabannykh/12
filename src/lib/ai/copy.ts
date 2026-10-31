@@ -5,7 +5,7 @@ import { ANGLES, isMedical, KIDS_RE, LAYER_LABEL, nicheById, type Layer } from "
 import { CATALOG } from "../engine/catalog";
 import { addressWithoutCity, adExtras, isOrderBusiness, badChars, claimProblems, cleanText, factCallouts, hasClaims, hasSuperlative, parsePrice, parseWeekHours, SUPERLATIVE as SUPERLATIVE_ONE, withoutSuperlatives } from "../engine/extras";
 import { pl, plural } from "../util";
-import { addPhrases, buildSemanticCore, displayKeyword, finalizeCore, networkInterests, conflicts, type SemanticCore, type SemanticGroup } from "../engine/semantics";
+import { addPhrases, buildSemanticCore, displayKeyword, finalizeCore, networkInterests, conflicts, stem, type SemanticCore, type SemanticGroup } from "../engine/semantics";
 import { aiConfigured, gptJson } from "./yandex";
 import { LIMITS } from "./limits";
 
@@ -674,7 +674,7 @@ export async function pickNegativeWords(b: Business, queries: string[], already:
   }
   // Слова, которые минусовать нельзя: город и адрес бизнеса, аудитории, названия его услуг
   const ownWords = `${b.city ?? ""} ${b.address ?? ""} ${(b.services ?? []).map((s) => s.name).join(" ")} дети детский ребенок подросток школьник взрослый беременная малыш новорожденный`
-    .toLowerCase().replace(/ё/g, "е").split(/[^\p{L}]+/u).filter((w) => w.length >= 4).map((w) => w.slice(0, Math.max(4, w.length - 2)));
+    .toLowerCase().replace(/ё/g, "е").split(/[^\p{L}]+/u).filter((w) => w.length >= 4).map((w) => stem(w));
   if (aiConfigured() && queries.length) {
     try {
       const r = await gptJson<{ items: { word: string; query: string }[] }>(
@@ -690,7 +690,7 @@ JSON: {"items":[{"word":"...","query":"пример запроса"}]}. Если
       );
       for (const it of r.items ?? []) {
         const w = cleanKeyword(it.word).split(" ")[0];
-        if (w && w.length > 2 && !known.has(w) && !found.has(w) && !ownWords.some((o) => w.startsWith(o) || o.startsWith(w.slice(0, Math.max(4, w.length - 2))))) found.set(w, it.query);
+        if (w && w.length > 2 && !known.has(w) && !found.has(w) && !ownWords.includes(stem(w))) found.set(w, it.query);
       }
     } catch {
       /* только правила */

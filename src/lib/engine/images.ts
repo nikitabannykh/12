@@ -141,6 +141,12 @@ export async function serviceArt(b: Business, ideas: string[], count: number, op
   // subjects — то, под что реально идут объявления (группы поиска: «Доставка еды», услуги), по важности; иначе — услуги прайса
   const services = (opts.subjects?.length ? [...new Set(opts.subjects)] : spreadServices((b.services ?? []).filter((s) => s.name), Math.max(1, count)).map((s) => s.name)).slice(0, Math.max(1, count));
   const list = services.length ? services : [n.id === "other" ? b.name : n.generic];
+  // Много групп — частями по 6 параллельно: один ответ на 20 сюжетов со вторыми кадрами не успевал за 30 секунд
+  if (list.length > 7 && aiConfigured()) {
+    const parts: string[][] = [];
+    for (let i = 0; i < list.length; i += 6) parts.push(list.slice(i, i + 6));
+    return (await Promise.all(parts.map((part) => serviceArt(b, ideas, part.length, { ...opts, subjects: part })))).flat();
+  }
   const fallback = (): ServiceArt[] => {
     const prompts = photoPrompts(b, ideas);
     return list.map((svc, i) => ({ service: svc, headline: shortHeadline(svc), benefit: "", scene: prompts[i % prompts.length] }));
@@ -181,7 +187,9 @@ export async function serviceArt(b: Business, ideas: string[], count: number, op
 
 /** Фото YandexART под каждую услугу (кадр из serviceArt). Каждое сохраняем сразу — оплаченные кадры не пропадут при обрыве */
 export async function generateServicePhotos(b: Business, items: ServiceArt[], opts: { until?: number } = {}): Promise<{ items: ServiceArt[]; errors: string[] }> {
-  if (!aiConfigured() || !items.length) return { items, errors: [] };
+  // Без модели кадров не будет — помечаем, чтобы подготовка картинок не ждала их бесконечно
+  if (!aiConfigured()) return { items: items.map((it) => ({ ...it, failed: it.failed || !it.photoId, failed2: it.scene2 && !it.photoId2 ? true : it.failed2 })), errors: [] };
+  if (!items.length) return { items, errors: [] };
   const style = "Рекламная фотосъёмка, фотореализм, как снял живой фотограф: естественный свет, настоящие материалы, лёгкая плёночная зернистость, неидеальные детали. Без текста, без надписей, без логотипов, без водяных знаков";
   const seed = Math.floor(Math.random() * 1e6);
   const errors: string[] = [];
@@ -214,6 +222,8 @@ export async function generateServicePhotos(b: Business, items: ServiceArt[], op
           continue;
         }
         if (!/endpoint|unavailable|internal|timeout|429|resource/i.test(msg)) break;
+        // Время шага вышло — не повторяем сейчас: кадр останется «не готов» и будет нарисован следующим шагом
+        if (opts.until && Date.now() > opts.until) return;
         await new Promise((r) => setTimeout(r, 2000));
       }
     }

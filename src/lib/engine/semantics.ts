@@ -770,7 +770,7 @@ function layerGroups(b: B, nicheId: string, services: Service[], geo: SemanticCo
     const tiers: string[][] = [e.layer === "problem" ? [] : phrases];
     if (e.layer === "problem") {
       tiers.push((e.at ?? []).slice(0, 2).map((a) => `${noun} при ${a}`));
-      tiers.push(phrases.slice(0, 6).map((p) => `${p} лечение`));
+      if (isMedical(b)) tiers.push(phrases.slice(0, 6).map((p) => `${p} лечение`));
       const short = sigWords(noun).length <= 2;
       tiers.push(phrases.filter((p) => short && !hasNoun(p) && sigWords(p).length <= 4).slice(0, 8).map((p) => `${p} ${noun}`));
       tiers.push(phrases.slice(0, 8).flatMap((p) => city.slice(0, 1).map((ct) => `${p} ${ct}`)));
