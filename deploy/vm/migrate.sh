@@ -3,7 +3,7 @@
 # Переносим только в пустую базу: если таблицы уже есть, ничего не трогаем.
 set -euo pipefail
 ROOT=/opt/polny-zal
-set -a; . /etc/polny-zal.env; set +a
+while IFS= read -r l; do [ -z "$l" ] || export "$l"; done < /etc/polny-zal.env  # не через «.»: в строках подключения есть «&»
 # С этой же строкой старой базы перенос уже не удался — не повторяем каждые 5 минут; поменяют строку в Lockbox — попробуем снова
 SIG=$(printf '%s' "${NEON_DATABASE_URL:-}" | sha256sum | cut -c1-16)
 if [ -f $ROOT/migrate-failed ] && [ "$(cat $ROOT/migrate-failed)" = "$SIG" ]; then echo "migrate: с этой строкой NEON_DATABASE_URL перенос уже не удался — проверьте её в Lockbox"; exit 1; fi

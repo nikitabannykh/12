@@ -2,7 +2,7 @@
 # Робот по расписанию. Пока старый адрес (LEGACY_ORIGINS) не переключён на эту ВМ, робот здесь не запускаем:
 # иначе два сервиса одновременно управляли бы одними и теми же кампаниями.
 set -euo pipefail
-set -a; . /etc/polny-zal.env; set +a
+while IFS= read -r l; do [ -z "$l" ] || export "$l"; done < /etc/polny-zal.env  # не через «.»: в строках подключения есть «&»
 OLD=$(echo "${LEGACY_ORIGINS:-}" | cut -d, -f1)
 if [ -n "$OLD" ] && ! curl -fsSI --max-time 20 "$OLD/api/health" | grep -qi '^x-served-by: yc-vm'; then
   echo "cron: $OLD ещё работает сам — робот запускается там"; exit 0

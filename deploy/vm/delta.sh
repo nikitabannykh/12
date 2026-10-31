@@ -4,7 +4,7 @@
 set -euo pipefail
 ROOT=/opt/polny-zal
 [ -f $ROOT/migrated ] || exit 0
-set -a; . /etc/polny-zal.env; set +a
+while IFS= read -r l; do [ -z "$l" ] || export "$l"; done < /etc/polny-zal.env  # не через «.»: в строках подключения есть «&»
 [ -n "${NEON_DATABASE_URL:-}" ] || exit 0
 since=$(stat -c %Y $ROOT/migrated)
 if [ $(( $(date +%s) - since )) -gt $((3 * 86400)) ]; then systemctl disable --now polny-zal-delta.timer; exit 0; fi
