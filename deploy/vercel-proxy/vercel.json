@@ -1,0 +1,65 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "redirects": [
+    {
+      "source": "/((?!p/|_next/|api/images/|api/lead$|api/t$|t\\.js$|privacy|api/health|api/cron/|icon\\.svg|apple-icon\\.png|icon-512\\.png|favicon\\.ico).*)",
+      "destination": "https://81-26-176-249.sslip.io/$1",
+      "permanent": true
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/p/:path*",
+      "destination": "https://81-26-176-249.sslip.io/p/:path*"
+    },
+    {
+      "source": "/_next/:path*",
+      "destination": "https://81-26-176-249.sslip.io/_next/:path*"
+    },
+    {
+      "source": "/api/images/:path*",
+      "destination": "https://81-26-176-249.sslip.io/api/images/:path*"
+    },
+    {
+      "source": "/api/lead",
+      "destination": "https://81-26-176-249.sslip.io/api/lead"
+    },
+    {
+      "source": "/api/t",
+      "destination": "https://81-26-176-249.sslip.io/api/t"
+    },
+    {
+      "source": "/t.js",
+      "destination": "https://81-26-176-249.sslip.io/t.js"
+    },
+    {
+      "source": "/privacy",
+      "destination": "https://81-26-176-249.sslip.io/privacy"
+    },
+    {
+      "source": "/api/health",
+      "destination": "https://81-26-176-249.sslip.io/api/health"
+    },
+    {
+      "source": "/api/cron/run",
+      "destination": "https://81-26-176-249.sslip.io/api/cron/run"
+    },
+    {
+      "source": "/icon.svg",
+      "destination": "https://81-26-176-249.sslip.io/icon.svg"
+    },
+    {
+      "source": "/apple-icon.png",
+      "destination": "https://81-26-176-249.sslip.io/apple-icon.png"
+    },
+    {
+      "source": "/icon-512.png",
+      "destination": "https://81-26-176-249.sslip.io/icon-512.png"
+    },
+    {
+      "source": "/favicon.ico",
+      "destination": "https://81-26-176-249.sslip.io/favicon.ico"
+    }
+  ]
+}
