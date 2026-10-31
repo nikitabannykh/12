@@ -50,7 +50,25 @@ export type RenderInput = {
   price?: string;
   /** Номер сюжета иллюстрации (когда нет фото): разные объявления — разные картинки */
   variant?: number;
+  /** Выгода именно этой услуги (из serviceArt) — вместо общих преимуществ бизнеса */
+  benefit?: string;
 };
+
+/**
+ * Адрес для картинки — улица с номером дома, без города и индекса: «ул. Чайковского, 78».
+ * Раньше брали часть до первой запятой — и номер дома терялся.
+ */
+export function shortAddress(address: string | null | undefined, city: string | null | undefined): string {
+  const cityKey = (city ?? "").toLowerCase().trim();
+  const parts = (address ?? "").split(",").map((x) => x.trim()).filter(Boolean)
+    .filter((x) => !/^\d{6}$/.test(x) && x.toLowerCase() !== cityKey && !/^(г\.?|город)\s/i.test(x) && !/(область|край|россия|республика)/i.test(x));
+  const street = parts.findIndex((x) => /[а-яё]/i.test(x) && !/^\d/.test(x));
+  if (street < 0) return city ?? "";
+  const house = parts[street + 1] && /^(д\.?\s*)?\d/i.test(parts[street + 1]) ? `, ${parts[street + 1].replace(/^д\.?\s*/i, "")}` : "";
+  const st = parts[street].replace(/^улица\s+/i, "ул. ").replace(/\s+улица$/i, " ул.").replace(/^проспект\s+/i, "пр-т ").replace(/^переулок\s+/i, "пер. ").replace(/^бульвар\s+/i, "б-р ");
+  const out = `${st}${house}`;
+  return out.length > 34 ? st.slice(0, 34) : out;
+}
 
 const dataUri = (p: { data: Buffer; mime: string }) => `data:${p.mime};base64,${p.data.toString("base64")}`;
 
@@ -87,7 +105,7 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
   // Цены на картинках не пишем: цена есть в тексте объявления и уточнениях, а на картинке она старит креатив
   // и путает, когда цена меняется. Картинка продаёт настроение, результат и преимущество
   const price = "";
-  const place = inp.business.address?.split(",")[0] || inp.business.city;
+  const place = shortAddress(inp.business.address, inp.business.city) || inp.business.city;
   const layout: Layout = inp.layout;
   // На тёмных палитрах (барбершоп) «ink» светлый — для бумажного ценника берём тёмный текст
   const isLight = (hex: string) => parseInt(hex.slice(1, 3), 16) + parseInt(hex.slice(3, 5), 16) + parseInt(hex.slice(5, 7), 16) > 500;
@@ -154,7 +172,7 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
 
     case "tag": {
       // Карточка на фото — ровная, без наклона (наклонная выглядела небрежно). Без фото — по центру, крупно.
-      const tw = (wide ? 480 : 600) * u;
+      const tw = (wide ? (inp.benefit ? 580 : 480) : 600) * u;
       const pos = { left: 60 * u, bottom: 64 * u };
       el = (
         <div style={{ width: W, height: H, display: "flex", position: "relative", fontFamily: "Onest" }}>
@@ -168,6 +186,7 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
           >
             <div style={{ position: "absolute", top: 24 * u, right: 28 * u, width: 24 * u, height: 24 * u, borderRadius: 99, background: accent, display: "flex" }} />
             <div style={{ fontSize: (wide ? 42 : 52) * u, fontWeight: 700, lineHeight: 1.1, display: "flex", paddingRight: 40 * u }}>{headline}</div>
+            {inp.benefit ? <div style={{ fontSize: (wide ? 28 : 32) * u, fontWeight: 500, lineHeight: 1.25, marginTop: 12 * u, display: "flex" }}>{inp.benefit}</div> : null}
             {price ? <div style={{ fontSize: (wide ? 92 : 118) * u, fontWeight: 800, color: accent, marginTop: 14 * u, display: "flex", letterSpacing: -2 * u }}>{price}</div> : null}
             <div style={{ fontSize: 28 * u, fontWeight: 500, opacity: 0.7, marginTop: 14 * u, display: "flex" }}>{`${inp.business.name} · ${place}`}</div>
           </div>
@@ -230,7 +249,25 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
     case "benefit": {
       // Текст + рисунок: одно сильное преимущество крупно на цвете, иллюстрация ниши. Цвет и сюжет меняются от варианта
       const advs = (inp.business.advantages ?? []).map((x) => x.trim()).filter((x) => x.length >= 6 && x.length <= 70);
-      const line = advs.length ? advs[variant % advs.length] : inp.business.offer || headline;
+      // Выгода этой услуги важнее общих преимуществ бизнеса: «рейтинг 4,8» к услуге для новорождённых не подходит
+      const line = inp.benefit || (advs.length ? advs[variant % advs.length] : inp.business.offer || headline);
+      if (photo) {
+        // С фото: кадр услуги сверху (или слева на широкой), выгода крупно на цветной плашке
+        const sc0 = [{ back: accent, fore: "#FFFFFF" }, { back: bg, fore: ink }, { back: "#FFFDF8", fore: tagInk }][variant % 3];
+        el = (
+          <div style={{ width: W, height: H, display: "flex", flexDirection: wide ? "row" : "column", position: "relative", fontFamily: "Onest", background: sc0.back, color: sc0.fore }}>
+            <div style={{ display: "flex", width: wide ? W * 0.5 : W, height: wide ? H : H * 0.56, overflow: "hidden", position: "relative" }}>
+              <img src={photo} width={wide ? W * 0.5 : W} height={wide ? H : H * 0.56} style={{ width: wide ? W * 0.5 : W, height: wide ? H : H * 0.56, objectFit: "cover" }} />
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", padding: `${(wide ? 48 : 60) * u}px ${(wide ? 52 : 72) * u}px`, flex: 1 }}>
+              <div style={{ display: "flex", fontSize: (wide ? 30 : 34) * u, fontWeight: 700, opacity: 0.8 }}>{headline}</div>
+              <div style={{ display: "flex", fontSize: (line.length > 34 ? (wide ? 50 : 64) : (wide ? 60 : 76)) * u, fontWeight: 800, lineHeight: 1.02, letterSpacing: -2 * u }}>{line}</div>
+              <div style={{ display: "flex", fontSize: (wide ? 26 : 30) * u, fontWeight: 600, opacity: 0.8 }}>{`${inp.business.name} · ${place}`}</div>
+            </div>
+          </div>
+        );
+        break;
+      }
       const schemes = [
         { back: accent, fore: "#FFFFFF", sub: "rgba(255,255,255,0.85)", illo: { ink, accent: "#FFFDF8", bg } },
         { back: bg, fore: ink, sub: ink, illo: n.palette },

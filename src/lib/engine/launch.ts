@@ -10,7 +10,7 @@ import { buildSemanticCore, geoTerms, reachKeywords, refineWithDirect, type Sema
 import { applyWordstat } from "./wordstat";
 import { demandForCore } from "./demand";
 import { aiConfigured } from "../ai/yandex";
-import { generatePhotos, listPhotos, makeCreative, getImage, ensureLogo, imageSet } from "./images";
+import { generateServicePhotos, listPhotos, makeCreative, getImage, ensureLogo, imageSet, serviceArt, type ServiceArt } from "./images";
 import { adExtras, responsiveAssets, timeTargeting, withPlanCallouts } from "./extras";
 import { availableLayouts, type Layout } from "../creative/render";
 import type { Channel, CampaignSpec, PlatformClient } from "../platforms/types";
@@ -62,6 +62,8 @@ export type LaunchPlan = {
   callouts: string[];
   imageIdeas: string[];
   photoIds: string[];
+  /** Арт-концепты по услугам: подпись и выгода для картинки, сгенерированное под услугу фото */
+  art?: ServiceArt[];
   dropped: Channel[];
   warnings: string[];
   /** Семантическое ядро: проверки (частотность и дубли в Директе, расширение моделью) и гео из адреса. Сами фразы — в группах поиска */
@@ -374,31 +376,36 @@ export const MEDICAL_NOTE =
 export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Date.now() + 40_000): Promise<{ plan: LaunchPlan; done: boolean; made: number; total: number; steps: number; stepsDone: number }> {
   const warnings = [...plan.warnings];
   let photoIds = plan.stage === "images" ? plan.photoIds : [];
+  let arts: ServiceArt[] = plan.stage === "images" ? plan.art ?? [] : [];
   if (plan.stage !== "images") {
     const own = await listPhotos(b.id);
     photoIds = own.filter((p) => p.kind === "photo").map((p) => p.id);
-    const generatedBefore = own.filter((p) => p.kind === "generated").map((p) => p.id);
-    // Фото с карточки (2ГИС, Яндекс Карты) — максимум два; остальное — сгенерированные кадры под услуги.
-    // Объявления в группе получают разные картинки, и робот A/B-тестом оставляет ту, после которой чаще обращаются
-    // Свои фото и сгенерированные — вперемешку (своё, новое, своё, новое): иначе первые услуги и группы получали
-    // только фото владельца, а сгенерированные кадры почти не попадали в объявления
+    // Фото владельца — максимум два; остальное — кадры, сгенерированные под каждую услугу отдельно (своя подпись,
+    // своя выгода, свой сюжет). Объявления в группе получают разные картинки, робот A/B-тестом оставляет лучшую
     const own2 = photoIds.slice(0, 2);
-    const wantGen = Math.max(2, 4 - own2.length);
     const mix = (a: string[], g: string[]) => {
       const out: string[] = [];
-      for (let i = 0; i < Math.max(a.length, g.length); i++) out.push(...(a[i] ? [a[i]] : []), ...(g[i] ? [g[i]] : []));
-      return [...new Set(out)].slice(0, 4);
+      for (let i = 0; i < Math.max(a.length, g.length); i++) out.push(...(g[i] ? [g[i]] : []), ...(a[i] ? [a[i]] : []));
+      return [...new Set(out)].slice(0, 6);
     };
-    if (generatedBefore.length >= wantGen) photoIds = mix(own2, generatedBefore);
-    else {
-      const g = await generatePhotos(b, plan.imageIdeas, wantGen - generatedBefore.length);
-      photoIds = mix(own2, [...g.ids, ...generatedBefore]);
-      if (!photoIds.length) photoIds = own.filter((p) => p.kind === "photo").map((p) => p.id).slice(0, 4);
-      if (g.errors.length) warnings.push(/denied|доступ|permission|403/i.test(g.errors[0])
-        ? "Новые картинки не сгенерировались: у сервисного аккаунта Yandex Cloud нет роли ai.imageGeneration.user — объявления пока только с вашими фото и макетами"
-        : `Часть картинок не сгенерировалась: ${g.errors[0]}`);
-    }
+    const want = Math.min(5, Math.max(3, (b.services ?? []).filter((x) => x.name).length));
+    arts = await serviceArt(b, plan.imageIdeas, want, { until: deadline - 20_000 });
+    // Кадры, уже сгенерированные под ту же услугу (повторная подготовка), берём снова — не платим дважды
+    const before = own.filter((p) => p.kind === "generated");
+    arts = arts.map((a) => ({ ...a, photoId: before.find((p) => p.prompt?.startsWith(`${a.service} :: `))?.id ?? null }));
+    const g = await generateServicePhotos(b, arts);
+    arts = g.items;
+    const gen = arts.map((a) => a.photoId).filter((x): x is string => Boolean(x));
+    photoIds = mix(own2, gen.length ? gen : before.map((p) => p.id));
+    if (!photoIds.length) photoIds = own.filter((p) => p.kind === "photo").map((p) => p.id).slice(0, 4);
+    if (g.errors.length) warnings.push(/denied|доступ|permission|403/i.test(g.errors[0])
+      ? "Новые картинки не сгенерировались: у сервисного аккаунта Yandex Cloud нет роли ai.imageGeneration.user — объявления пока только с вашими фото и макетами"
+      : `Часть картинок не сгенерировалась: ${g.errors[0]}`);
   }
+  const ownSet = new Set(photoIds.filter((id) => !arts.some((a) => a.photoId === id)));
+  const ownList = [...ownSet];
+  const artFor = (name?: string | null) => (name ? arts.find((a) => a.service === name) : undefined);
+  const artAt = (i: number) => (arts.length ? arts[i % arts.length] : undefined);
   const creatives: Record<string, string> = { ...(plan.creatives ?? {}) };
   const setsDone = new Set(plan.imageSetsDone ?? []);
   const layouts = availableLayouts(b, photoIds.length > 0);
@@ -406,8 +413,8 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
   let made = 0;
   let outOfTime = false;
   const timeUp = () => (outOfTime ||= Date.now() > deadline);
-  const creative = async (p: { layout: Layout; photoId: string | null; width: number; height: number; headline?: string; price?: string }) => {
-    const key = [p.layout, p.photoId ?? "-", p.width, p.height, p.headline ?? "", p.price ?? ""].join("|");
+  const creative = async (p: { layout: Layout; photoId: string | null; width: number; height: number; headline?: string; price?: string; benefit?: string }) => {
+    const key = [p.layout, p.photoId ?? "-", p.width, p.height, p.headline ?? "", p.price ?? "", p.benefit ?? ""].join("|");
     if (creatives[key]) return creatives[key];
     const img = await makeCreative(b, p);
     creatives[key] = img.id;
@@ -430,10 +437,12 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
         try {
           // Группы поиска чередуют: фото с карточкой услуги — и рисунок с преимуществом без фото,
           // чтобы у разных услуг были разные картинки, а не одно и то же фото везде
-          const withPhoto = photoIds.length > 0 && (groups.length % 2 === 0 || !layouts.includes("benefit"));
-          const layout: Layout = withPhoto ? "tag" : layouts.includes("benefit") ? "benefit" : "tag";
-          const photoId = withPhoto ? photoIds[(service ? (b.services ?? []).indexOf(service) : k++) % photoIds.length] ?? photoIds[0] : null;
-          imageId = await creative({ layout, photoId, width: 1080, height: 607, headline: service?.name ?? g.name, price: service?.price });
+          // Своя картинка у каждой услуги: кадр, сгенерированный под неё, человеческая подпись и её выгода.
+          // Макеты чередуются: подпись на фото — выгода с фото
+          const a = artFor(service?.name ?? g.service ?? g.name) ?? artAt(k++);
+          const layout: Layout = groups.length % 2 === 0 || !layouts.includes("benefit") ? "tag" : "benefit";
+          const photoId = a?.photoId ?? (photoIds.length ? photoIds[(service ? (b.services ?? []).indexOf(service) : k) % photoIds.length] ?? photoIds[0] : null);
+          imageId = await creative({ layout: photoId || layout === "benefit" ? layout : "tag", photoId, width: 1080, height: 607, headline: a?.headline ?? service?.name ?? g.name, price: service?.price, benefit: a?.benefit || undefined });
         } catch (e) {
           warnings.push(`Картинка для поиска «${g.name}»: ${errorText(e)}`);
         }
@@ -459,11 +468,14 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
           : layouts.filter((l) => l !== "photo");
         const shift = i + groups.length + channels.length;
         const layout = pool[shift % pool.length] ?? "tag";
-        const noPhoto = layout === "benefit" || layout === "offer";
-        const photoId = photoIds.length && !noPhoto ? photoIds[shift % photoIds.length] : null;
+        // Картинка под услугу группы (у групп аудиторий — по кругу): подпись и выгода этой услуги, её кадр.
+        // Каждое третье объявление — со своим фото владельца, если оно есть
+        const a = artFor(g.service ?? g.name) ?? artAt(shift);
+        const ownPick = ownList.length && shift % 3 === 0 ? ownList[shift % ownList.length] : null;
+        const photoId = layout === "offer" ? null : ownPick ?? a?.photoId ?? (photoIds.length ? photoIds[shift % photoIds.length] : null);
         const wide = net && i % 2 === 1;
         try {
-          const imageId = await creative({ layout, photoId, width: 1080, height: wide ? 607 : 1080, headline: svc?.name, price: svc?.price });
+          const imageId = await creative({ layout, photoId, width: 1080, height: wide ? 607 : 1080, headline: a?.headline ?? svc?.name, price: svc?.price, benefit: a?.benefit || undefined });
           ads.push({ ...ad, imageId, layout });
         } catch (e) {
           warnings.push(`Картинка для «${ad.title}»: ${errorText(e)}`);
@@ -494,7 +506,7 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
   const steps = allAds.length + directImages.size;
   const stepsDone = allAds.length - pending + [...directImages].filter((id) => setsDone.has(id)).length;
   const done = !outOfTime;
-  const next: LaunchPlan = { ...plan, channels, photoIds, creatives, imageSetsDone: [...setsDone], stage: done ? "ready" : "images", warnings: [...new Set(warnings)] };
+  const next: LaunchPlan = { ...plan, channels, photoIds, art: arts, creatives, imageSetsDone: [...setsDone], stage: done ? "ready" : "images", warnings: [...new Set(warnings)] };
   return { plan: next, done, made, total: allAds.length - pending, steps, stepsDone: done ? steps : stepsDone };
 }
 
@@ -588,6 +600,7 @@ export async function saveImagesStep(businessId: string, before: LaunchPlan, aft
           }
         }
     fresh.photoIds = after.photoIds;
+    fresh.art = after.art;
     fresh.creatives = after.creatives;
     fresh.imageSetsDone = after.imageSetsDone;
     fresh.warnings = [...new Set([...fresh.warnings, ...added])];

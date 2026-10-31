@@ -4,10 +4,11 @@ import { and, asc, count, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import { uid } from "../util";
 import { imageSize } from "../creative/imagesize";
-import { renderCreative, renderLogo, type Layout } from "../creative/render";
+import { renderCreative, renderLogo, shortHeadline, type Layout } from "../creative/render";
+import { withoutSuperlatives } from "./extras";
 import type { Business } from "../db/schema";
 import { aiConfigured, art, gptJson } from "../ai/yandex";
-import { nicheById } from "../niches";
+import { isMedical, nicheById } from "../niches";
 
 /**
  * Сжимаем перед записью в базу: PNG из рендера весит 1–3 МБ, тот же кадр в JPEG — 150–300 КБ.
@@ -88,8 +89,8 @@ export function photoPrompts(b: Business, ideas: string[] = []) {
   const scene = n.visuals[0];
   const fromServices = services.slice(0, 3).map(
     (svc, i) =>
-      `Реалистичная рекламная фотография для ${n.label.toLowerCase()}: «${svc}». Крупный план результата услуги или процесса, ` +
-      `руки мастера или клиента без лица, интерьер уютного салона в ${b.city}. ${i === 0 ? "Мягкий утренний свет из окна." : i === 1 ? "Тёплый вечерний свет, детали материалов." : "Светлый минималистичный фон, акцент на результате."}`,
+      `Реалистичная рекламная фотография для ${n.label.toLowerCase()}: «${svc}». Крупный план результата услуги или процесса — ` +
+      `то, что увидит клиент именно этой услуги; люди без лиц в кадре. ${i === 0 ? "Мягкий утренний свет из окна." : i === 1 ? "Тёплый вечерний свет, детали материалов." : "Светлый минималистичный фон, акцент на результате."}`,
   );
   return [...fromServices, ...ideas, scene].slice(0, 3);
 }
@@ -118,6 +119,72 @@ async function creativeConcepts(b: Business, ideas: string[], count: number): Pr
   return photoPrompts(b, ideas);
 }
 
+/** Сюжет картинки под конкретную услугу: человеческий заголовок, выгода именно этой услуги и кадр для YandexART */
+export type ServiceArt = { service: string; headline: string; benefit: string; scene: string; photoId?: string | null };
+
+/** Строка для картинки: без кавычек и лишних пробелов, не длиннее max, без хвостовой пунктуации */
+const cleanLine = (s: unknown, max: number) => String(s ?? "").replace(/[«»"]/g, "").replace(/\s+/g, " ").trim().slice(0, max).replace(/[\s,.;:–—-]+$/, "");
+
+/**
+ * Для каждой услуги — свой арт-концепт (одним запросом к YandexGPT): заголовок для картинки так, как сказал бы клиент
+ * («Остеопатия (новорождённые и дети до 14 лет)» → «Остеопат для малышей с рождения»), выгода этой услуги для её аудитории
+ * и кадр, который снимал бы фотограф именно под эту услугу (малыш и руки мамы, блюдо крупно, зал с ковриками…).
+ * Не вышло — заголовок из названия без скобок, кадр по шаблону ниши.
+ */
+export async function serviceArt(b: Business, ideas: string[], count: number, opts: { until?: number } = {}): Promise<ServiceArt[]> {
+  const n = nicheById(b.niche);
+  const services = spreadServices((b.services ?? []).filter((s) => s.name), Math.max(1, count)).map((s) => s.name).slice(0, Math.max(1, count));
+  const list = services.length ? services : [n.id === "other" ? b.name : n.generic];
+  const fallback = (): ServiceArt[] => {
+    const prompts = photoPrompts(b, ideas);
+    return list.map((svc, i) => ({ service: svc, headline: shortHeadline(svc), benefit: "", scene: prompts[i % prompts.length] }));
+  };
+  if (!aiConfigured()) return fallback();
+  try {
+    const r = await gptJson<{ items: { service: number; headline: string; benefit: string; scene: string }[] }>(
+      "Ты арт-директор и копирайтер рекламы малого бизнеса. Для каждой услуги готовишь рекламную картинку, которая выглядит как работа живого фотографа и дизайнера, а не нейросети.\n" +
+        "headline — подпись на картинке, до 32 символов: услуга так, как её назвал бы клиент, живо и кликабельно. Не копируй название из прайса: без скобок, кодов, перечислений, канцелярита. «Остеопатия (новорождённые и дети до 14 лет)» → «Остеопат для малышей с рождения».\n" +
+        "benefit — до 45 символов: зачем эта услуга именно её аудитории, по смыслу услуги. Только факты из описания бизнеса или очевидная суть услуги; нельзя выдумывать рейтинги, цифры, скидки, сроки, гарантии и «лучший».\n" +
+        "scene — 1–2 предложения для фотогенератора: что в кадре под ЭТУ услугу и её аудиторию (дети — ребёнок и руки взрослого; еда — само блюдо; спорт — движение в зале), свет, цвет, ракурс. Каждая сцена — свой приём: макро-деталь, процесс, результат, атмосфера места, натюрморт. " +
+        "Нельзя: текст и надписи в кадре, логотипы, крупные лица, обнажённое тело, медицинские страшилки, стоковые улыбки.\n" +
+        (isMedical(b) ? "Это медицинские услуги: в headline и benefit не обещай излечение, результат и безопасность, не пиши «без боли», «эффективно», «поможем», не предполагай болезнь у читателя. Можно — для кого приём и что в него входит.\n" : "") +
+        'Ответ — JSON {"items": [{"service": номер, "headline": "...", "benefit": "...", "scene": "..."}]}.',
+      `Бизнес: ${b.name}, ${n.label}, город ${b.city}.\n${b.description ? `Описание: ${b.description.slice(0, 500)}\n` : ""}${(b.advantages ?? []).length ? `Преимущества: ${(b.advantages ?? []).join("; ")}\n` : ""}${ideas.length ? `Идеи для картинок: ${ideas.join("; ")}\n` : ""}Услуги:\n${list.map((x, i) => `${i + 1}. ${x}`).join("\n")}`,
+      { temperature: 0.8, maxTokens: 1600, timeoutMs: 20_000, until: opts.until },
+    );
+    const base = fallback();
+    const out = base.map((f, i) => {
+      const it = (r.items ?? []).find((x) => Number(x.service) === i + 1) ?? (r.items ?? [])[i];
+      if (!it) return f;
+      const headline = cleanLine(it.headline, 34);
+      const scene = String(it.scene ?? "").trim();
+      return { service: f.service, headline: headline.length >= 6 ? headline : f.headline, benefit: withoutSuperlatives(cleanLine(it.benefit, 48)) || "", scene: scene.length > 20 ? scene : f.scene };
+    });
+    return out;
+  } catch {
+    return fallback();
+  }
+}
+
+/** Фото YandexART под каждую услугу (кадр из serviceArt). Каждое сохраняем сразу — оплаченные кадры не пропадут при обрыве */
+export async function generateServicePhotos(b: Business, items: ServiceArt[]): Promise<{ items: ServiceArt[]; errors: string[] }> {
+  if (!aiConfigured() || !items.length) return { items, errors: [] };
+  const style = "Рекламная фотосъёмка, фотореализм, как снял живой фотограф: естественный свет, настоящие материалы, лёгкая плёночная зернистость, неидеальные детали. Без текста, без надписей, без логотипов, без водяных знаков";
+  const seed = Math.floor(Math.random() * 1e6);
+  const errors: string[] = [];
+  const out = await Promise.all(items.map(async (it, i) => {
+    if (it.photoId) return it;
+    try {
+      const img = await art(`${style}. ${it.scene}`, { w: 1, h: 1 }, seed + i);
+      return { ...it, photoId: (await saveImage(b.id, "generated", img, { prompt: `${it.service} :: ${it.scene}` })).id };
+    } catch (e) {
+      errors.push(String((e as Error)?.message ?? e));
+      return it;
+    }
+  }));
+  return { items: out, errors };
+}
+
 /** Реалистичные фото через YandexART: каждый кадр — свой сюжет и приём. Без текста и крупных лиц. */
 export async function generatePhotos(b: Business, ideas: string[], count: number) {
   if (!aiConfigured() || count <= 0) return { ids: [] as string[], errors: [] as string[] };
@@ -143,7 +210,7 @@ export async function generatePhotos(b: Business, ideas: string[], count: number
  * variant — сюжет иллюстрации для картинок без фото. Если не передан, берём следующий по счёту
  * для этого бизнеса: так объявления в группе и между группами получают разные картинки.
  */
-export async function makeCreative(b: Business, p: { layout: Layout; photoId?: string | null; width: number; height: number; headline?: string; price?: string; variant?: number }) {
+export async function makeCreative(b: Business, p: { layout: Layout; photoId?: string | null; width: number; height: number; headline?: string; price?: string; variant?: number; benefit?: string }) {
   const photo = p.photoId ? await getImage(p.photoId) : null;
   let variant = p.variant;
   if (variant === undefined && !photo) {
@@ -160,8 +227,16 @@ export async function makeCreative(b: Business, p: { layout: Layout; photoId?: s
     headline: p.headline,
     price: p.price,
     variant,
+    benefit: p.benefit,
   });
-  return saveImage(b.id, "creative", png, { layout: p.layout, prompt: p.photoId ?? undefined });
+  const saved = await saveImage(b.id, "creative", png, { layout: p.layout, prompt: p.photoId ?? undefined });
+  // Подпись и выгода картинки — чтобы те же пропорции (imageSet) рисовались с тем же текстом, кто бы их ни дорисовывал
+  if (p.headline || p.benefit) {
+    const db = await getDb();
+    const value = { headline: p.headline ?? null, benefit: p.benefit ?? null, variant: variant ?? 0 };
+    await db.insert(schema.kv).values({ key: `imgctx:${saved.id}`, value }).onConflictDoUpdate({ target: schema.kv.key, set: { value, updatedAt: new Date() } });
+  }
+  return saved;
 }
 
 /** Логотип бизнеса для VK: создаём один раз и переиспользуем */
@@ -200,6 +275,8 @@ export async function imageSet(b: Business, baseImageId: string, ctx: { headline
   const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, key));
   const known = { ...((row?.value as Record<string, string> | undefined) ?? {}) };
   for (const [r, id] of Object.entries(known)) if (!(await db.select({ id: schema.images.id }).from(schema.images).where(eq(schema.images.id, id))).length) delete known[r];
+  const [ctxRow] = await db.select().from(schema.kv).where(eq(schema.kv.key, `imgctx:${baseImageId}`));
+  const saved = ctxRow?.value as { headline?: string | null; benefit?: string | null; variant?: number } | undefined;
   const own = ratioKey(base.width, base.height);
   const srcPhoto = base.prompt?.startsWith("img_") ? base.prompt : null;
   // Владелец удалил исходное фото — новые пропорции без него получились бы другой картинкой, не дорисовываем
@@ -210,7 +287,7 @@ export async function imageSet(b: Business, baseImageId: string, ctx: { headline
     if (r === own || known[r] || photoGone) continue;
     if (ctx.until && Date.now() > ctx.until) break; // не успеваем — остальные пропорции дорисуем в следующем шаге
     try {
-      const img = await makeCreative(b, { layout: base.layout as Layout, photoId: srcPhoto, width: sz.width, height: sz.height, headline: ctx.headline, price: ctx.price, variant: 0 });
+      const img = await makeCreative(b, { layout: base.layout as Layout, photoId: srcPhoto, width: sz.width, height: sz.height, headline: saved?.headline ?? ctx.headline, benefit: saved?.benefit ?? undefined, price: ctx.price, variant: saved?.variant ?? 0 });
       known[r] = img.id;
       changed = true;
     } catch {
@@ -259,7 +336,7 @@ export async function collectGarbageImages(opts: { ignorePlanOf?: string; minAge
   const ids = [...dead];
   for (let i = 0; i < ids.length; i += 200) await db.delete(schema.images).where(inArray(schema.images.id, ids.slice(i, i + 200)));
   // Кэш-записи, указывающие на удалённое, больше не нужны
-  const caches = [...sets, ...(await db.select().from(schema.kv).where(like(schema.kv.key, "ownphoto:%")))];
+  const caches = [...sets, ...(await db.select().from(schema.kv).where(like(schema.kv.key, "ownphoto:%"))), ...(await db.select().from(schema.kv).where(like(schema.kv.key, "imgctx:%")))];
   const staleKeys = caches.filter((r) => dead.has(r.key.split(":")[1]) || [...JSON.stringify(r.value).matchAll(/img_[A-Za-z0-9_-]+/g)].some((m) => dead.has(m[0]))).map((r) => r.key);
   for (let i = 0; i < staleKeys.length; i += 200) await db.delete(schema.kv).where(inArray(schema.kv.key, staleKeys.slice(i, i + 200)));
   // Тяжёлые фото владельца → JPEG
