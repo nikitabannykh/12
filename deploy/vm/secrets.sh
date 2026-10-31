@@ -14,7 +14,7 @@ if [ -n "$SID" ]; then
   CODE=$(echo "$PAYLOAD" | tail -n1)
   if [ "$CODE" != "200" ]; then echo "secrets: Lockbox $SID ответил $CODE: $(echo "$PAYLOAD" | head -c 300)"; PAYLOAD='{"entries":[]}'; else PAYLOAD=$(echo "$PAYLOAD" | sed '$d'); fi
   echo "$PAYLOAD" \
-    | jq -r '.entries[] | select((.textValue // "") | (length > 8 and (test("^(-|TODO|ВСТАВ|ЗАПОЛН)") | not))) | "\(.key)=\(.textValue | gsub("\n"; "\\n"))"' > "$TMP"
+    | jq -r '.entries[] | .textValue = ((.textValue // "") | gsub("^\\s+|\\s+$"; "")) | select(.textValue | (length > 8 and (test("^(-|TODO|ВСТАВ|ЗАПОЛН)") | not))) | "\(.key)=\(.textValue | gsub("\n"; "\\n"))"' > "$TMP"
 fi
 # Несекретные настройки (ClientID приложений, каталог) — в метаданных ВМ, ключ app-env: строки KEY=VALUE
 curl -fsS -H "$H" $MD/attributes/app-env 2>/dev/null | grep -E '^[A-Z_][A-Z0-9_]*=' | while IFS= read -r line; do
