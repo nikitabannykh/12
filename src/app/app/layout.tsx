@@ -49,10 +49,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <div className="min-w-0">
           <header className="md:hidden flex items-center justify-between gap-2 px-4 h-14 border-b border-line bg-card">
             <Link href="/app"><Logo size={24} /></Link>
+            {/* На телефоне проекты переключаются в меню профиля: в шапке не помещаются */}
             <div className="flex items-center gap-1.5 min-w-0">
-              <ProjectSwitcher projects={projects} current={b?.id ?? null} limit={limit} variant="top" />
               {b ? <BellMenu /> : null}
-              <ProfileMenu email={user.email} label={who(user)} />
+              <ProfileMenu email={user.email} label={who(user)} projects={{ list: projects, current: b?.id ?? null, limit }} />
             </div>
           </header>
           {/* Шапка справа: уведомления и профиль */}

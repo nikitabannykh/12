@@ -39,7 +39,8 @@ const STATUS: Record<string, string> = { active: "реклама идёт", laun
  * Переключатель проектов: «Студия Лак ▾» → список своих бизнесов и «+ Новый проект».
  * Выбор хранится на сервере (users.current_business_id) — все страницы и API работают с выбранным.
  */
-export function ProjectSwitcher({ projects, current, limit, variant }: { projects: ProjectLite[]; current: string | null; limit: number; variant: "side" | "top" }) {
+/** variant "inline" — список сразу, без кнопки (внутри меню профиля на телефоне); onPicked — закрыть это меню */
+export function ProjectSwitcher({ projects, current, limit, variant, onPicked }: { projects: ProjectLite[]; current: string | null; limit: number; variant: "side" | "top" | "inline"; onPicked?: () => void }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -62,7 +63,10 @@ export function ProjectSwitcher({ projects, current, limit, variant }: { project
   }, [open]);
 
   async function pick(id: string) {
-    if (id === current) return setOpen(false);
+    if (id === current) {
+      onPicked?.();
+      return setOpen(false);
+    }
     const fresh = id === "new";
     // Уже на несохранённой анкете — начать заново можно, но сначала спросим, если там что-то введено
     if (fresh && !current && hasNewProjectDraft() && !window.confirm("Начать новый проект с чистой анкеты? Несохранённые данные текущей анкеты удалятся.")) return;
@@ -70,6 +74,7 @@ export function ProjectSwitcher({ projects, current, limit, variant }: { project
     try {
       const r = await api<{ next: string }>("POST", "/api/projects", { id });
       setOpen(false);
+      onPicked?.();
       if (fresh) {
         // Черновик прошлой несохранённой анкеты не подставляем, а метка в адресе пересоздаёт анкету,
         // даже если мы уже на /app/start (иначе Next оставлял старое состояние и «ничего не происходило»)
@@ -85,21 +90,8 @@ export function ProjectSwitcher({ projects, current, limit, variant }: { project
   }
 
   const full = projects.length >= limit;
-  return (
-    <div ref={ref} className={`relative ${variant === "top" ? "min-w-0 max-w-[60%]" : ""}`}>
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-        className={`w-full flex items-center gap-2 rounded-lg text-left font-semibold hover:bg-paper ${variant === "side" ? "px-2 py-2 border border-line" : "px-2 py-1.5 text-sm"}`}
-      >
-        <span className="grid place-items-center size-7 shrink-0 rounded-md bg-mark text-ink text-sm font-extrabold" aria-hidden>{cur ? (label.trim()[0] ?? "+").toUpperCase() : "+"}</span>
-        <span className="min-w-0 flex-1 truncate">{label}</span>
-        <ChevronDown size={16} className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open ? (
-        <div className={`absolute z-50 mt-1.5 card shadow-lg p-1.5 ${variant === "top" ? "right-0 w-72 max-w-[calc(100vw-2rem)]" : "inset-x-0"}`} role="listbox" aria-label="Проекты">
+  const list = (
+    <>
           <p className="px-2.5 pt-1.5 pb-1 text-xs font-semibold text-faint uppercase tracking-wide">Проекты</p>
           {projects.map((p) => (
             <button key={p.id} type="button" role="option" aria-selected={p.id === current} disabled={busy !== null} onClick={() => pick(p.id)} className={`w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left ${p.id === current ? "bg-paper shadow-[inset_3px_0_0_var(--color-ink)]" : "hover:bg-paper"}`}>
@@ -126,6 +118,25 @@ export function ProjectSwitcher({ projects, current, limit, variant }: { project
             </button>
             {full ? <p className="px-2.5 pb-1.5 text-xs text-muted">Можно до {limit} проектов{limit === 3 ? " в демо" : ""}.</p> : <p className="px-2.5 pb-1.5 text-xs text-muted">Другой салон или филиал — со своей анкетой и рекламой.</p>}
           </div>
+            </>
+  );
+  if (variant === "inline") return <div role="listbox" aria-label="Проекты">{list}</div>;
+  return (
+    <div ref={ref} className={`relative ${variant === "top" ? "min-w-0 max-w-[60%]" : ""}`}>
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={`w-full flex items-center gap-2 rounded-lg text-left font-semibold hover:bg-paper ${variant === "side" ? "px-2 py-2 border border-line" : "px-2 py-1.5 text-sm"}`}
+      >
+        <span className="grid place-items-center size-7 shrink-0 rounded-md bg-mark text-ink text-sm font-extrabold" aria-hidden>{cur ? (label.trim()[0] ?? "+").toUpperCase() : "+"}</span>
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <ChevronDown size={16} className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open ? (
+        <div className={`absolute z-50 mt-1.5 card shadow-lg p-1.5 ${variant === "top" ? "right-0 w-72 max-w-[calc(100vw-2rem)]" : "inset-x-0"}`} role="listbox" aria-label="Проекты">
+          {list}
         </div>
       ) : null}
     </div>

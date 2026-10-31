@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, LogOut, Settings, CircleAlert, CheckCircle2, Info, TriangleAlert } from "lucide-react";
+import { ProjectSwitcher, type ProjectLite } from "./ProjectSwitcher";
 
 type Item = { id: string; at: string; tone: "good" | "bad" | "warn" | "info"; title: string; text?: string; href?: string; group: "now" | "event"; unread: boolean };
 
@@ -113,7 +114,8 @@ function Row({ x, onGo }: { x: Item; onGo: () => void }) {
   return x.href ? <Link href={x.href} onClick={onGo} className="block">{body}</Link> : body;
 }
 
-export function ProfileMenu({ email, label }: { email: string; label: string }) {
+/** projects — на телефоне переключение проектов живёт здесь: в шапке ему не хватает места */
+export function ProfileMenu({ email, label, projects }: { email: string; label: string; projects?: { list: ProjectLite[]; current: string | null; limit: number } }) {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   const ref = useOutside(open, close);
@@ -125,7 +127,12 @@ export function ProfileMenu({ email, label }: { email: string; label: string }) 
         <span className="hidden sm:block text-sm font-semibold max-w-[12rem] truncate">{label}</span>
       </button>
       {open ? (
-        <div className="absolute right-0 mt-2 w-64 rounded-2xl bg-card ring-1 ring-black/[0.08] shadow-xl z-50 p-2">
+        <div className={`absolute right-0 mt-2 ${projects ? "w-72 max-w-[calc(100vw-2rem)] max-h-[75vh] overflow-y-auto" : "w-64"} rounded-2xl bg-card ring-1 ring-black/[0.08] shadow-xl z-50 p-2`}>
+          {projects ? (
+            <div className="border-b border-line mb-1.5 pb-1.5">
+              <ProjectSwitcher projects={projects.list} current={projects.current} limit={projects.limit} variant="inline" onPicked={close} />
+            </div>
+          ) : null}
           <div className="px-2 py-2 text-sm text-muted truncate">{email}</div>
           <Link href="/app/settings" onClick={close} className="flex items-center gap-2 rounded-lg px-2 py-2 text-sm font-semibold hover:bg-paper"><Settings size={16} /> Настройки</Link>
           <form action="/api/auth/logout" method="post">
