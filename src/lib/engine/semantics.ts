@@ -608,9 +608,10 @@ export function buildSemanticCore(b: B, opts: { maxGroups?: number; perGroup?: n
     }
     if (kws.length >= SEM.minGroup) {
       groups.unshift({
+        // Объявления и картинка этой группы — про сам запрос («Доставка еды»), а не про первую позицию прайса
         name: cap(topics[0]),
-        service: services[0]?.name ?? (niche.id === "other" ? b.name : niche.generic),
-        services: services.slice(0, 5).map((x) => x.name),
+        service: cap(topics[0]),
+        services: [cap(topics[0])],
         category: "",
         concepts: [],
         keywords: kws,

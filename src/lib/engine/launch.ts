@@ -389,7 +389,9 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
       return [...new Set(out)].slice(0, 6);
     };
     const want = Math.min(5, Math.max(3, (b.services ?? []).filter((x) => x.name).length));
-    arts = await serviceArt(b, plan.imageIdeas, want, { until: deadline - 20_000 });
+    // Картинки — под то, что ищут: сначала группы поиска (общая «Доставка еды», затем услуги), потом остальные услуги
+    const subjects = [...new Set([...plan.channels.filter((c) => c.enabled).flatMap((c) => c.groups.filter((g) => (g.layer ?? "service") === "service").map((g) => g.service ?? g.name)), ...(b.services ?? []).map((s) => s.name)].filter(Boolean))];
+    arts = await serviceArt(b, plan.imageIdeas, Math.max(want, Math.min(6, subjects.length)), { until: deadline - 20_000, subjects });
     // Кадры, уже сгенерированные под ту же услугу (повторная подготовка), берём снова — не платим дважды
     const before = own.filter((p) => p.kind === "generated");
     arts = arts.map((a) => ({ ...a, photoId: before.find((p) => p.prompt?.startsWith(`${a.service} :: `))?.id ?? null }));
