@@ -64,6 +64,8 @@ export type Found = {
   review?: string;
   rating?: Rating;
   photos?: string[];
+  /** Подписи к фото (ссылка → что на нём: alt картинки или название позиции, к которой она приложена) */
+  photoCaptions?: Record<string, string>;
   /** Видимый текст страницы — для определения сферы и для YandexGPT */
   text?: string;
   /** Ссылки, найденные внутри источника (сайт из карточки Карт, онлайн-запись), — прочитаем их тоже */
@@ -101,6 +103,8 @@ export type Draft = {
   review: string | null;
   rating: Rating | null;
   photos: string[];
+  /** Подписи к фото — сохраняем вместе с фото, чтобы позиция получала свою картинку */
+  photoCaptions?: Record<string, string>;
   /** Поле → подпись источника («из 2ГИС») */
   sources: Partial<Record<DraftField, string>>;
   reports: ImportReport[];

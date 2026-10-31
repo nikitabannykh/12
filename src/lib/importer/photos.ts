@@ -44,7 +44,7 @@ export async function downloadPhoto(url: string): Promise<Buffer | null> {
 }
 
 /** Скачать и сохранить фото бизнеса (kind "photo" — как загруженные владельцем) */
-export async function importPhotos(businessId: string, urls: string[], limit = IMPORT_PHOTOS): Promise<{ saved: number; skipped: number }> {
+export async function importPhotos(businessId: string, urls: string[], limit = IMPORT_PHOTOS, captions: Record<string, string> = {}): Promise<{ saved: number; skipped: number }> {
   const room = Math.max(0, MAX_PHOTOS - (await ownerPhotoIds(businessId)).length);
   const want = Math.min(limit, room);
   if (!want) return { saved: 0, skipped: urls.length };
@@ -52,10 +52,12 @@ export async function importPhotos(businessId: string, urls: string[], limit = I
   const list = urls.slice(0, FOUND_PHOTOS);
   // По 4 параллельно — быстрее, но без лавины запросов к одному хосту
   for (let i = 0; i < list.length && saved < want; i += 4) {
-    const bufs = await Promise.all(list.slice(i, i + 4).map(downloadPhoto));
-    for (const b of bufs) {
+    const part = list.slice(i, i + 4);
+    const bufs = await Promise.all(part.map(downloadPhoto));
+    for (const [j, b] of bufs.entries()) {
       if (!b || saved >= want) continue;
-      await saveImage(businessId, "photo", b);
+      // Подпись («Сет Свежесть») — в prompt: по ней позиция получит своё фото, а не сгенерированное
+      await saveImage(businessId, "photo", b, captions[part[j]] ? { prompt: `caption:${captions[part[j]]}` } : {});
       saved++;
     }
   }

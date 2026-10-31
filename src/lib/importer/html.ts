@@ -257,7 +257,7 @@ export function blocks(html: string, max = 4000): Block[] {
 
 // ─── Фото: все осмысленные картинки страницы ─────────────────────────────
 
-export type PhotoCand = { url: string; key: string; width: number; height: number; score: number; order: number };
+export type PhotoCand = { url: string; key: string; width: number; height: number; score: number; order: number; caption?: string };
 
 const IMG_EXT = /\.(jpe?g|png|webp|avif)(?:[?#]|$)/i;
 const PHOTO_BAD = /(logo|icon|favicon|sprite|avatar|placeholder|blank|pixel|badge|button|arrow|social|soc-|whatsapp|telegram|instagram|vk[-_.]?(icon|logo)|payment|visa|mastercard|qr[-_]?code|counter|metrika|mc\.yandex|1x1|emoji|flag|star[-_]?rating|loader|spinner|preloader|%[a-z]+%|\/-\/empty\/|\/resize\/20x\/|_16\.png|_32\.png|_120\.png|_180\.png|_192\.png|apple-touch|thumb_?small)/i;
@@ -292,7 +292,7 @@ export function photoCandidates(html: string, base: string): PhotoCand[] {
   const src = html.replace(/<!--[\s\S]*?-->/g, " ").replace(/<(script|noscript|template)\b[\s\S]*?<\/\1>/gi, (m) => (/noscript/i.test(m.slice(0, 10)) ? m.replace(/<\/?noscript[^>]*>/gi, " ") : " "));
   const found = new Map<string, PhotoCand>();
   let order = 0;
-  const add = (raw: string | undefined, w: number, h: number, bonus: number, ctx: string) => {
+  const add = (raw: string | undefined, w: number, h: number, bonus: number, ctx: string, caption = "") => {
     if (!raw) return;
     let s = decodeEntities(raw.trim()).replace(/^url\(\s*["']?|["']?\s*\)$/g, "");
     if (!s || s.startsWith("data:") || s.includes("{") || s.length > 600) return;
@@ -312,6 +312,7 @@ export function photoCandidates(html: string, base: string): PhotoCand[] {
     const score = bonus + (width >= 800 ? 3 : width >= 450 ? 2 : width ? -1 : 0) + (/(galler|galer|slider|swiper|carousel|portfolio|works?|raboty|foto|photo|lightbox|fancybox|interior|interer)/i.test(ctx + " " + s) ? 3 : 0);
     const prev = found.get(key);
     if (prev) {
+      if (!prev.caption && caption) prev.caption = caption;
       prev.score = Math.max(prev.score, score); // повтор той же картинки (миниатюра + оригинал) — не повод ставить выше
       // Лучший вариант размера: 800–2000 px по подсказке; без подсказки — оригинал
       const better = (hint >= 800 && hint <= 2000 && !(widthHint(prev.url) >= 800 && widthHint(prev.url) <= 2000)) || (!hint && widthHint(prev.url) > 0 && widthHint(prev.url) < 800);
@@ -320,7 +321,7 @@ export function photoCandidates(html: string, base: string): PhotoCand[] {
       prev.height = Math.max(prev.height, h);
       return;
     }
-    found.set(key, { url: s, key, width, height: h, score, order: order++ });
+    found.set(key, { url: s, key, width, height: h, score, order: order++, ...(caption ? { caption } : {}) });
   };
   const bestOfSet = (set: string | undefined) => {
     if (!set) return undefined;
@@ -336,7 +337,9 @@ export function photoCandidates(html: string, base: string): PhotoCand[] {
     const w = parseInt(a.width ?? a["data-width"] ?? "0", 10) || 0;
     const h = parseInt(a.height ?? a["data-height"] ?? "0", 10) || 0;
     if (tag === "img") {
-      add(bestOfSet(a.srcset || a["data-srcset"] || a["data-lazy-srcset"]) || a["data-original"] || a["data-src"] || a["data-lazy-src"] || a["data-lazy"] || a["data-original-src"] || a["data-full"] || a.src, w, h, 2, ctx);
+      // alt/title — что на фото («Сет Свежесть»): по нему позиция прайса получит свою картинку
+      const cap = decodeEntities((a.alt || a.title || "").trim()).replace(/\s+/g, " ").slice(0, 120);
+      add(bestOfSet(a.srcset || a["data-srcset"] || a["data-lazy-srcset"]) || a["data-original"] || a["data-src"] || a["data-lazy-src"] || a["data-lazy"] || a["data-original-src"] || a["data-full"] || a.src, w, h, 2, ctx, cap.length >= 3 && !/^(image|img|photo|фото|картинка)\b/i.test(cap) ? cap : "");
       continue;
     }
     if (tag === "source") {

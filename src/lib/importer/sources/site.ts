@@ -81,6 +81,35 @@ export function ldServices(o: Ld): ImportService[] {
 const PHOTO_SKIP = /(logo|icon|favicon|sprite|avatar|placeholder|blank|pixel|badge|button|arrow|social|vk\.|tg\.|whatsapp|telegram|instagram|payment|visa|mastercard|mir\.|qr|\.svg|\.gif|counter|metrika|mc\.yandex|1x1)/i;
 
 /** Фото: JSON-LD image, og:image и все осмысленные картинки страницы (галереи, слайдеры, фоны), по убыванию пользы */
+/** Подписи к фото страницы: alt/title картинок и картинки позиций из встроенного JSON меню (name + image) */
+function photoCaptionsOf(html: string, base: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const c of photoCandidates(html, base)) if (c.caption) out[c.url] = c.caption;
+  const IMG_KEYS = ["image", "img", "photo", "picture", "preview", "image_url", "imageUrl", "thumbnail", "cover"];
+  const visit = (v: unknown, depth: number) => {
+    if (depth > 12 || !v || typeof v !== "object") return;
+    if (Array.isArray(v)) return v.forEach((x) => visit(x, depth + 1));
+    const o = v as Record<string, unknown>;
+    const name = ["title", "name", "label"].map((k) => o[k]).find((x) => typeof x === "string" && x.trim().length >= 3) as string | undefined;
+    if (name) {
+      for (const k of IMG_KEYS) {
+        const raw = o[k];
+        const u = typeof raw === "string" ? raw : raw && typeof raw === "object" ? ((raw as Record<string, unknown>).url ?? (raw as Record<string, unknown>).src) : null;
+        if (typeof u !== "string" || !/\.(jpe?g|png|webp)(?:[?#]|$)/i.test(u)) continue;
+        try {
+          const abs = new URL(u, base).toString();
+          out[abs] ??= name.trim().slice(0, 120);
+        } catch {
+          /* пропускаем */
+        }
+      }
+    }
+    for (const k of Object.keys(o)) if (typeof o[k] === "object") visit(o[k], depth + 1);
+  };
+  for (const j of jsonBlobs(html)) visit(j, 0);
+  return out;
+}
+
 function pickPhotos(ld: Ld | null, meta: Record<string, string>, html: string, base: string, limit = 40): string[] {
   const head: string[] = [];
   const push = (u: unknown) => {
@@ -365,7 +394,16 @@ export function parseSite(html: string, url: string): Found & { next: string[] }
     description,
     review: reviewText.length >= 30 ? reviewText.slice(0, 300) : undefined,
     rating: rv > 0 && rv <= 5 ? { value: rv, count: rc || 0 } : undefined,
-    photos: pickPhotos(biz, meta, html, url),
+    ...(() => {
+      const photos = pickPhotos(biz, meta, html, url);
+      const caps = photoCaptionsOf(html, url);
+      // Картинки позиций из JSON меню, которых нет среди фото страницы, — тоже берём (после основных)
+      const extra = Object.keys(caps).filter((u) => !photos.some((p) => photoKey(p) === photoKey(u)));
+      const all = uniq([...photos, ...extra], (u) => photoKey(u)).slice(0, 40);
+      const byKey = new Map(Object.entries(caps).map(([u, c]) => [photoKey(u), c]));
+      const photoCaptions = Object.fromEntries(all.map((u) => [u, byKey.get(photoKey(u)) ?? ""]).filter(([, c]) => c));
+      return { photos: all, photoCaptions };
+    })(),
     text,
     links: uniq([...externalSources(hrefs), ...maps.links], (h) => h.replace(/[?#].*$/, "")).slice(0, 3),
     next: nextPages(html, url, 4),

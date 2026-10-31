@@ -496,7 +496,7 @@ export function BusinessOnboarding({
       for (const id of drop) await api("DELETE", `/api/photos/${id}`).catch(() => null);
       if (draft?.photoToken && photos.length) {
         setBusy(`Сохраняем фото (${photos.length})…`);
-        const r = await api<{ saved: number }>("POST", "/api/business/import/photos", { token: draft.photoToken, urls: photos }).catch(() => ({ saved: 0 }));
+        const r = await api<{ saved: number }>("POST", "/api/business/import/photos", { token: draft.photoToken, urls: photos, captions: Object.fromEntries(photos.map((u) => [u, draft.photoCaptions?.[u] ?? ""]).filter(([, c]) => c)) }).catch(() => ({ saved: 0 }));
         if (r.saved) toast(`Добавили ${r.saved} фото — их можно поменять в разделе «Реклама»`);
       }
       clearSaved();

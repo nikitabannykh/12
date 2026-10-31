@@ -373,6 +373,9 @@ export const MEDICAL_NOTE =
  * затем возвращает план с done=false; следующий вызов продолжает с того же места. Одинаковые картинки
  * (тот же макет, фото, размер, услуга и цена) рисуем один раз и переиспользуем.
  */
+const normName = (x: string) => x.toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]/g, "");
+const rootsOf = (x: string) => new Set(x.toLowerCase().replace(/ё/g, "е").split(/[^а-яa-z0-9]+/).filter((w) => w.length >= 3).map((w) => w.slice(0, 5)));
+
 export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Date.now() + 40_000): Promise<{ plan: LaunchPlan; done: boolean; made: number; total: number; steps: number; stepsDone: number }> {
   const warnings = [...plan.warnings];
   let photoIds = plan.stage === "images" ? plan.photoIds : [];
@@ -394,10 +397,20 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
     arts = await serviceArt(b, plan.imageIdeas, Math.max(want, Math.min(6, subjects.length)), { until: deadline - 20_000, subjects });
     // Кадры, уже сгенерированные под ту же услугу (повторная подготовка), берём снова — не платим дважды
     const before = own.filter((p) => p.kind === "generated");
-    arts = arts.map((a) => ({ ...a, photoId: before.find((p) => p.prompt?.startsWith(`${a.service} :: `))?.id ?? null }));
+    // Своё фото с подписью позиции («Сет Свежесть» на сайте) — лучше любой генерации: берём его, а не рисуем
+    const captioned = own.filter((p) => p.kind === "photo" && p.prompt?.startsWith("caption:")).map((p) => ({ id: p.id, words: rootsOf(p.prompt!.slice(8)), key: normName(p.prompt!.slice(8)) }));
+    const ownFor = (name: string) => {
+      const key = normName(name), words = rootsOf(name);
+      const exact = captioned.find((c) => c.key === key);
+      if (exact) return exact.id;
+      const best = captioned.map((c) => ({ c, k: [...words].filter((w) => c.words.has(w)).length })).sort((a, z) => z.k - a.k)[0];
+      return best && best.k >= Math.max(2, Math.ceil(words.size * 0.6)) ? best.c.id : null;
+    };
+    arts = arts.map((a) => ({ ...a, photoId: ownFor(a.service) ?? before.find((p) => p.prompt?.startsWith(`${a.service} :: `))?.id ?? null }));
     const g = await generateServicePhotos(b, arts);
     arts = g.items;
     const gen = arts.map((a) => a.photoId).filter((x): x is string => Boolean(x));
+    // Свои фото, совпавшие с позициями, — в общий набор (иначе их бы не было среди фото объявлений)
     photoIds = mix(own2, gen.length ? gen : before.map((p) => p.id));
     if (!photoIds.length) photoIds = own.filter((p) => p.kind === "photo").map((p) => p.id).slice(0, 4);
     if (g.errors.length) warnings.push(/denied|доступ|permission|403/i.test(g.errors[0])
@@ -472,8 +485,10 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
         const layout = pool[shift % pool.length] ?? "tag";
         // Картинка под услугу группы (у групп аудиторий — по кругу): подпись и выгода этой услуги, её кадр.
         // Каждое третье объявление — со своим фото владельца, если оно есть
-        const a = artFor(g.service ?? g.name) ?? artAt(shift);
-        const ownPick = ownList.length && shift % 3 === 0 ? ownList[shift % ownList.length] : null;
+        const exact = artFor(g.service ?? g.name);
+        const a = exact ?? artAt(shift);
+        // Фото под эту группу (своё с подписью позиции или сгенерированное под неё) — всегда оно; иначе каждое третье — своё фото
+        const ownPick = !exact?.photoId && ownList.length && shift % 3 === 0 ? ownList[shift % ownList.length] : null;
         const photoId = layout === "offer" ? null : ownPick ?? a?.photoId ?? (photoIds.length ? photoIds[shift % photoIds.length] : null);
         const wide = net && i % 2 === 1;
         try {

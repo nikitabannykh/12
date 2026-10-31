@@ -193,6 +193,7 @@ export function mergeFound(found: Found[]): Draft {
     review: pick("review") || null,
     rating,
     photos,
+    photoCaptions: Object.fromEntries(found.flatMap((f) => Object.entries(f.photoCaptions ?? {})).filter(([u]) => photos.includes(u))),
     sources,
     reports: found.map(report),
     missing: [],
