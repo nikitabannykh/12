@@ -6,7 +6,7 @@ import type { Business } from "../db/schema";
 import { isMedical, nicheById } from "../niches";
 import { Illustration } from "./illustrations";
 import { imageSize } from "./imagesize";
-import { withoutSuperlatives } from "../engine/extras";
+import { hasClaims, withoutSuperlatives } from "../engine/extras";
 
 /**
  * Макеты рекламных картинок. Принцип: настоящее фото (владельца или реалистичная генерация YandexART)
@@ -274,7 +274,7 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
 
     case "benefit": {
       // Текст + рисунок: одно сильное преимущество крупно на цвете, иллюстрация ниши. Цвет и сюжет меняются от варианта
-      const advs = (inp.business.advantages ?? []).map((x) => x.trim()).filter((x) => x.length >= 6 && x.length <= 70);
+      const advs = (inp.business.advantages ?? []).map((x) => withoutSuperlatives(x.trim())).filter((x) => x.length >= 6 && x.length <= 70 && !hasClaims(x, isMedical(inp.business)));
       // Выгода этой услуги важнее общих преимуществ бизнеса: «рейтинг 4,8» к услуге для новорождённых не подходит
       const line = inp.benefit || (advs.length ? advs[variant % advs.length] : inp.business.offer || headline);
       if (photo) {

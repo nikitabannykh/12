@@ -5,7 +5,7 @@ import { getDb, schema } from "../db";
 import { uid } from "../util";
 import { imageSize } from "../creative/imagesize";
 import { renderCreative, renderLogo, shortHeadline, type Layout } from "../creative/render";
-import { withoutSuperlatives } from "./extras";
+import { hasClaims, withoutSuperlatives } from "./extras";
 import type { Business } from "../db/schema";
 import { aiConfigured, art, gptJson } from "../ai/yandex";
 import { isMedical, nicheById } from "../niches";
@@ -132,8 +132,12 @@ const cleanLine = (s: unknown, max: number) => String(s ?? "").replace(/[«»"]/
  * и кадр, который снимал бы фотограф именно под эту услугу (малыш и руки мамы, блюдо крупно, зал с ковриками…).
  * Не вышло — заголовок из названия без скобок, кадр по шаблону ниши.
  */
+/** Обещание результата в медицинской рекламе — на картинке не ставим */
+const MED_RESULT = /(избав|облегч|восстанов|лечени|лечим|вылеч|снят\S*\s+(бол|напряж)|устран|здоров|помощ|помож|комфорт|без\s+бол|забот)/i;
+
 export async function serviceArt(b: Business, ideas: string[], count: number, opts: { until?: number; subjects?: string[]; queries?: Record<string, string[]>; /** кому нужен второй кадр (A/B) */ alt?: Set<string> } = {}): Promise<ServiceArt[]> {
   const n = nicheById(b.niche);
+  const med = isMedical(b);
   // subjects — то, под что реально идут объявления (группы поиска: «Доставка еды», услуги), по важности; иначе — услуги прайса
   const services = (opts.subjects?.length ? [...new Set(opts.subjects)] : spreadServices((b.services ?? []).filter((s) => s.name), Math.max(1, count)).map((s) => s.name)).slice(0, Math.max(1, count));
   const list = services.length ? services : [n.id === "other" ? b.name : n.generic];
@@ -148,9 +152,9 @@ export async function serviceArt(b: Business, ideas: string[], count: number, op
         "headline — подпись на картинке, до 32 символов: услуга так, как её назвал бы клиент, живо и кликабельно. Не копируй название из прайса: без скобок, кодов, перечислений, канцелярита. «Остеопатия (новорождённые и дети до 14 лет)» → «Остеопат для малышей с рождения».\n" +
         "benefit — до 45 символов: зачем эта услуга именно её аудитории, по смыслу услуги. Только факты из описания бизнеса или очевидная суть услуги; нельзя выдумывать рейтинги, цифры, скидки, сроки, гарантии и «лучший».\n" +
         "scene — 1–2 предложения для фотогенератора: что в кадре под ЭТУ услугу или запрос и его аудиторию («доставка пиццы» — пицца в коробке у двери, а не десерт) (дети — ребёнок и руки взрослого; еда — само блюдо; спорт — движение в зале), свет, цвет, ракурс. Каждая сцена — свой приём: макро-деталь, процесс, результат, атмосфера места, натюрморт. " +
-        "Нельзя: текст и надписи в кадре, логотипы, крупные лица, обнажённое тело, медицинские страшилки, стоковые улыбки. Дети — только руки, ножки, со спины или издалека. Главный объект занимает центр и треть кадра: картинку смотрят размером с марку.\n" +
+        "Нельзя: текст и надписи в кадре, логотипы, крупные лица, обнажённое тело (люди одеты: футболка, домашняя одежда; голая спина или живот — нельзя), медицинские страшилки, стоковые улыбки. Дети — только руки, ножки, со спины или издалека. Главный объект занимает центр и треть кадра: картинку смотрят размером с марку.\n" +
         "Все кадры одного бизнеса — как одна фотосессия: одинаковый свет и цветовая гамма, но разные планы и сюжеты.\n" +
-        (isMedical(b) ? "Это медицинские услуги: в headline и benefit не обещай излечение, результат и безопасность, не пиши «без боли», «эффективно», «поможем», не предполагай болезнь у читателя. Можно — для кого приём и что в него входит.\n" : "") +
+        (med ? "Это медицинские услуги: в headline и benefit не обещай излечение, облегчение, восстановление, здоровье, результат и безопасность, не пиши «без боли», «эффективно», «поможем», «забота», не предполагай болезнь у читателя. Benefit — только факт: для кого приём, сколько длится, что входит, когда принимают («Приём 60 минут», «Принимаем с рождения», «Суббота — рабочий день»).\n" : "") +
         'Ответ — JSON {"items": [{"service": номер, "headline": "...", "benefit": "...", "scene": "..."}]}.',
       `Бизнес: ${b.name}, ${n.label}, город ${b.city}.\n${b.description ? `Описание: ${b.description.slice(0, 500)}\n` : ""}${(b.advantages ?? []).length ? `Преимущества: ${(b.advantages ?? []).join("; ")}\n` : ""}${ideas.length ? `Идеи для картинок: ${ideas.join("; ")}\n` : ""}Услуги и группы объявлений (в скобках — что ищут люди):\n${list.map((x, i) => `${i + 1}. ${opts.alt?.has(x) ? "* " : ""}${x}${opts.queries?.[x]?.length ? ` (ищут: ${opts.queries[x].join("; ")})` : ""}`).join("\n")}`,
       { temperature: 0.8, maxTokens: Math.min(8000, 600 + list.length * 220 + (opts.alt?.size ?? 0) * 120), timeoutMs: 30_000, until: opts.until },
@@ -162,7 +166,11 @@ export async function serviceArt(b: Business, ideas: string[], count: number, op
       const headline = cleanLine(it.headline, 34);
       const scene = String(it.scene ?? "").trim();
       const scene2 = String(it.scene2 ?? "").trim();
-      return { service: f.service, headline: headline.length >= 6 ? headline : f.headline, benefit: withoutSuperlatives(cleanLine(it.benefit, 48)) || "", scene: scene.length > 20 ? scene : f.scene, ...(opts.alt?.has(f.service) && scene2.length > 20 ? { scene2 } : {}) };
+      // Медуслуги: на картинке не обещаем результат — «Избавление от боли», «Облегчение и восстановление», «Здоровье малыша»
+      // модерация Директа отклоняет (закон «О рекламе», ст. 24). Такую выгоду не ставим — будет только название
+      let benefit = withoutSuperlatives(cleanLine(it.benefit, 48)) || "";
+      if (benefit && (hasClaims(benefit, med) || (med && MED_RESULT.test(benefit)))) benefit = "";
+      return { service: f.service, headline: headline.length >= 6 ? headline : f.headline, benefit, scene: scene.length > 20 ? scene : f.scene, ...(opts.alt?.has(f.service) && scene2.length > 20 ? { scene2 } : {}) };
     });
     return out;
   } catch {
