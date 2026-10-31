@@ -15,8 +15,8 @@
  */
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, CircleAlert, ImageOff, Link2, Loader2, PenLine, Plus, RotateCcw, Star, Trash2, TriangleAlert, X } from "lucide-react";
-import { api, useToast } from "./client";
+import { Check, ChevronDown, CircleAlert, ImageOff, ImagePlus, Link2, Loader2, PenLine, Plus, RotateCcw, Star, Trash2, TriangleAlert, X } from "lucide-react";
+import { api, resizeToJpeg, useToast } from "./client";
 import { businessPayload, type BusinessInput } from "./BusinessForm";
 import type { Draft, DraftField, ImportEvent, ImportReport, SourceKind } from "@/lib/importer/types";
 import { SOURCE_NAME } from "@/lib/importer/types";
@@ -347,7 +347,12 @@ export function BusinessOnboarding({
   const ready = useRef(false);
   const pristine = useRef(JSON.stringify(initial));
 
-  const photoRoom = Math.max(0, Math.min(PHOTO_PICK, photoMax - savedPhotos.length));
+  // Уже сохранённые фото проекта: владелец может удалить их здесь же; при замене данных другим бизнесом —
+  // фото прежнего бизнеса не показываем и удаляем при сохранении
+  const [removed, setRemoved] = useState<string[]>([]);
+  const [dropSaved, setDropSaved] = useState(false);
+  const keptPhotos = dropSaved ? [] : savedPhotos.filter((id) => !removed.includes(id));
+  const photoRoom = Math.max(0, Math.min(PHOTO_PICK, photoMax - keptPhotos.length));
 
   // Черновик из браузера + ссылки вида /app/start#org, #hours — сразу к нужному полю
   useEffect(() => {
@@ -397,7 +402,7 @@ export function BusinessOnboarding({
 
   const scrollTop = () => requestAnimationFrame(() => top.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
 
-  const photoCount = savedPhotos.length + photos.length;
+  const photoCount = keptPhotos.length + photos.length;
   const comp = useMemo(() => completeness(f, photoCount), [f, photoCount]);
   const miss = useMemo(() => missingOf(f), [f]);
   const touch = useCallback((k: Req) => setTouched((t) => (t.has(k) ? t : new Set(t).add(k))), []);
@@ -450,11 +455,12 @@ export function BusinessOnboarding({
       const m = other ? replaceDraft(f, d, nicheLock === "launched") : mergeDraft(f, d, photoRoom);
       setDraft(d);
       setSources((s) => (other ? { ...d.sources } : { ...d.sources, ...Object.fromEntries(Object.entries(s).filter(([k]) => m.changes.some((c) => c.field === k && c.kind === "kept"))) }));
-      setPhotos((cur) => (other || !cur.length ? d.photos.slice(0, photoRoom) : cur.filter((p) => d.photos.includes(p))));
+      setPhotos((cur) => (other ? d.photos.slice(0, Math.min(PHOTO_PICK, photoMax)) : !cur.length ? d.photos.slice(0, photoRoom) : cur.filter((p) => d.photos.includes(p))));
       setF(m.next);
       setRunning(false);
       setStarted(true);
       if (other) {
+        setDropSaved(true);
         toast(`По ссылке другой бизнес — «${d.name ?? "без названия"}». Заменили данные прежнего: адрес, сферу, услуги и фото.`);
         if (!d.niche && nicheLock !== "launched") setTried(true);
       }
@@ -485,6 +491,9 @@ export function BusinessOnboarding({
       const saved = await api<{ warning?: string }>("POST", "/api/business", businessPayload(f, allLinksOf(f, links).map((l) => l.url)));
       // Сайт не открылся — реклама пока поведёт на страницу записи
       if (saved?.warning) toast(saved.warning, "error");
+      // Фото прежнего бизнеса (после замены данных) и удалённые владельцем — убираем
+      const drop = dropSaved ? savedPhotos : removed;
+      for (const id of drop) await api("DELETE", `/api/photos/${id}`).catch(() => null);
       if (draft?.photoToken && photos.length) {
         setBusy(`Сохраняем фото (${photos.length})…`);
         const r = await api<{ saved: number }>("POST", "/api/business/import/photos", { token: draft.photoToken, urls: photos }).catch(() => ({ saved: 0 }));
@@ -559,9 +568,10 @@ export function BusinessOnboarding({
         onReplaceAll={() => {
           if (!draft) return;
           const m = replaceDraft(f, draft, nicheLock === "launched");
+          setDropSaved(true);
           setF(m.next);
           setSources({ ...draft.sources });
-          setPhotos(draft.photos.slice(0, photoRoom));
+          setPhotos(draft.photos.slice(0, Math.min(PHOTO_PICK, photoMax)));
           setChanges({ list: m.changes, summary: m.summary });
           toast("Заменили анкету данными по ссылке: адрес, сферу, услуги и фото прежнего бизнеса убрали");
           if (!draft.niche && nicheLock !== "launched") setTried(true);
@@ -588,7 +598,7 @@ export function BusinessOnboarding({
           <Val.Provider value={val}>
             <AboutSection f={f} set={set} niches={niches} nicheLock={nicheLock} initialNiche={initial.niche} draft={draft} sources={sources} need={secMissing(["name", "niche", "city"])} />
             <ServicesSection f={f} set={set} niches={niches} sources={sources} need={secMissing(["services"])} />
-            <PhotosSection draft={draft} photos={photos} setPhotos={setPhotos} room={photoRoom} saved={savedPhotos} photoMax={photoMax} sources={sources} onLinks={() => { setLinkOpen(true); scrollTop(); }} editing={editing} />
+            <PhotosSection draft={draft} photos={photos} setPhotos={setPhotos} room={photoRoom} saved={keptPhotos} dropped={dropSaved && savedPhotos.length > 0} onRemove={(id) => setRemoved((r) => [...r, id])} photoMax={photoMax} sources={sources} onLinks={() => { setLinkOpen(true); scrollTop(); }} editing={editing} />
             <ContactsSection f={f} set={set} sources={sources} need={secMissing(["contact"])} />
           </Val.Provider>
 
@@ -1149,12 +1159,34 @@ function ServicesSection({ f, set, niches, sources, need }: { f: BusinessInput; 
 
 // ─── Фото ────────────────────────────────────────────────────────────
 
-function PhotosSection({ draft, photos, setPhotos, room, saved, photoMax, sources, onLinks, editing }: {
-  draft: Draft | null; photos: string[]; setPhotos: React.Dispatch<React.SetStateAction<string[]>>; room: number; saved: string[]; photoMax: number;
+function PhotosSection({ draft, photos, setPhotos, room, saved, dropped, onRemove, photoMax, sources, onLinks, editing }: {
+  draft: Draft | null; photos: string[]; setPhotos: React.Dispatch<React.SetStateAction<string[]>>; room: number; saved: string[]; dropped: boolean; onRemove: (id: string) => void; photoMax: number;
   sources: Partial<Record<DraftField, string>>; onLinks: () => void; editing: boolean;
 }) {
   const [broken, setBroken] = useState<Set<string>>(new Set());
   const found = (draft?.photos ?? []).filter((p) => !broken.has(p));
+  const toast = useToast();
+  const router = useRouter();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [mine, setMine] = useState<string[]>([]);
+  async function upload(files: FileList | null) {
+    if (!files?.length) return;
+    setUploading(true);
+    try {
+      for (const file of Array.from(files).slice(0, 6)) {
+        const r = await api<{ id?: string }>("POST", "/api/photos", { dataUrl: await resizeToJpeg(file) });
+        if (r?.id) setMine((m) => [...m, r.id!]);
+      }
+      router.refresh();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+  const shown = [...saved, ...mine.filter((id) => !saved.includes(id))];
   return (
     <SectionCard id="sec-photos" title="Фото" need={null} text="Отметьте свои фото салона и работ — можно добавить и позже.">
       <div className="rounded-xl bg-paper p-3.5 text-sm text-ink-2 leading-relaxed">
@@ -1162,17 +1194,29 @@ function PhotosSection({ draft, photos, setPhotos, room, saved, photoMax, source
         сгенерирует под каждую услугу. Объявления с ними покажем по очереди, сравним, после каких чаще записываются,
         и оставим лучшие. Своих фото нет — не страшно, реклама запустится со сгенерированными.
       </div>
-      {saved.length ? (
-        <Field label="Уже загружены">
-          <div className="grid grid-cols-5 sm:grid-cols-8 gap-1.5">
-            {saved.slice(0, 16).map((id) => (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img key={id} src={`/api/images/${id}`} alt="" className="aspect-square w-full object-cover rounded-md bg-line" loading="lazy" />
-            ))}
-          </div>
-          <p className="hint mt-1.5">{saved.length} из {photoMax}. Загрузить свои или удалить — в разделе «Реклама».</p>
-        </Field>
-      ) : null}
+      {dropped ? <p className="text-sm text-muted">Фото прежнего бизнеса уберём при сохранении.</p> : null}
+      {editing || shown.length ? <Field label="Ваши фото">
+        <div className="grid grid-cols-5 sm:grid-cols-8 gap-1.5">
+          {shown.slice(0, 16).map((id) => (
+            <div key={id} className="relative group">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={`/api/images/${id}`} alt="" className="aspect-square w-full object-cover rounded-md bg-line" loading="lazy" />
+              <button type="button" aria-label="Убрать фото" className="absolute right-1 top-1 bg-white/90 rounded-md p-1 sm:opacity-0 group-hover:opacity-100 focus:opacity-100"
+                onClick={() => { setMine((m) => m.filter((x) => x !== id)); if (mine.includes(id)) api("DELETE", `/api/photos/${id}`).catch(() => null); else onRemove(id); }}>
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+          {/* Загрузить можно, когда проект уже сохранён; у нового — фото со ссылки выше */}
+          {editing ? (
+            <button type="button" className="aspect-square rounded-md border-2 border-dashed border-line-2 grid place-items-center text-muted hover:border-ink hover:text-ink" onClick={() => fileRef.current?.click()} disabled={uploading}>
+              {uploading ? <Loader2 size={18} className="spin" /> : <span className="flex flex-col items-center gap-0.5 text-[11px] font-semibold"><ImagePlus size={18} />Загрузить</span>}
+            </button>
+          ) : null}
+          <input ref={fileRef} type="file" accept="image/jpeg,image/png" multiple hidden onChange={(e) => upload(e.target.files)} />
+        </div>
+        <p className="hint mt-1.5">{editing ? `Работы крупным планом, интерьер, мастер за работой. До ${photoMax} фото.` : "Свои фото можно будет загрузить после сохранения анкеты."}</p>
+      </Field> : null}
       <Field label={draft ? `Нашли ${draft.photos.length} фото` : "С сайта"} chip={sources.photos} id="f-photos">
         {found.length ? (
           <div className="grid gap-2.5">

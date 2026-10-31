@@ -7,8 +7,8 @@
  */
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ImagePlus, Loader2, Rocket, Search, Sparkles, Trash2, TriangleAlert } from "lucide-react";
-import { api, Modal, useToast, resizeToJpeg } from "./client";
+import { Check, Loader2, Rocket, Search, Sparkles, TriangleAlert } from "lucide-react";
+import { api, Modal, useToast } from "./client";
 import { VkConnect } from "./VkConnect";
 import { VkPixelSetup } from "./VkPixelSetup";
 import { PlanManager } from "./PlanManager";
@@ -164,9 +164,6 @@ export function LaunchWizard(p: Props) {
   // Почему не получился запуск — показываем у кнопки, пока владелец не запустит снова (всплывашка исчезает, и причину не успеть прочитать)
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [imgProgress, setImgProgress] = useState<{ ready: number; total: number } | null>(null);
-  const [uploading, setUploading] = useState(false);
-  /** Фото поменялись после подготовки объявлений — предлагаем перерисовать картинки (тексты и правки остаются) */
-  const [photosChanged, setPhotosChanged] = useState(false);
   const [edit, setEdit] = useState<{ ad: PlanAd; channel: Channel } | null>(null);
   /** Новое объявление «написать самому»: та же форма, что и правка */
   const [newAd, setNewAd] = useState<{ groupId: string; channel: Channel } | null>(null);
@@ -174,7 +171,6 @@ export function LaunchWizard(p: Props) {
   const [progress, setProgress] = useState<Progress | null>(() => progressOf(p.plan));
   /** Сколько объявлений уже на площадках (GET /api/launch/publish) и когда мы начали ждать — для полосы и «осталось ≈» */
   const [pubCount, setPubCount] = useState<{ uploaded: number; total: number; errors: number; since: number; base: number } | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
   const [semantics, setSemantics] = useState<Semantics | null>(null);
   /** Спрос по Wordstat (POST /api/launch/demand): сбор идёт на сервере порциями, мастер его подталкивает */
   const [demand, setDemand] = useState<DemandView | null>(null);
@@ -319,20 +315,6 @@ export function LaunchWizard(p: Props) {
     setImgProgress(null);
   }
 
-  /** Перерисовать картинки с новыми фото: сервер сбрасывает только картинки, тексты и правки остаются */
-  async function redrawImages() {
-    try {
-      setPhotosChanged(false);
-      const r = await api<{ plan: LaunchPlan }>("PATCH", "/api/launch/plan", { redrawImages: true });
-      setPlan(r.plan);
-      await drawImages();
-    } catch (e) {
-      toast((e as Error).message, "error");
-    } finally {
-      setPhase(null);
-    }
-  }
-
   async function prepare() {
     try {
       setPhase("copy");
@@ -432,25 +414,6 @@ export function LaunchWizard(p: Props) {
     }
   }
 
-  async function upload(files: FileList | null) {
-    if (!files?.length) return;
-    setUploading(true);
-    try {
-      for (const f of Array.from(files).slice(0, 6)) {
-        const dataUrl = await resizeToJpeg(f);
-        await api("POST", "/api/photos", { dataUrl });
-      }
-      // Объявления и правки не трогаем: фото появятся в ленте, а картинки объявлений можно перерисовать кнопкой
-      router.refresh();
-      if (plan?.stage === "ready") setPhotosChanged(true);
-    } catch (e) {
-      toast((e as Error).message, "error");
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = "";
-    }
-  }
-
   const ready = plan?.stage === "ready";
   const enabledAds = plan?.channels.filter((c) => c.enabled).flatMap((c) => c.groups.flatMap((g) => g.ads.filter(publishable))).length ?? 0;
   const enabledChannels = plan?.channels.filter((c) => c.enabled && c.groups.some((g) => g.ads.some(publishable))).length ?? 0;
@@ -486,34 +449,6 @@ export function LaunchWizard(p: Props) {
       ? { label: phase === "copy" ? "Пишем тексты и подбираем запросы…" : phase === "images" ? "Готовим картинки…" : "Подготовить объявления", icon: preparing ? <Loader2 size={18} className="spin" /> : <Sparkles size={18} />, run: prepare, disabled: preparing, cls: "btn-primary", note: preparing ? "Обычно это занимает до минуты." : "Робот напишет объявления и подберёт запросы — до минуты. Перед запуском вы всё увидите и сможете поправить." }
       : { label: phase === "publish" ? "Создаём кампании…" : resuming ? "Продолжить запуск" : "Запустить рекламу", icon: phase === "publish" ? <Loader2 size={18} className="spin" /> : <Rocket size={18} />, run: launch, disabled: phase === "publish" || !enabledAds, cls: "btn-mark", note: enabledAds ? `${enabledAds} ${plural(enabledAds, "объявление", "объявления", "объявлений")} в ${enabledChannels} ${plural(enabledChannels, "канале", "каналах", "каналах")} ${plural(enabledAds, "уйдёт", "уйдут", "уйдут")} на модерацию.` : "Включите хотя бы одно объявление." };
 
-  const photoStrip = (
-    <div className="grid gap-2">
-      <p className="text-sm text-muted leading-relaxed"><span className="font-semibold text-ink">Фото для объявлений с картинками</span> (необязательно). Лучше всего — настоящие: работа крупным планом, интерьер, мастер за работой. {p.flags.ai ? "Ваши фото используем вместе с новыми картинками, которые нарисуем под ваши услуги, — робот проверит, что работает лучше." : ""}</p>
-      <div className="flex flex-wrap gap-2.5">
-          {p.photos.map((ph) => (
-            <div key={ph.id} className="relative w-20 h-20 rounded-xl overflow-hidden border border-line group">
-              <img src={`/api/images/${ph.id}`} alt="" className="w-full h-full object-cover" />
-              {ph.kind === "generated" ? <span className="absolute left-1 bottom-1 pill bg-white/90 text-[10px]">ИИ</span> : null}
-              <button className="absolute right-1 top-1 bg-white/90 rounded-md p-1 opacity-0 group-hover:opacity-100 focus:opacity-100" aria-label="Удалить фото"
-                onClick={async () => { try { await api("DELETE", `/api/photos/${ph.id}`); if (plan?.stage === "ready") setPhotosChanged(true); router.refresh(); } catch (e) { toast((e as Error).message, "error"); } }}>
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
-          <button className="w-20 h-20 rounded-xl border-2 border-dashed border-line-2 grid place-items-center text-muted hover:border-ink hover:text-ink" onClick={() => fileRef.current?.click()} disabled={uploading || !hasAccounts}>
-            {uploading ? <Loader2 className="spin" /> : <span className="flex flex-col items-center gap-1 text-xs font-semibold"><ImagePlus size={22} />Добавить</span>}
-          </button>
-          <input ref={fileRef} type="file" accept="image/jpeg,image/png" multiple hidden onChange={(e) => upload(e.target.files)} />
-      </div>
-      {photosChanged && ready && !phase ? (
-        <div className="rounded-xl bg-info-soft p-3 text-sm flex flex-wrap items-center justify-between gap-2">
-          <span className="min-w-0">Фото изменились. Картинки объявлений можно перерисовать с новыми фото — тексты и ваши правки останутся.</span>
-          <button type="button" className="btn btn-primary btn-sm" onClick={redrawImages}><ImagePlus size={15} /> Обновить картинки</button>
-        </div>
-      ) : null}
-    </div>
-
-  );
 
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
@@ -736,7 +671,6 @@ export function LaunchWizard(p: Props) {
 
       <Section id="ads" title="Объявления" done={ready && !preparing} active={hasAccounts} note={hasAccounts ? undefined : "После кабинета"}
         aside={ready && !preparing ? <button className="btn btn-ghost btn-sm" onClick={prepare} disabled={!!phase}><Sparkles size={15} /> Написать заново</button> : null}>
-        {photoStrip}
         {phase === "images" && plan ? (
           <div className="mt-5 rounded-xl bg-paper px-4 py-3 text-sm flex items-center gap-3">
             <Loader2 size={16} className="spin shrink-0" />
@@ -803,35 +737,25 @@ export function LaunchWizard(p: Props) {
       </Section>
 
       <Section id="launch" title="Запуск" done={false} active={ready && !preparing} note={ready ? undefined : "После объявлений"}>
-        <ul className="grid gap-2 text-[0.95rem]">
-          {enabledAds ? (
-            <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> {enabledAds} {plural(enabledAds, "объявление", "объявления", "объявлений")} в {enabledChannels} {plural(enabledChannels, "канале", "каналах", "каналах")} {plural(enabledAds, "уйдёт", "уйдут", "уйдут")} на модерацию — обычно это занимает несколько часов.</li>
-          ) : (
-            <li className="flex gap-2 text-muted"><span className="w-[18px] h-[18px] rounded-full border border-line-2 shrink-0 mt-0.5" /> Объявления уйдут на модерацию сразу после запуска — обычно это занимает несколько часов.</li>
-          )}
-          {plan?.channels.some((c) => c.enabled && isRetarget(c.channel)) ? (
-            <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> Ретаргетинг создадим сразу, но показы он начнёт сам — когда наберётся {RETARGET_MIN_AUDIENCE} человек, которые были на сайте и не записались. До этого деньги на него не тратятся.</li>
-          ) : null}
-          <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> Первые 3 дня робот только наблюдает и копит статистику. Потом начнёт отключать слабое и тестировать новое.</li>
-          <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" />
+        {/* Пока объявлений нет — без пояснений: они нужны прямо перед нажатием «Запустить» */}
+        {ready ? (
+          <ul className="grid gap-2 text-[0.95rem]">
+            <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> {enabledAds} {plural(enabledAds, "объявление", "объявления", "объявлений")} {plural(enabledAds, "уйдёт", "уйдут", "уйдут")} на модерацию — обычно это несколько часов. Первые 3 дня робот копит статистику, потом начнёт отключать слабое и тестировать новое.</li>
+            {plan?.channels.some((c) => c.enabled && isRetarget(c.channel)) ? (
+              <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" /> Ретаргетинг начнёт показы сам, когда наберётся {RETARGET_MIN_AUDIENCE} человек, которые были на сайте и не записались. До этого деньги на него не тратятся.</li>
+            ) : null}
             {(() => {
+              // Куда ведёт реклама — уже в своём блоке выше; здесь только предупреждение, если на сайте нет кода
               const l = landingFor({ siteUrl: p.landing.siteUrl, publicKey: "x", landing: p.landing.initial }, null);
-              if (l.kind === "page" && (p.landing.initial as { noCode?: boolean }).noCode)
-                return <span>Объявления будут вести на вашу страницу записи — обращения с неё считаются автоматически. На сайт не ведём, потому что на нём пока нет кода Самохода: без него не видно заявок. Поставите код — переключите рекламу на сайт в «Настройках».</span>;
-              if (l.kind === "page") return <span>Объявления будут вести на вашу страницу записи — обращения с неё считаются автоматически.</span>;
-              if (l.kind === "site")
-                return p.landing.siteCode === "ok" ? (
-                  <span>Объявления будут вести на ваш сайт. Код Самохода на нём стоит — обращения с сайта будут считаться.</span>
-                ) : (
-                  <span className="block rounded-xl bg-warn-soft text-ink p-3">
-                    <b className="text-warn">Код на сайте не установлен — обращений видно не будет.</b> Мы увидим клики и визиты, но не заявки и звонки с сайта: цену клиента не посчитаем, а робот будет улучшать рекламу только по визитам. Лучше пока вести рекламу на страницу записи (выше, «Куда ведёт реклама») — там обращения считаются сами — или сначала поставить код.
-                    <a href="/app/settings?tab=site#site" className="block mt-1.5 font-semibold underline underline-offset-2">Инструкция и код для сайта →</a>
-                  </span>
-                );
-              return <span>Объявления будут вести на {l.label}. Заявки там мы не видим — считаем переходы, а записи отмечайте раз в неделю в «Статистике».</span>;
+              return l.kind === "site" && p.landing.siteCode !== "ok" ? (
+                <li className="block rounded-xl bg-warn-soft text-ink p-3 text-sm">
+                  <b className="text-warn">Код на сайте не установлен — обращений видно не будет.</b> Мы увидим клики и визиты, но не заявки и звонки с сайта. Лучше вести рекламу на страницу записи («Куда ведёт реклама» выше) или сначала поставить код.
+                  <a href="/app/settings?tab=site#site" className="block mt-1.5 font-semibold underline underline-offset-2">Инструкция и код для сайта →</a>
+                </li>
+              ) : null;
             })()}
-          </li>
-        </ul>
+          </ul>
+        ) : null}
         {resuming && phase !== "publish" ? (
           <div className="mt-4 rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2" role="status">
             <TriangleAlert size={16} className="shrink-0 mt-0.5" />
