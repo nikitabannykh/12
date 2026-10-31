@@ -1201,9 +1201,9 @@ function PhotosSection({ draft, photos, setPhotos, room, saved, dropped, onRemov
             <div key={id} className="relative group">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={`/api/images/${id}`} alt="" className="aspect-square w-full object-cover rounded-md bg-line" loading="lazy" />
-              <button type="button" aria-label="Убрать фото" className="absolute right-1 top-1 bg-white/90 rounded-md p-1 sm:opacity-0 group-hover:opacity-100 focus:opacity-100"
-                onClick={() => { setMine((m) => m.filter((x) => x !== id)); if (mine.includes(id)) api("DELETE", `/api/photos/${id}`).catch(() => null); else onRemove(id); }}>
-                <Trash2 size={13} />
+              <button type="button" aria-label="Убрать фото" title="Убрать фото" className="absolute right-1 top-1 bg-white/95 shadow-sm rounded-md p-1.5 text-ink hover:text-bad"
+                onClick={() => { setMine((m) => m.filter((x) => x !== id)); onRemove(id); api("DELETE", `/api/photos/${id}`).catch((e) => toast((e as Error).message, "error")); }}>
+                <Trash2 size={15} />
               </button>
             </div>
           ))}
