@@ -65,9 +65,9 @@ type Tab = "login" | "register";
 
 /** Страница входа: вкладки «Вход» / «Регистрация», ссылка на почту, Google и демо */
 export function AuthPanel({
-  initialTab, google, demo, mail, demoHighlight, initialError,
+  initialTab, google, yandex = false, demo, mail, demoHighlight, initialError,
 }: {
-  initialTab: Tab; google: boolean; demo: boolean; mail: boolean; demoHighlight?: boolean; initialError?: string | null;
+  initialTab: Tab; google: boolean; yandex?: boolean; demo: boolean; mail: boolean; demoHighlight?: boolean; initialError?: string | null;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [email, setEmail] = useState("");
@@ -184,7 +184,7 @@ export function AuthPanel({
         ) : null}
       </form>
 
-      {mail || google || demo ? (
+      {mail || google || yandex || demo ? (
         <>
           <div className="flex items-center gap-3 my-6 text-sm text-faint" aria-hidden="true">
             <span className="h-px flex-1 bg-line-2" />или<span className="h-px flex-1 bg-line-2" />
@@ -195,6 +195,12 @@ export function AuthPanel({
                 {busy === "magic" ? <Loader2 size={16} className="spin" /> : <Mail size={18} />}
                 Войти по ссылке на почту
               </button>
+            ) : null}
+            {yandex ? (
+              <a href="/api/auth/yandex/start" className="btn btn-ghost h-12 w-full bg-white">
+                <span className="w-[18px] h-[18px] rounded-full bg-[#fc3f1d] text-white text-[11px] font-bold grid place-items-center" aria-hidden>Я</span>
+                {tab === "login" ? "Войти через Яндекс" : "Зарегистрироваться через Яндекс"}
+              </a>
             ) : null}
             {google ? (
               <a href="/api/auth/google/start" className="btn btn-ghost h-12 w-full bg-white">

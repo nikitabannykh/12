@@ -1,15 +1,18 @@
 import { redirect } from "next/navigation";
 import { AuthShell } from "@/components/AuthShell";
 import { AuthPanel, CleanUrl } from "@/components/AuthForms";
-import { demoAllowed, getUser, googleConfigured } from "@/lib/auth";
+import { demoAllowed, getUser, googleConfigured, yandexLoginConfigured } from "@/lib/auth";
 import { secretError } from "@/lib/crypto";
 import { mailConfigured } from "@/lib/mail";
 
 export const metadata = { title: "Вход — Самоход" };
 
 const ERRORS: Record<string, string> = {
-  google_not_configured: "Вход через Google ещё не настроен на сервере. Войдите по почте и паролю.",
+  google_not_configured: "Вход через Google пока недоступен. Войдите по почте и паролю.",
   google: "Google не подтвердил вход. Попробуйте ещё раз.",
+  yandex_not_configured: "Вход через Яндекс пока недоступен. Войдите по почте и паролю.",
+  yandex: "Яндекс не подтвердил вход. Попробуйте ещё раз.",
+  yandex_email: "Яндекс не передал почту. Разрешите доступ к адресу почты при входе.",
   state: "Сессия входа устарела. Попробуйте ещё раз.",
   email: "В аккаунте Google не подтверждена почта.",
   origin: "Вход отклонён: форма была отправлена не со страницы сервиса. Откройте страницу входа заново.",
@@ -40,6 +43,7 @@ export default async function Login({ searchParams }: { searchParams: Promise<{ 
         key={tab}
         initialTab={tab}
         google={googleConfigured()}
+        yandex={yandexLoginConfigured()}
         demo={demoAllowed()}
         mail={mailConfigured()}
         demoHighlight={Boolean(sp.demo)}

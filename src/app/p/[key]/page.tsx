@@ -3,7 +3,7 @@ import { vkPixelSnippet } from "@/lib/platforms/vk-formats";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { eq } from "drizzle-orm";
-import { MapPin, MessageCircle, Phone, Send, Star } from "lucide-react";
+import { CalendarCheck, Clock, MapPin, MessageCircle, Navigation, Phone, Send, Star } from "lucide-react";
 import { getDb, schema } from "@/lib/db";
 import { listPhotos } from "@/lib/engine/images";
 import { nicheById } from "@/lib/niches";
@@ -27,6 +27,8 @@ export async function generateMetadata({ params }: { params: Promise<{ key: stri
 }
 
 const digits = (s: string) => s.replace(/[^\d+]/g, "");
+/** Частые опечатки в текстах, взятых с сайта клиента */
+const tidy = (s: string) => s.replace(/счасли/gi, (m) => (m[0] === "С" ? "Счастли" : "счастли")).replace(/(\d)(\+)\s/g, "$1$2 ");
 
 /** Страница записи — для тех, у кого нет сайта. Сюда ведут объявления, здесь же считаются обращения. */
 export default async function Landing({ params, searchParams }: { params: Promise<{ key: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
@@ -47,6 +49,12 @@ export default async function Landing({ params, searchParams }: { params: Promis
   const { bg, ink, accent } = c;
   const wa = b.whatsapp ? `https://wa.me/${digits(b.whatsapp).replace("+", "")}` : null;
   const tg = b.telegram ? `https://t.me/${b.telegram.replace(/^@|https?:\/\/t\.me\//g, "")}` : null;
+  const maps = b.address ? `https://yandex.ru/maps/?text=${encodeURIComponent(`${b.city ? `${b.city}, ` : ""}${b.address}`)}` : null;
+  const contacts = [
+    b.phone ? { href: `tel:${digits(b.phone)}`, label: b.phone, icon: <Phone size={16} />, ext: false, phone: true } : null,
+    wa ? { href: wa, label: "WhatsApp", icon: <MessageCircle size={16} />, ext: true, phone: false } : null,
+    tg ? { href: tg, label: "Telegram", icon: <Send size={16} />, ext: true, phone: false } : null,
+  ].filter((x): x is NonNullable<typeof x> => Boolean(x));
 
   return (
     <div style={{ background: bg, color: ink }} className="min-h-dvh">
@@ -60,19 +68,33 @@ export default async function Landing({ params, searchParams }: { params: Promis
       {vkJs ? <script dangerouslySetInnerHTML={{ __html: vkJs }} /> : null}
       <script async src="/t.js" data-key={b.publicKey} {...(b.counterId ? { "data-ym": String(b.counterId) } : {})} />
 
-      <main className="mx-auto max-w-5xl px-4 sm:px-6 py-8 sm:py-14">
+      <main className="mx-auto max-w-5xl px-4 sm:px-6 pt-8 pb-28 sm:py-14">
         <div className="grid lg:grid-cols-[1.2fr_1fr] gap-8 items-start">
           <div>
             <div className="text-sm font-semibold" style={{ color: c.inkSoft }}>{n.label} · {b.city}</div>
             <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight mt-2 leading-[1.05]">{b.name}</h1>
             {b.offer ? <div className="inline-block mt-5 rounded-xl px-4 py-2 font-bold" style={{ background: accent, color: c.onAccent }}>{b.offer} — для новых клиентов</div> : null}
             {b.description ? <p className="mt-5 text-lg leading-relaxed max-w-xl">{b.description}</p> : null}
-            {b.address ? <p id="contacts" className="mt-4 flex items-start gap-2 font-medium scroll-mt-6"><MapPin size={18} className="mt-0.5 shrink-0" />{b.address}{b.hours ? <span className="font-normal" style={{ color: c.inkSoft }}> · {b.hours}</span> : null}</p> : b.hours ? <p id="contacts" className="mt-4 font-medium">{b.hours}</p> : null}
-            <div className="mt-6 flex flex-wrap gap-2">
-              {b.phone ? <a href={`tel:${digits(b.phone)}`} className="btn bg-white" style={{ color: c.cardInk }}><Phone size={16} />{b.phone}</a> : null}
-              {wa ? <a href={wa} className="btn bg-white" style={{ color: c.cardInk }} target="_blank" rel="noreferrer"><MessageCircle size={16} />WhatsApp</a> : null}
-              {tg ? <a href={tg} className="btn bg-white" style={{ color: c.cardInk }} target="_blank" rel="noreferrer"><Send size={16} />Telegram</a> : null}
+            {/* Главное действие на телефоне: форма ниже первого экрана, ведём к ней */}
+            <div className="mt-6 flex flex-col sm:flex-row gap-2 lg:hidden">
+              <a href="#form" className="btn h-12 text-base" style={{ background: accent, color: c.onAccent }}><CalendarCheck size={18} />Записаться онлайн</a>
+              {b.phone ? <a href={`tel:${digits(b.phone)}`} className="btn h-12 text-base bg-white" style={{ color: c.cardInk }}><Phone size={18} />Позвонить</a> : null}
             </div>
+            {b.address || b.hours ? (
+              <ul className="mt-6 grid gap-2.5 text-base">
+                {b.address ? (
+                  <li className="flex items-start gap-2.5"><MapPin size={18} className="mt-0.5 shrink-0" style={{ color: c.accentOnBg }} /><span className="font-medium">{b.address}{maps ? <> · <a href={maps} target="_blank" rel="noreferrer" className="underline underline-offset-2 font-normal whitespace-nowrap">на карте</a></> : null}</span></li>
+                ) : null}
+                {b.hours ? <li className="flex items-start gap-2.5"><Clock size={18} className="mt-0.5 shrink-0" style={{ color: c.accentOnBg }} /><span>{b.hours}</span></li> : null}
+              </ul>
+            ) : null}
+            {contacts.length ? (
+              <div className={`mt-6 grid ${contacts.length === 1 && b.phone ? "max-lg:hidden" : ""} grid-cols-2 sm:flex sm:flex-wrap gap-2`}>
+                {contacts.map((x, i) => (
+                  <a key={x.href} href={x.href} {...(x.ext ? { target: "_blank", rel: "noreferrer" } : {})} className={`btn bg-white ${x.phone ? "max-lg:hidden" : ""} ${(contacts.length - (b.phone ? 1 : 0)) % 2 && i === (b.phone ? 1 : 0) ? "col-span-2 sm:col-span-1" : ""}`} style={{ color: c.cardInk }}>{x.icon}{x.label}</a>
+                ))}
+              </div>
+            ) : null}
           </div>
           <div id="form" style={{ background: accent }} className="rounded-3xl p-1.5 scroll-mt-6">
             <LeadForm publicKey={b.publicKey} services={b.services.map((s) => s.name)} accent={accent} onAccent={c.onAccent} ink={c.cardInk} ts={ts} ft={ft} counterId={b.counterId ?? null} vkPixel={vkPixel} privacyUrl={`/privacy?b=${encodeURIComponent(b.publicKey)}`} />
@@ -113,7 +135,7 @@ export default async function Landing({ params, searchParams }: { params: Promis
               <div id="about" className="scroll-mt-6">
                 <h2 className="text-2xl font-extrabold">Почему к нам</h2>
                 <ul className="mt-4 grid gap-3 text-lg">
-                  {b.advantages.map((a) => <li key={a} className="flex gap-3"><span className="mt-2.5 w-2 h-2 rounded-full shrink-0" style={{ background: c.accentOnBg }} />{a}</li>)}
+                  {b.advantages.map((a) => <li key={a} className="flex gap-3"><span className="mt-2.5 w-2 h-2 rounded-full shrink-0" style={{ background: c.accentOnBg }} />{tidy(a)}</li>)}
                 </ul>
               </div>
             ) : null}
@@ -127,11 +149,30 @@ export default async function Landing({ params, searchParams }: { params: Promis
           </section>
         ) : null}
 
+        {b.address || b.phone ? (
+          <section id="contacts" className="mt-12 rounded-2xl bg-white p-5 sm:p-6 grid sm:grid-cols-[1fr_auto] gap-4 items-center scroll-mt-6" style={{ color: c.cardInk }}>
+            <div className="grid gap-1.5">
+              <h2 className="text-xl font-extrabold">Как нас найти</h2>
+              {b.address ? <div className="flex items-start gap-2"><MapPin size={18} className="mt-0.5 shrink-0" />{b.city && !b.address.includes(b.city) ? `${b.city}, ` : ""}{b.address}</div> : null}
+              {b.hours ? <div className="flex items-start gap-2" style={{ color: c.cardSoft }}><Clock size={18} className="mt-0.5 shrink-0" />{b.hours}</div> : null}
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2">
+              {maps ? <a href={maps} target="_blank" rel="noreferrer" className="btn btn-ghost"><Navigation size={16} />Построить маршрут</a> : null}
+              <a href="#form" className="btn" style={{ background: accent, color: c.onAccent }}><CalendarCheck size={16} />Записаться</a>
+            </div>
+          </section>
+        ) : null}
+
         <footer style={{ color: c.inkSoft }} className="mt-16 text-sm flex flex-wrap gap-x-4 gap-y-1">
           <span>{b.name}{b.address ? `, ${b.address}` : `, ${b.city}`}</span>
           <a href={`/privacy?b=${encodeURIComponent(b.publicKey)}`} className="underline">Политика обработки данных</a>
         </footer>
       </main>
+      {/* Нижняя панель на телефоне: записаться и позвонить — всегда под пальцем */}
+      <div className="sm:hidden fixed inset-x-0 bottom-0 z-10 p-3 flex gap-2 border-t" style={{ background: bg, borderColor: `${c.inkSoft}33`, paddingBottom: "max(12px, env(safe-area-inset-bottom))" }}>
+        <a href="#form" className="btn h-12 flex-1" style={{ background: accent, color: c.onAccent }}><CalendarCheck size={18} />Записаться</a>
+        {b.phone ? <a href={`tel:${digits(b.phone)}`} className="btn h-12 bg-white px-4" style={{ color: c.cardInk }} aria-label="Позвонить"><Phone size={18} /></a> : null}
+      </div>
     </div>
   );
 }

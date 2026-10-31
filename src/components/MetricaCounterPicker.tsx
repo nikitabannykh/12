@@ -50,9 +50,20 @@ export function MetricaCounterPicker({ current, hasYandex }: { current: number |
 
   if (!open) {
     return (
-      <button type="button" className="btn btn-ghost btn-sm" onClick={load}>
-        На сайте уже есть свой счётчик Метрики? Выбрать его
-      </button>
+      <div className="grid gap-3">
+        {current ? (
+          <div className="rounded-xl bg-paper px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <span className="pill bg-good-soft text-good">Подключён</span>
+            <span className="font-semibold">Счётчик № {current}</span>
+            <a href={`https://metrika.yandex.ru/dashboard?id=${current}`} target="_blank" rel="noreferrer" className="text-sm underline underline-offset-2 text-ink-2">Открыть в Метрике</a>
+          </div>
+        ) : (
+          <div className="rounded-xl bg-paper px-4 py-3 text-sm"><span className="pill bg-paper text-muted ring-1 ring-line mr-2">Не подключён</span>Счётчик создадим сами при запуске рекламы в Директе — или выберите свой.</div>
+        )}
+        <button type="button" className="btn btn-ghost btn-sm justify-self-start" onClick={load}>
+          {current ? "Выбрать другой счётчик" : "На сайте уже есть свой счётчик Метрики? Выбрать его"}
+        </button>
+      </div>
     );
   }
   return (

@@ -12,7 +12,7 @@ export async function GET(req: Request) {
   const back = safeBack(new URL(req.url).searchParams.get("back"));
   const gate = await emailGate(user);
   if (gate) return NextResponse.redirect(`${appUrl()}${withQuery(back, `error=${encodeURIComponent(gate)}`)}`);
-  if (!vkConfigured()) return NextResponse.redirect(`${appUrl()}${withQuery(back, `error=${encodeURIComponent("Подключение VK Рекламы не настроено на сервере: нет VK_ADS_CLIENT_ID")}`)}`);
+  if (!vkConfigured()) return NextResponse.redirect(`${appUrl()}${withQuery(back, `error=${encodeURIComponent("Подключение VK Рекламы пока недоступно: нет VK_ADS_CLIENT_ID")}`)}`);
   const state = randomBytes(16).toString("base64url");
   (await cookies()).set("pz_vk_state", JSON.stringify({ state, back }), cookieOptions(900));
   return NextResponse.redirect(vkAuthUrl(state, `${appUrl()}/api/connect/vk/callback`));

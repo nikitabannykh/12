@@ -122,14 +122,17 @@ export function LeadForm({
         }
       }}
     >
-      <div className="font-bold text-lg">Записаться</div>
+      <div>
+        <div className="font-bold text-lg">Записаться онлайн</div>
+        <p className="text-sm text-muted mt-0.5">Оставьте телефон — администратор перезвонит и подберёт удобное время.</p>
+      </div>
       {/* Ловушка для ботов: человек это поле не видит и не заполняет */}
       <div aria-hidden="true" style={{ position: "absolute", left: "-10000px", width: 1, height: 1, overflow: "hidden" }}>
         <label>Сайт<input name="website" tabIndex={-1} autoComplete="off" defaultValue="" /></label>
       </div>
       {/* ym-disable-keys: Вебвизор Метрики не записывает, что вводят в эти поля */}
       <input name="name" className="field ym-disable-keys" placeholder="Как к вам обращаться" autoComplete="given-name" maxLength={60} />
-      <input name="phone" type="tel" className="field ym-disable-keys" placeholder="Телефон" inputMode="tel" autoComplete="tel" maxLength={30} required />
+      <input name="phone" type="tel" className="field ym-disable-keys" placeholder="Телефон, например +7 900 123-45-67" inputMode="tel" autoComplete="tel" maxLength={30} required />
       {services.length ? (
         <select name="service" className="field" defaultValue="">
           <option value="">Выберите услугу</option>

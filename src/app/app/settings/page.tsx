@@ -168,6 +168,14 @@ export default async function Settings({ searchParams }: { searchParams: Promise
           <a href={landing} target="_blank" className="btn btn-ghost btn-sm" rel="noreferrer"><ExternalLink size={14} /> Открыть</a>
           <CopyButton text={landing} label="Скопировать ссылку" />
         </div>
+        <div className="mt-5 rounded-xl border border-line p-4 max-w-2xl">
+          <div className="font-semibold">Куда приходят заявки с этой страницы</div>
+          <ul className="mt-2 grid gap-2 text-sm text-ink-2">
+            <li className="flex gap-2"><Check size={16} className="text-good shrink-0 mt-0.5" /><span>В кабинет: <Link href="/app/stats#leads" className="font-semibold underline underline-offset-2">Статистика → Последние обращения</Link> — имя, телефон, услуга и с какой рекламы пришёл человек.</span></li>
+            <li className="flex gap-2">{connected ? <Check size={16} className="text-good shrink-0 mt-0.5" /> : <TriangleAlert size={16} className="text-warn shrink-0 mt-0.5" />}<span>{connected ? <>В Telegram{notify?.telegramName ? ` (${notify.telegramName})` : ""} — сразу, как человек отправил заявку.</> : <>В Telegram — пока не подключён, поэтому заявку можно пропустить. <Link href="/app/settings?tab=notify" className="font-semibold underline underline-offset-2">Подключить уведомления</Link></>}</span></li>
+            <li className="flex gap-2"><Check size={16} className="text-good shrink-0 mt-0.5" /><span>Звонки и сообщения в WhatsApp/Telegram с кнопок страницы идут напрямую на ваш телефон{b.phone ? ` ${b.phone}` : ""} — их мы считаем как нажатия.</span></li>
+          </ul>
+        </div>
       </section>
         </>
       ) : null}
@@ -189,36 +197,48 @@ export default async function Settings({ searchParams }: { searchParams: Promise
         <>
       <section className="card p-5 sm:p-7">
         <h2 className="text-lg font-bold">Рекламные кабинеты</h2>
-        <ul className="mt-4 divide-y divide-line">
-          {accounts.map((a) => (
-            <li key={a.id} className="py-3 flex flex-wrap items-center gap-3">
-              <div className="flex-1 min-w-[12rem]">
-                <div className="font-semibold">{PLATFORM_NAME[a.platform]}</div>
-                {a.login && a.login !== PLATFORM_NAME[a.platform] ? <div className="text-sm text-muted">{a.login}</div> : null}
+        <p className="hint mt-1 max-w-2xl">Через них робот создаёт и ведёт рекламу. Деньги остаются в ваших кабинетах — пополняете их вы.</p>
+        <div className="mt-5 grid gap-3">
+          {(["yandex", "vk"] as const).map((pf) => {
+            const list = accounts.filter((a) => a.platform === pf);
+            const name = pf === "yandex" ? "Яндекс Директ" : "VK Реклама";
+            const sub = pf === "yandex" ? "Поиск, сайты и приложения (РСЯ), Карты" : "ВКонтакте, Одноклассники, Дзен";
+            return (
+              <div key={pf} id={pf === "vk" ? "vk" : undefined} className="rounded-2xl border border-line p-4 sm:p-5 scroll-mt-6">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className={`w-7 h-7 rounded-lg grid place-items-center text-white text-xs font-bold ${pf === "yandex" ? "bg-[#fc3f1d]" : "bg-[#0077ff]"}`} aria-hidden>{pf === "yandex" ? "Я" : "VK"}</span>
+                  <span className="font-semibold">{name}</span>
+                  {!list.length ? <span className="pill bg-paper text-muted">Не подключён</span> : list.every((a) => a.status === "ok") ? <span className="pill bg-good-soft text-good"><Check size={13} /> Подключён</span> : <span className="pill bg-bad-soft text-bad"><TriangleAlert size={13} /> Нет доступа</span>}
+                </div>
+                <p className="text-sm text-muted mt-1">{sub}</p>
+                {list.map((a) => (
+                  <div key={a.id} className="mt-3 rounded-xl bg-paper px-3.5 py-3">
+                    <div className="text-sm"><span className="text-muted">Аккаунт: </span><b>{a.login && a.login !== PLATFORM_NAME[a.platform] ? a.login : "подключён"}</b></div>
+                    {a.status !== "ok" && a.statusNote ? <p className="text-sm text-bad mt-1">{a.statusNote}</p> : null}
+                    <div className="mt-2.5 flex flex-wrap gap-2">
+                      {a.platform === "yandex" || (a.platform === "vk" && vkConfigured()) ? <a className={`btn btn-sm ${a.status === "ok" ? "btn-ghost bg-white" : "btn-primary"}`} href={`/api/connect/${a.platform}/start?back=/app/settings?tab=accounts`}>Подключить заново</a> : null}
+                      <ActionButton method="DELETE" url={`/api/accounts/${a.id}`} confirm="Отключить кабинет? Сервис перестанет управлять рекламой в нём." done="Кабинет отключён" className="btn btn-ghost btn-sm bg-white">Отключить</ActionButton>
+                    </div>
+                  </div>
+                ))}
+                {!list.length || list.some((a) => a.status !== "ok") ? (
+                  <div className="mt-3">
+                    {pf === "yandex" ? (
+                      yandexConfigured() ? <a className="btn btn-primary btn-sm" href="/api/connect/yandex/start?back=/app/settings?tab=accounts">Подключить Яндекс Директ</a> : <p className="text-sm text-muted">Подключение Директа пока недоступно.</p>
+                    ) : (
+                      <>
+                        <p className="text-sm text-muted mb-3">{vkConfigured() ? "Войдите через VK или подключите по ключам API своего кабинета." : "Подключается по ключам API вашего кабинета — это 2 минуты."}</p>
+                        <VkConnect oauth={vkConfigured()} back="/app/settings?tab=accounts" />
+                      </>
+                    )}
+                  </div>
+                ) : null}
+                {pf === "vk" && list.some((a) => a.status === "ok") ? <div id="vk-pixel" className="mt-4 scroll-mt-6"><VkPixelSetup /></div> : null}
               </div>
-              {a.status === "ok" ? (
-                <span className="pill bg-good-soft text-good"><Check size={13} /> Доступ есть</span>
-              ) : (
-                <span className="pill bg-bad-soft text-bad" title={a.statusNote ?? ""}><TriangleAlert size={13} /> Нет доступа</span>
-              )}
-              {a.platform === "yandex" || (a.platform === "vk" && vkConfigured()) ? <a className="btn btn-ghost btn-sm" href={`/api/connect/${a.platform}/start?back=/app/settings?tab=accounts`}>Подключить заново</a> : null}
-              <ActionButton method="DELETE" url={`/api/accounts/${a.id}`} confirm="Отключить кабинет? Сервис перестанет управлять рекламой в нём." done="Кабинет отключён">Отключить</ActionButton>
-            </li>
-          ))}
-        </ul>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {yandexConfigured() && !accounts.some((a) => a.platform === "yandex") ? <a className="btn btn-primary btn-sm" href="/api/connect/yandex/start?back=/app/settings?tab=accounts">Подключить Яндекс Директ</a> : null}
-
-          {demoAllowed() && !accounts.length ? <ActionButton url="/api/connect/demo" done="Демо-кабинет подключён" className="btn btn-ghost btn-sm">Подключить демо-кабинет</ActionButton> : null}
+            );
+          })}
         </div>
-        {!accounts.some((a) => a.platform === "vk") || accounts.some((a) => a.platform === "vk" && a.status !== "ok") ? (
-          <div id="vk" className="mt-5 pt-5 border-t border-line scroll-mt-6">
-            <div className="font-semibold">VK Реклама</div>
-            <p className="text-sm text-muted mt-0.5 mb-3">ВКонтакте, Одноклассники, Дзен. {vkConfigured() ? "Войдите через VK или подключите по ключам API своего кабинета." : "Подключается по ключам API вашего кабинета — это 2 минуты."}</p>
-            <VkConnect oauth={vkConfigured()} back="/app/settings?tab=accounts" />
-          </div>
-        ) : null}
-        {accounts.some((a) => a.platform === "vk" && a.status === "ok") ? <div id="vk-pixel" className="mt-4 scroll-mt-6"><VkPixelSetup /></div> : null}
+        {demoAllowed() && !accounts.length ? <div className="mt-3"><ActionButton url="/api/connect/demo" done="Демо-кабинет подключён" className="btn btn-ghost btn-sm">Подключить демо-кабинет</ActionButton></div> : null}
         <p className="hint mt-4 max-w-2xl">Новые кабинеты используются для следующего запуска. Пополнение баланса — в самих кабинетах Директа и VK Рекламы. Маркировку рекламы площадки делают автоматически, если в кабинете заполнены данные рекламодателя.</p>
       </section>
         </>

@@ -70,7 +70,7 @@ export function NotifySettings({ initial }: { initial: Status }) {
   };
 
   if (!s.configured) {
-    return <p className="text-muted mt-1 leading-relaxed max-w-2xl">Telegram-уведомления пока не настроены на сервере. Новые заявки видны в разделе «Статистика → Последние обращения».</p>;
+    return <p className="text-muted mt-1 leading-relaxed max-w-2xl">Telegram-уведомления пока пока недоступны. Новые заявки видны в разделе «Статистика → Последние обращения».</p>;
   }
 
   if (!s.connected) {

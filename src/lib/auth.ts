@@ -131,6 +131,12 @@ export async function requireUser(): Promise<SessionUser> {
   return u;
 }
 
+/** Вход через Яндекс ID: отдельное приложение (YANDEX_LOGIN_CLIENT_ID) или то же, что для Директа, если в нём включён доступ к почте */
+// Отдельное OAuth-приложение Яндекса для входа (права login:email, login:info): у приложения Директа таких прав нет,
+// поэтому кнопку «Войти через Яндекс» показываем только когда заданы свои ключи — иначе она вела бы на ошибку
+export const yandexLoginId = () => process.env.YANDEX_LOGIN_CLIENT_ID || "";
+export const yandexLoginSecret = () => process.env.YANDEX_LOGIN_CLIENT_SECRET || "";
+export const yandexLoginConfigured = () => Boolean(yandexLoginId() && yandexLoginSecret());
 export const googleConfigured = () => Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 export const demoAllowed = () => process.env.ALLOW_DEMO !== "false";
 export const DEMO_DOMAIN = "demo.polny-zal.local";
