@@ -573,8 +573,7 @@ export function BusinessOnboarding({
           <Val.Provider value={val}>
             <AboutSection f={f} set={set} niches={niches} nicheLock={nicheLock} initialNiche={initial.niche} draft={draft} sources={sources} need={secMissing(["name", "niche", "city"])} />
             <ServicesSection f={f} set={set} niches={niches} sources={sources} need={secMissing(["services"])} />
-            {/* Фото с сайта и карточек не показываем — блок путал. Найденные фото сохраняются сами (до photoRoom)
-                и уходят в объявления; поменять их можно в разделе «Реклама» */}
+            <PhotosSection draft={draft} photos={photos} setPhotos={setPhotos} room={photoRoom} saved={savedPhotos} photoMax={photoMax} sources={sources} onLinks={() => { setLinkOpen(true); scrollTop(); }} editing={editing} />
             <ContactsSection f={f} set={set} sources={sources} need={secMissing(["contact"])} />
           </Val.Provider>
 
@@ -1136,7 +1135,12 @@ function PhotosSection({ draft, photos, setPhotos, room, saved, photoMax, source
   const [broken, setBroken] = useState<Set<string>>(new Set());
   const found = (draft?.photos ?? []).filter((p) => !broken.has(p));
   return (
-    <SectionCard id="sec-photos" title="Фото" need={null} text="Настоящие фото салона и работ — для объявлений с картинками. Можно добавить и позже.">
+    <SectionCard id="sec-photos" title="Фото" need={null} text="Отметьте свои фото салона и работ — можно добавить и позже.">
+      <div className="rounded-xl bg-paper p-3.5 text-sm text-ink-2 leading-relaxed">
+        <span className="font-semibold text-ink">Картинки для объявлений будут двух видов.</span> Ваши фото — и кадры, которые робот
+        сгенерирует под каждую услугу. Объявления с ними покажем по очереди, сравним, после каких чаще записываются,
+        и оставим лучшие. Своих фото нет — не страшно, реклама запустится со сгенерированными.
+      </div>
       {saved.length ? (
         <Field label="Уже загружены">
           <div className="grid grid-cols-5 sm:grid-cols-8 gap-1.5">
