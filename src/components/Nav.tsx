@@ -5,7 +5,7 @@ import { Suspense } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { PlatformMark } from "./CampaignNav";
 import { SETTINGS_TABS } from "@/lib/settings-tabs";
-import { BarChart3, FileText, History, Home, Megaphone, Rocket, Settings } from "lucide-react";
+import { BarChart3, FileText, History, Home, Lock, Megaphone, Rocket, Settings } from "lucide-react";
 
 type Item = { href: string; label: string; short?: string; icon: typeof Home };
 const FULL: Item[] = [
@@ -66,8 +66,41 @@ function AdsSubLinks({ counts }: { counts: AdsCounts }) {
   );
 }
 
-export function Nav({ launched, variant, ads }: { launched: boolean; variant: "side" | "bottom"; ads?: AdsCounts }) {
+/**
+ * Новый проект, данных ещё нет: остальные разделы пустые и всё равно ведут обратно к анкете — ссылками их не показываем.
+ * Вместо меню — что сейчас происходит и что откроется дальше (без кликабельных пунктов)
+ */
+function Onboarding() {
+  const later = [
+    { label: "Реклама", icon: Megaphone },
+    { label: "Статистика", icon: BarChart3 },
+    { label: "История", icon: History },
+    { label: "Настройки", icon: Settings },
+  ];
+  return (
+    <div className="grid gap-5" aria-label="Подготовка проекта">
+      <div className="grid gap-1">
+        <div className="flex items-center gap-3 h-10 px-3 rounded-lg font-semibold text-[0.95rem] bg-ink text-white" aria-current="step">
+          <FileText size={18} strokeWidth={2.3} />Данные о бизнесе
+        </div>
+        <div className="flex items-center gap-3 h-10 px-3 font-semibold text-[0.95rem] text-faint cursor-default" title="Откроется после данных о бизнесе">
+          <Rocket size={18} strokeWidth={1.8} /><span className="flex-1">Запуск рекламы</span><Lock size={14} />
+        </div>
+      </div>
+      <div className="rounded-xl bg-paper p-3.5 text-sm text-muted leading-relaxed">
+        <div className="font-semibold text-ink-2">Дальше откроются</div>
+        <ul className="mt-2 grid gap-1.5">
+          {later.map(({ label, icon: Icon }) => <li key={label} className="flex items-center gap-2"><Icon size={15} strokeWidth={1.8} />{label}</li>)}
+        </ul>
+        <p className="mt-2.5 text-xs">Сохраните данные о бизнесе — робот подготовит рекламу, и разделы станут доступны.</p>
+      </div>
+    </div>
+  );
+}
+
+export function Nav({ launched, variant, ads, onboarding = false }: { launched: boolean; variant: "side" | "bottom"; ads?: AdsCounts; onboarding?: boolean }) {
   const path = usePathname();
+  if (onboarding) return variant === "side" ? <Onboarding /> : null;
   const items = launched ? FULL : SETUP;
   const isActive = (href: string) => (href === "/app" ? path === "/app" : path.startsWith(href));
   if (variant === "bottom") {

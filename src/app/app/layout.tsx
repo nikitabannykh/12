@@ -43,7 +43,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <Link href="/app" className="px-2"><Logo size={26} /></Link>
             <ProjectSwitcher projects={projects} current={b?.id ?? null} limit={limit} variant="side" />
           </div>
-          <Nav launched={launched} variant="side" ads={ads} />
+          <Nav launched={launched} variant="side" ads={ads} onboarding={!b} />
           </div>
         </aside>
         <div className="min-w-0">
@@ -60,10 +60,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             {b ? <BellMenu /> : null}
             <ProfileMenu email={user.email} label={who(user)} />
           </div>
-          <main className="mx-auto max-w-[1040px] px-4 sm:px-8 py-6 sm:py-10 pb-28 md:pb-12">{children}</main>
+          <main className={`mx-auto max-w-[1040px] px-4 sm:px-8 py-6 sm:py-10 ${b ? "pb-28" : "pb-12"} md:pb-12`}>{children}</main>
         </div>
       </div>
-      <Nav launched={launched} variant="bottom" />
+      <Nav launched={launched} variant="bottom" onboarding={!b} />
     </ToastProvider>
   );
 }
