@@ -48,4 +48,7 @@ for i in $(seq 1 60); do
 done
 echo "$NEW" > $ROOT/deployed
 echo "deployed $NEW (health $code)"
-docker image prune -af --filter "until=72h" >/dev/null 2>&1 || true
+# Диск 20 ГБ: держим только 3 последние сборки (для отката), остальные образы и кэш сборки удаляем
+docker images polny-zal --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' | sort -r | tail -n +4 | cut -f2 | grep -v ":$NEW\$" | xargs -r docker rmi >/dev/null 2>&1 || true
+docker image prune -f >/dev/null 2>&1 || true
+docker builder prune -af --filter "until=24h" >/dev/null 2>&1 || true
