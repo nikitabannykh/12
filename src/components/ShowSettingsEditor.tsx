@@ -20,7 +20,7 @@ const Seg = <T extends string>({ value, options, onChange, label }: { value: T; 
 
 const hh = (h: number) => `${String(h).padStart(2, "0")}:00`;
 
-export function ShowSettingsEditor({ initial, city, address, autoTime, live, autoRadiusKm, monthlyBudget, onReach, example }: {
+export function ShowSettingsEditor({ initial, city, address, autoTime, live, autoRadiusKm, monthlyBudget, onReach, example, mode = "full" }: {
   initial: ShowSettings;
   city: string;
   address: string | null;
@@ -36,6 +36,11 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
   onReach?: (r: Reach) => void;
   /** Примеры из этого бизнеса для подсказок: общий запрос («суши») и фраза («доставка суши») */
   example?: ReachExample;
+  /**
+   * full — всё сразу (настройки); reach — только охват, сохраняется сразу при выборе (мастер запуска, над спросом);
+   * details — всё, кроме охвата, свёрнуто в сводку «Где / Кому / Когда» с кнопкой «Настроить»
+   */
+  mode?: "full" | "reach" | "details";
 }) {
   const hasGeo = autoRadiusKm != null;
   const [s, setS] = useState<ShowSettings>(() => sanitizeShow(initial));
@@ -60,7 +65,8 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
   async function save() {
     setBusy(true);
     try {
-      const r = await api<{ settings: ShowSettings; updated: number; warnings: string[] }>("PUT", "/api/show", sanitizeShow(s));
+      // В мастере охват живёт в своём блоке и сохраняется сразу — здесь его не трогаем
+      const r = await api<{ settings: ShowSettings; updated: number; warnings: string[] }>("PUT", "/api/show", sanitizeShow(mode === "details" ? { ...s, reach: sanitizeShow(initial).reach } : s));
       setS(r.settings);
       setSaved(JSON.stringify(r.settings));
       if (r.warnings.length) toast(`Сохранили. Обратите внимание:\n${r.warnings.slice(0, 3).join("\n")}`, "error");
@@ -75,12 +81,26 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
 
   const rec = recommendedReach(monthlyBudget ?? 30000);
   const reach: Reach = s.reach ?? rec;
-  return (
-    <div className="grid gap-6">
-      {/* Охват поиска: насколько широко покупать запросы — главный рычаг, чтобы не сливать бюджет на общие слова */}
+  const [open, setOpen] = useState(mode !== "details");
+
+  /** Охват в мастере запуска сохраняем сразу: от него зависят спрос и прогноз прямо над и под ним */
+  async function pickReach(v: Reach) {
+    set({ reach: v });
+    onReach?.(v);
+    if (mode !== "reach") return;
+    try {
+      const r = await api<{ settings: ShowSettings }>("PUT", "/api/show", sanitizeShow({ ...sanitizeShow(initial), reach: v }));
+      setSaved(JSON.stringify(r.settings));
+      router.refresh();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+  }
+
+  const reachBlock = (
       <div className="grid gap-2.5">
         <div className="font-semibold flex items-center gap-2"><Target size={16} /> Охват поиска</div>
-        <Seg label="Охват поиска" value={reach} onChange={(v) => { set({ reach: v }); onReach?.(v); }}
+        <Seg label="Охват поиска" value={reach} onChange={(v) => { void pickReach(v); }}
           options={(["precise", "balanced", "wide"] as Reach[]).map((v) => ({ v, label: `${REACH_INFO[v].label}${v === rec ? " · советуем" : ""}` }))} />
         <p className="text-sm text-muted leading-relaxed max-w-2xl">{reachText(reach, example)}</p>
         {reach === "wide" && rec !== "wide" ? (
@@ -88,6 +108,29 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
         ) : null}
         {live ? <p className="text-xs text-faint">Для идущей рекламы: лишние фразы ставим на паузу в Директе, а не удаляем — охват можно вернуть.</p> : null}
       </div>
+  );
+  if (mode === "reach") return reachBlock;
+
+  const summaryBox = (
+      <div className="rounded-xl bg-paper px-4 py-3 text-sm grid gap-0.5">
+        <div><span className="text-muted">Где:</span> {sum.where}</div>
+        <div><span className="text-muted">Кому:</span> {sum.who}</div>
+        <div><span className="text-muted">Когда:</span> {sum.when}</div>
+      </div>
+  );
+  if (!open) {
+    return (
+      <div className="grid gap-3">
+        {summaryBox}
+        <div><button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpen(true)}>Настроить, где, кому и когда показывать</button></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-6">
+      {/* Охват поиска: насколько широко покупать запросы — главный рычаг, чтобы не сливать бюджет на общие слова */}
+      {mode === "full" ? reachBlock : null}
 
       {/* Где */}
       <div className="grid gap-2.5">
@@ -191,15 +234,12 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
         </p>
       </div>
 
-      <div className="rounded-xl bg-paper px-4 py-3 text-sm grid gap-0.5">
-        <div><span className="text-muted">Где:</span> {sum.where}</div>
-        <div><span className="text-muted">Кому:</span> {sum.who}</div>
-        <div><span className="text-muted">Когда:</span> {sum.when}</div>
-      </div>
+      {summaryBox}
 
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" className="btn btn-primary" disabled={!dirty || busy} onClick={save}>{busy ? <Loader2 size={16} className="spin" /> : null} Сохранить</button>
         {dirty ? <button type="button" className="btn btn-ghost" onClick={() => setS(JSON.parse(saved))}>Отменить</button> : null}
+        {mode === "details" && !dirty ? <button type="button" className="btn btn-ghost" onClick={() => setOpen(false)}>Свернуть</button> : null}
         <span className="text-sm text-muted">{live ? "Изменения сразу уйдут в рекламные кабинеты — кампании не перезапускаются, статистика сохранится." : "Применим при запуске рекламы."}</span>
       </div>
     </div>

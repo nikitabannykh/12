@@ -519,6 +519,12 @@ export function LaunchWizard(p: Props) {
       </Section>
 
       <Section id="demand" title="Спрос и запросы" done={demand?.status === "done"} active={hasAccounts} note={hasAccounts ? undefined : "После кабинета"}>
+        {/* Охват — прямо над спросом: от него зависит, сколько запросов мы реально покупаем, и цифра ниже меняется сразу */}
+        {hasAccounts ? (
+          <div className="mb-5 pb-5 border-b border-line">
+            <ShowSettingsEditor mode="reach" monthlyBudget={budget} initial={p.show.initial} city={p.show.city} address={p.show.address} autoTime={p.show.autoTime} autoRadiusKm={p.show.autoRadiusKm} live={false} example={p.show.example} onReach={setReachPreview} />
+          </div>
+        ) : null}
         {!hasAccounts ? (
           <p className="text-muted leading-relaxed text-sm">Подключите кабинет — соберём по Wordstat, сколько людей ищут ваши услуги в вашем городе, и только потом посчитаем бюджет и прогноз.</p>
         ) : !demand || demand.status === "running" ? (
@@ -540,7 +546,7 @@ export function LaunchWizard(p: Props) {
               <p className="text-xs text-ink-2 mt-1 leading-relaxed max-w-2xl">
                 {demand.source === "demo" ? <><b className="font-semibold">Демо-данные</b> — с кабинетом Директа здесь будет Wordstat.</> : <><b className="font-semibold text-good">Данные Wordstat</b> за прошлый месяц.</>}{" "}
                 В итоге — только запросы об услугах и вашем специалисте, без «фото», «обучения» и других нецелевых; запросы о проблемах и похожих услугах показаны отдельно и в итог не входят.
-                {demand.reach && demand.reach !== "wide" ? ` Посчитано под охват «${REACH_INFO[demand.reach].label}»: слишком общие запросы входят только уточнениями (с ценой, городом, записью) — поменяете охват в «Где, кому и когда показывать», итог пересчитается.` : ""}
+                {demand.reach && demand.reach !== "wide" ? ` Посчитано под охват «${REACH_INFO[demand.reach].label}»: слишком общие запросы входят только уточнениями (с ценой, городом, записью) — выберите другой охват выше, итог пересчитается.` : ""}
                 {countedSum > demand.summary.total * 1.05 ? " Итог — без пересечений: общий запрос уже включает свои уточнения, поэтому итог меньше суммы групп." : ""}
               </p>
               {demand.note ? <p className="text-xs text-muted mt-1">{demand.note}</p> : null}
@@ -563,7 +569,7 @@ export function LaunchWizard(p: Props) {
                 </li>
               ))}
             </ul>
-            <p className="text-xs text-muted">Зачёркнуты слишком общие запросы («{(p.show.example ?? DEFAULT_EXAMPLE).word}» и похожие): по ним в основном ищут фото и идеи. Они показывают спрос, но покупать их робот не будет, если охват поиска не «Широко» (настройка в «Где, кому и когда показывать»).</p>
+            <p className="text-xs text-muted">Зачёркнуты слишком общие запросы («{(p.show.example ?? DEFAULT_EXAMPLE).word}» и похожие): по ним в основном ищут фото и идеи. Они показывают спрос, но покупать их робот не будет, если охват поиска не «Широко» (выбор охвата — над спросом).</p>
             {demand.summary.groups.length > 6 ? (
               <button type="button" className="btn btn-ghost btn-sm justify-self-start" onClick={() => setAllGroups(!allGroups)}>{allGroups ? "Свернуть" : `Показать все группы (${demand.summary.groups.length})`}</button>
             ) : null}
@@ -671,8 +677,8 @@ export function LaunchWizard(p: Props) {
         <p className="hint mt-4">Бюджет — жёсткая граница: робот следит за расходами каждый день и не выйдет за неё. Пополнять кабинеты нужно самим, примерно на эту сумму в месяц. Все суммы — с НДС: в кабинете Директа недельные лимиты показываются без НДС, поэтому там они на 22% меньше.</p>
       </Section>
 
-      <Section id="show" title="Где, кому и когда показывать" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>
-        <ShowSettingsEditor monthlyBudget={budget} initial={p.show.initial} city={p.show.city} address={p.show.address} autoTime={p.show.autoTime} autoRadiusKm={p.show.autoRadiusKm} live={false} example={p.show.example} onReach={setReachPreview} />
+      <Section id="show" title="Где, кому и когда" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>
+        <ShowSettingsEditor key={JSON.stringify(p.show.initial)} mode="details" monthlyBudget={budget} initial={p.show.initial} city={p.show.city} address={p.show.address} autoTime={p.show.autoTime} autoRadiusKm={p.show.autoRadiusKm} live={false} example={p.show.example} />
       </Section>
 
       <Section id="landing" title="Куда ведёт реклама" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>
