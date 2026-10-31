@@ -78,6 +78,8 @@ export type SemanticChecks = {
   wordstat?: { phrases: number; added: number; dropped: number; total: number; source: string | null } | { phrases: 0; note: string } | null;
   dedup?: { merged: number } | null;
   ai?: { added: number } | null;
+  /** Проверка директологом (правила + YandexGPT): сколько фраз убрано и примеры */
+  review?: { dropped: number; examples: string[]; negatives: string[] } | null;
 };
 export type SemanticCore = {
   groups: SemanticGroup[];

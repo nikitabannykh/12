@@ -10,6 +10,7 @@ import { expandSemantics, generateCopyPlan, type CopyPlan } from "../ai/copy";
 import { buildSemanticCore, conflicts, geoTerms, reachKeywords, refineWithDirect, type SemanticChecks, type SemanticCore } from "./semantics";
 import { applyWordstat } from "./wordstat";
 import { demandForCore, demandNegatives } from "./demand";
+import { reviewKeywords } from "./kwreview";
 import { aiConfigured } from "../ai/yandex";
 import { generateServicePhotos, listPhotos, makeCreative, getImage, ensureLogo, imageSet, serviceArt, type ServiceArt } from "./images";
 import { adExtras, responsiveAssets, timeTargeting, withPlanCallouts } from "./extras";
@@ -331,6 +332,11 @@ export async function semanticCoreFor(b: Business, accounts: AdAccount[]): Promi
       core = { ...core, checks: { ...core.checks, wordstat: { phrases: 0, note: `Wordstat: ${errorText(e)}` } } };
     }
   }
+  // Директолог смотрит готовые фразы: имена врачей, чужие бренды, справочные запросы, чужая аудитория, обрывки из прайса
+  if (core.groups.length) {
+    const r = await reviewKeywords(b, core, { until: Date.now() + 15_000 }).catch(() => null);
+    if (r) core = { ...r.core, checks: { ...r.core.checks, review: { dropped: r.dropped.length, examples: r.dropped.slice(0, 12), negatives: r.negatives } } };
+  }
   return core;
 }
 
@@ -401,7 +407,13 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
     ].filter(Boolean))];
     const want = Math.min(5, Math.max(3, (b.services ?? []).filter((x) => x.name).length));
     // Сюжеты — своё время, не урезанное шагом картинок (иначе модель не успевала, и подписи были просто названиями)
-    arts = await serviceArt(b, plan.imageIdeas, Math.max(want, Math.min(20, subjects.length)), { until: Date.now() + 30_000, subjects });
+    // Что именно ищут в каждой группе — сюжет кадра строим под эти запросы, а не только под название
+    const queries: Record<string, string[]> = {};
+    for (const c of enabled) for (const g of c.groups) {
+      const key = c.channel === "search" ? g.name : g.service ?? g.name;
+      if (!queries[key]) queries[key] = (g.keywords ?? []).map((k) => k.replace(/\s-\S+/g, " ").replace(/["!+[\]]/g, "").trim()).filter(Boolean).slice(0, 4);
+    }
+    arts = await serviceArt(b, plan.imageIdeas, Math.max(want, Math.min(20, subjects.length)), { until: Date.now() + 30_000, subjects, queries });
     // Кадры, уже сгенерированные под ту же группу (повторная подготовка), берём снова — не платим дважды
     const before = own.filter((p) => p.kind === "generated");
     // Своё фото с подписью позиции («Сет Свежесть» на сайте) — лучше любой генерации: берём его, а не рисуем
