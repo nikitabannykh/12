@@ -450,7 +450,7 @@ JSON: {"ads": [{"angle": "...", "title": "до 56 символов", ${ch === "s
           }
         }
       };
-      await Promise.all(Array.from({ length: 6 }, worker));
+      await Promise.all(Array.from({ length: 8 }, worker));
       return out;
     };
     const [raw, searchAds, networkAds] = await Promise.all([
@@ -906,9 +906,13 @@ function factsOf(b: Business, serviceName?: string, price?: string) {
   const topic = rootsOf(rawSvc);
   const related = (s: Service) => owned || !serviceName || [...rootsOf(s.name)].some((r) => topic.has(r));
   const others = services
-    .filter((s) => s !== owned && s.price && cleanText(s.name).length <= 40 && ok(s.name) && related(s))
+    .filter((s) => s !== owned && s.price && ok(s.name) && related(s))
     .sort((x, y) => Number((y.category ?? "") === (owned?.category ?? "")) - Number((x.category ?? "") === (owned?.category ?? "")))
-    .map((s) => `${cap(cleanText(s.name))} — ${priceText(s.price)}`);
+    // Как говорит клиент: «Детский вторичный прием остеопата (до 14 лет)» → «Детский приём остеопата»
+    .map((s) => ({ s, n: humanService(b, s.name) }))
+    .filter(({ n }) => n && n.length <= 40)
+    .map(({ s, n }) => `${cap(n)} — ${priceText(s.price)}`)
+    .filter((x, i, a) => a.findIndex((y) => y.split(" — ")[0].toLowerCase() === x.split(" — ")[0].toLowerCase()) === i);
   // «Цены от …» — только если в прайсе несколько цен
   const priced = services.map((s) => parsePrice(s.price)).filter((x): x is NonNullable<typeof x> => !!x);
   const minPrice = priced.length >= 2 ? Math.min(...priced.map((x) => x.price)) : null;

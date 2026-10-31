@@ -39,10 +39,10 @@ export function cleanByRules(core: SemanticCore): { core: SemanticCore; dropped:
       if (adult && !kid && KID.test(p)) return false;
       return true;
     });
-    const kept = keep(g.keywords, next);
-    dropped.push(...g.keywords.filter((k) => !kept.includes(k)).map(displayKeyword));
-    return { ...g, keywords: kept };
-  });
+    // Правила кода надёжны — мусор не возвращаем ради минимума. Группа без фраз уходит (её запросы есть у соседних)
+    dropped.push(...g.keywords.filter((k) => !next.includes(k)).map(displayKeyword));
+    return { ...g, keywords: next };
+  }).filter((g) => g.keywords.length > 0);
   return { core: { ...core, groups }, dropped };
 }
 
@@ -115,7 +115,8 @@ export async function reviewKeywords(b: Business, core: SemanticCore, opts: { un
     merged.push(nm && !merged.some((m) => m.name.toLowerCase() === nm.toLowerCase()) ? { ...g, name: nm } : g);
   });
   // Минус-слово: не аудитория и не намерение, не задевает оставшиеся фразы и слова прайса
-  const own = `${services.join(" ")} ${merged.map((g) => g.name).join(" ")}`.toLowerCase().replace(/ё/g, "е");
+  // Улица, город и район бизнеса — целевые слова, не минусуем («остеопат на чайковского»)
+  const own = `${services.join(" ")} ${merged.map((g) => g.name).join(" ")} ${b.address ?? ""} ${b.city ?? ""} ${[...core.geo.city, ...core.geo.local].join(" ")}`.toLowerCase().replace(/ё/g, "е");
   const before = merged.flatMap((g) => g.keywords);
   const negatives = [...new Set(campaignNeg)]
     .filter((n) => !KID.test(n) && !ADULT.test(n) && !INTENT.test(n) && !/беремен|мам|женщин|мужчин|пожил|спорт/.test(n) && !own.includes(n.slice(0, Math.max(4, n.length - 2))))
