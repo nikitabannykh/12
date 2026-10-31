@@ -8,7 +8,7 @@ set -a; . /etc/polny-zal.env; set +a
 if [ -f $ROOT/migrate-failed ]; then echo "migrate: прошлый перенос не удался — см. $ROOT/migrate-failed"; exit 1; fi
 trap 'rc=$?; [ $rc -ne 0 ] && date -Is > $ROOT/migrate-failed; exit $rc' EXIT
 if [ -z "${NEON_DATABASE_URL:-}" ]; then echo "migrate: NEON_DATABASE_URL нет — начинаем с пустой базы"; touch $ROOT/migrated; exit 0; fi
-PG="docker run --rm -e PGSSLROOTCERT=/ca.pem -v $ROOT/yandex-ca.pem:/ca.pem:ro -e SRC=$NEON_DATABASE_URL -e DST=$DATABASE_URL mirror.gcr.io/library/postgres:17"
+PG="docker run --rm --network pz -e SRC=$NEON_DATABASE_URL -e DST=$DATABASE_URL mirror.gcr.io/library/postgres:17"
 n=$($PG sh -c 'psql "$DST" -tAc "select count(*) from information_schema.tables where table_schema = '"'"'public'"'"'"')
 if [ "$n" != "0" ]; then echo "migrate: в новой базе уже $n таблиц — перенос пропускаем"; touch $ROOT/migrated; exit 0; fi
 echo "migrate: копируем базу"

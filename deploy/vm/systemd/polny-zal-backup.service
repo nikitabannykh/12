@@ -1,0 +1,8 @@
+[Unit]
+Description=Samokhod backup
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash /opt/polny-zal/app/deploy/vm/backup.sh
+TimeoutStartSec=1800

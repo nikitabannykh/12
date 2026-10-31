@@ -17,6 +17,12 @@ if ! grep -q '^APP_URL=' "$TMP"; then
 fi
 grep -q '^LEGACY_ORIGINS=' "$TMP" || echo "LEGACY_ORIGINS=https://polny-zal.vercel.app" >> "$TMP"
 grep -q '^TRUSTED_IP_HEADER=' "$TMP" || echo "TRUSTED_IP_HEADER=x-real-ip" >> "$TMP"
-echo "PG_CA_CERT=/ca.pem" >> "$TMP"
+# База на этой же ВМ (если DATABASE_URL не задан в Lockbox)
+if ! grep -q '^DATABASE_URL=' "$TMP"; then
+  PW=$(grep '^POSTGRES_PASSWORD=' /opt/polny-zal/db.env | cut -d= -f2-)
+  echo "DATABASE_URL=postgresql://polnyzal:$PW@polny-zal-db:5432/polnyzal" >> "$TMP"
+else
+  echo "PG_CA_CERT=/ca.pem" >> "$TMP"
+fi
 install -m 600 "$TMP" /etc/polny-zal.env
 rm -f "$TMP"
