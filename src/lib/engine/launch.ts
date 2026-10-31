@@ -7,9 +7,9 @@ import { getDb, schema } from "../db";
 import type { AdAccount, Business, Campaign, UndoOp } from "../db/schema";
 import { allocate, MAX_MONTHLY } from "./budget";
 import { expandSemantics, generateCopyPlan, type CopyPlan } from "../ai/copy";
-import { buildSemanticCore, geoTerms, reachKeywords, refineWithDirect, type SemanticChecks, type SemanticCore } from "./semantics";
+import { buildSemanticCore, conflicts, geoTerms, reachKeywords, refineWithDirect, type SemanticChecks, type SemanticCore } from "./semantics";
 import { applyWordstat } from "./wordstat";
-import { demandForCore } from "./demand";
+import { demandForCore, demandNegatives } from "./demand";
 import { aiConfigured } from "../ai/yandex";
 import { generateServicePhotos, listPhotos, makeCreative, getImage, ensureLogo, imageSet, serviceArt, type ServiceArt } from "./images";
 import { adExtras, responsiveAssets, timeTargeting, withPlanCallouts } from "./extras";
@@ -316,6 +316,9 @@ export async function semanticCoreFor(b: Business, accounts: AdAccount[]): Promi
       /* без проверки Директом */
     }
   }
+  // Минус-слова от проверки хвостов Wordstat (конкуренты, другие значения слов) — в минус-слова кампании
+  const aiNeg = await demandNegatives(b.id).catch(() => [] as string[]);
+  if (aiNeg.length) core = { ...core, negatives: [...new Set([...core.negatives, ...aiNeg.filter((n) => !core.groups.some((g) => g.keywords.some((k) => conflicts(n, k))))])] };
   // Спрос по Wordstat (собран заранее, пока владелец выбирал бюджет — engine/demand): частотность, хвосты, спрос групп
   if (core.groups.length) {
     try {

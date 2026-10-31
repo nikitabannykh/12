@@ -106,7 +106,9 @@ export async function renderCreative(inp: RenderInput): Promise<Buffer> {
   // и путает, когда цена меняется. Картинка продаёт настроение, результат и преимущество
   const price = "";
   const place = shortAddress(inp.business.address, inp.business.city) || inp.business.city;
-  const layout: Layout = inp.layout;
+  // Без фото и без рисунка ниши («Другая услуга»: доставка еды, магазин) карточка на пустом фоне выглядит как ошибка —
+  // рисуем крупную текстовую карточку с выгодой
+  const layout: Layout = !inp.photo && inp.business.niche === "other" && (inp.layout === "tag" || inp.layout === "photo") ? "benefit" : inp.layout;
   // На тёмных палитрах (барбершоп) «ink» светлый — для бумажного ценника берём тёмный текст
   const isLight = (hex: string) => parseInt(hex.slice(1, 3), 16) + parseInt(hex.slice(3, 5), 16) + parseInt(hex.slice(5, 7), 16) > 500;
   const tagInk = isLight(ink) ? bg : ink;

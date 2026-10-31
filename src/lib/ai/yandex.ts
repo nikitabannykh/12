@@ -104,8 +104,41 @@ async function startArt(model: string, prompt: string, aspect: { w: number; h: n
   });
 }
 
-/** YandexART: асинхронная генерация, опрашиваем операцию до готовности. Возвращает JPEG. */
+/**
+ * Alice AI ART (бывший YandexART) — синхронный OpenAI-совместимый Images API, 2–5 секунд на картинку.
+ * Старые модели yandex-art закрыты: «yandex-art» — «Access denied», «yandex-art-2.0» — ошибка 13 «failed to execute calls to all endpoints».
+ * https://aistudio.yandex.ru/docs/en/ai-studio/operations/generation/yandexart-request.html
+ */
+const IMAGE_MODEL = process.env.YANDEX_IMAGE_MODEL || "aliceai-image-art-3.0";
+async function artImages(prompt: string, aspect: { w: number; h: number }): Promise<Buffer> {
+  const size = aspect.w === aspect.h ? "1024x1024" : aspect.w > aspect.h ? "1792x1024" : "1024x1792";
+  const res = await fetch("https://ai.api.cloud.yandex.net/v1/images/generations", {
+    method: "POST",
+    signal: AbortSignal.timeout(60_000),
+    headers: { ...(await headers()), "OpenAI-Project": process.env.YANDEX_CLOUD_FOLDER_ID || "" },
+    body: JSON.stringify({ model: `art://${process.env.YANDEX_CLOUD_FOLDER_ID}/${IMAGE_MODEL}`, prompt: prompt.slice(0, 500), size }),
+  });
+  const j = await res.json().catch(() => ({}));
+  const b64 = j?.data?.[0]?.b64_json;
+  if (!res.ok || !b64) throw new Error(`Alice AI ART: ${j?.error?.message || j?.message || res.status}`);
+  return Buffer.from(b64, "base64");
+}
+
+/** Картинка по описанию: сначала Alice AI ART (Images API), при сбое — прежний асинхронный YandexART. Возвращает JPEG/PNG. */
 export async function art(prompt: string, aspect: { w: number; h: number }, seed?: number): Promise<Buffer> {
+  try {
+    return await artImages(prompt, aspect);
+  } catch (e) {
+    try {
+      return await artAsync(prompt, aspect, seed);
+    } catch {
+      throw e;
+    }
+  }
+}
+
+/** YandexART (старый асинхронный API): опрашиваем операцию до готовности */
+async function artAsync(prompt: string, aspect: { w: number; h: number }, seed?: number): Promise<Buffer> {
   let res: Response | null = null;
   for (const model of artModel ? [artModel] : ART_MODELS) {
     res = await startArt(model, prompt, aspect, seed);

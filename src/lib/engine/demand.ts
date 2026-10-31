@@ -9,7 +9,8 @@ import { clientFor } from "../platforms";
 import { YandexDirect } from "../platforms/yandex";
 import { DemoPlatform } from "../platforms/demo";
 import { cloudWordstat, cloudWordstatConfigured, CloudWordstatError } from "../platforms/wordstat-cloud";
-import { buildSemanticCore, geoTerms, phraseInReach, phraseKey, type SemanticCore } from "./semantics";
+import { buildSemanticCore, conflicts, geoTerms, phraseInReach, phraseKey, type SemanticCore } from "./semantics";
+import { aiConfigured, gptJson } from "../ai/yandex";
 import { recommendedReach, showOf, type Reach } from "./show";
 import { cityIn, demandSeeds, summarizeDemand, type DemandSeedGroup, type DemandSummary } from "./wordstat";
 import { regionIdsFor, yandexRegionIds } from "./regions";
@@ -57,6 +58,8 @@ export type DemandJob = {
   total: number;
   note: string | null;
   lockUntil: number;
+  /** Минус-слова от проверки хвостов Wordstat моделью (конкуренты, другие значения слова) — один раз за сбор */
+  aiNegatives?: string[];
   /** Ошибку 31 (5 отчётов) лечили уборкой своих брошенных отчётов (kv wsrep:<логин>) — один раз за сбор */
   cleaned?: boolean;
   /** Последняя настоящая ошибка источника — для понятной причины владельцу и диагностики */
@@ -600,6 +603,15 @@ export async function demandState(b: Business, accounts: AdAccount[], opts: { ad
     if (!(await saveJob(b.id, fresh, job ? job.rev : null))) return view(await readJob(b.id), b);
     job = fresh;
   }
+  // Сбор закончен раньше, а проверки хвостов ещё не было (сборы до её появления) — проверяем сейчас
+  if (job && job.status === "done" && !job.aiNegatives && job.used !== "demo" && job.lockUntil < Date.now()) {
+    const ai = await reviewTails(b, job).catch(() => null);
+    if (ai) {
+      job.aiNegatives = ai;
+      job.negatives = [...new Set([...job.negatives, ...ai])];
+      await saveJob(b.id, job, job.rev).catch(() => false);
+    }
+  }
   if (!job || job.status !== "running") return view(job, b);
   if (job.lockUntil > Date.now()) return view(job, b);
   // Берём задачу под блокировку
@@ -627,6 +639,12 @@ export async function demandState(b: Business, accounts: AdAccount[], opts: { ad
       job.queue = [];
     }
     if (job.status === "done" && !job.failed.length && job.note && job.sources.length) job.note = null;
+    // Проверка хвостов: что на самом деле ищут по нашим фразам. Модель отмечает чужое (конкуренты, «горячая линия»,
+    // «бак сет», порно, рецепты) — это минус-слова и кампании, и подсчёта спроса. Для всех ниш, один раз за сбор
+    if (job.status === "done" && !job.aiNegatives && job.used !== "demo" && Date.now() < deadline - 8_000) {
+      job.aiNegatives = await reviewTails(b, job).catch(() => []);
+      job.negatives = [...new Set([...job.negatives, ...job.aiNegatives])];
+    }
     if (job.status === "done" && job.failed.length) job.note ??= `По ${job.failed.length} из ${job.total} фраз Wordstat не ответил — спрос может быть занижен.${job.lastError ? ` Причина: ${job.lastError.message}` : ""}`;
     if (job.status === "unavailable") {
       const le = job.lastError;
@@ -647,6 +665,34 @@ export async function demandState(b: Business, accounts: AdAccount[], opts: { ad
  * Данные Wordstat для ядра запуска — без сети: из задачи бизнеса и кэша фраз (семена текущего ядра).
  * Нет данных — пустой объект и причина (ядро останется как было).
  */
+/** Модель смотрит самые частые хвосты по каждой группе и называет минус-слова для нецелевых — не задевая целевые */
+async function reviewTails(b: Business, job: DemandJob): Promise<string[]> {
+  if (!aiConfigured()) return [];
+  const lines = job.groups.map((g) => {
+    const tails = g.seeds.flatMap((s) => job.results[phraseKey(s)]?.searchedWith ?? []).sort((x, y) => y.shows - x.shows);
+    const uniq = [...new Map(tails.map((t) => [phraseKey(t.phrase), t])).values()].slice(0, 25);
+    return uniq.length ? `«${g.name}»: ${uniq.map((t) => t.phrase).join("; ")}` : "";
+  }).filter(Boolean);
+  if (!lines.length) return [];
+  const r = await gptJson<{ negatives: string[] }>(
+    "Ты директолог. Чистишь семантику от нецелевых запросов. Ответ — строго JSON.",
+    `Бизнес: ${b.name}, ${b.city}. ${b.description ?? ""}\nУслуги/позиции: ${(b.services ?? []).slice(0, 20).map((s) => s.name).join(", ")}\n\nСамые частые запросы Wordstat по группам:\n${lines.join("\n")}\n\n` +
+      "Найди запросы, по которым ищут НЕ этот бизнес: названия конкурентов и сетей, агрегаторы, другое значение слова («горячая линия», «бак сет»), вакансии, рецепты, бесплатное, обучение, порно и т. п. " +
+      "Верни минус-слова (1–2 слова каждое), которые отсекут именно их и не заденут целевые запросы (название услуги, «доставка», «заказать», город, «цена» — не минусовать). " +
+      'JSON: {"negatives": ["..."]} — до 40.',
+    { temperature: 0.1, maxTokens: 700, timeoutMs: 15_000 },
+  );
+  const seeds = job.groups.flatMap((g) => g.seeds);
+  return [...new Set((r.negatives ?? []).map((x) => String(x).toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9\s-]/g, " ").replace(/\s+/g, " ").trim()))]
+    .filter((x) => x.length >= 3 && x.split(" ").length <= 2 && !seeds.some((s) => conflicts(x, s)))
+    .slice(0, 40);
+}
+
+/** Минус-слова, найденные проверкой хвостов Wordstat — в минус-слова кампании при подготовке объявлений */
+export async function demandNegatives(businessId: string): Promise<string[]> {
+  return (await readJob(businessId))?.aiNegatives ?? [];
+}
+
 export async function demandForCore(b: Business, core: SemanticCore): Promise<{ results: Record<string, WordstatPhrase>; source: string | null; note: string | null }> {
   const job = await readJob(b.id);
   const results: Record<string, WordstatPhrase> = { ...(job?.results ?? {}) };

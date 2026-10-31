@@ -193,7 +193,7 @@ export async function generateServicePhotos(b: Business, items: ServiceArt[]): P
     }
     errors.push(String((last as Error)?.message ?? last));
   };
-  await Promise.all(Array.from({ length: 2 }, async () => { while (next < out.length) await one(next++); }));
+  await Promise.all(Array.from({ length: 3 }, async () => { while (next < out.length) await one(next++); }));
   return { items: out, errors };
 }
 
