@@ -4,7 +4,7 @@
 
 Владелец рассказывает о бизнесе и выбирает месячный бюджет. Сервис сам запускает кампании в Яндекс Директе и VK Рекламе, каждый день проверяет результаты, отключает слабое, тестирует новое и объясняет каждое решение простыми словами — с кнопкой «Отменить».
 
-**Прод:** https://polny-zal.vercel.app · **Документация:** [архитектура](docs/architecture.md) · [деплой в РФ](docs/deploy-ru.md) · [исследование](docs/research.md) · [конкуренты](docs/competitors.md) · [интервью](docs/interviews.md)
+**Прод:** https://81-26-176-249.sslip.io — Yandex Cloud, данные в РФ (152-ФЗ). Старый адрес https://polny-zal.vercel.app перенаправляет туда же. · **Передача проекта:** [docs/handover.md](docs/handover.md) · **Документация:** [архитектура](docs/architecture.md) · [деплой в РФ](docs/deploy-ru.md) · [исследование](docs/research.md) · [конкуренты](docs/competitors.md) · [интервью](docs/interviews.md)
 
 ### Ключевые возможности
 
@@ -27,7 +27,7 @@
 ## Содержание
 
 1. [Быстрый старт локально](#1-быстрый-старт-локально)
-2. [Деплой на Vercel](#2-деплой-на-vercel)
+2. [Деплой](#2-деплой) — [Yandex Cloud (прод)](#21-yandex-cloud-вм-так-работает-прод) · [Vercel (разработка, демо)](#22-vercel-разработка-и-демо)
 3. [Переменные окружения](#3-переменные-окружения)
 4. [Ключи и доступы](#4-ключи-и-доступы)
 5. [Расписание робота](#5-расписание-робота)
@@ -36,6 +36,7 @@
 8. [Эксплуатация (runbook)](#8-эксплуатация-runbook)
 9. [CI и структура репозитория](#9-ci-и-структура-репозитория)
 10. [Ограничения и что не проверено](#10-ограничения-и-что-не-проверено)
+11. [Передача проекта](#11-передача-проекта)
 
 ---
 
@@ -70,9 +71,40 @@ npm run build
 
 ---
 
-## 2. Деплой на Vercel
+## 2. Деплой
 
-~20 минут. Для демо достаточно шагов 1–5, ключи площадок добавляются позже.
+Прод работает на **одной виртуальной машине в Yandex Cloud**: приложение в Docker, PostgreSQL 17 в Docker на той же ВМ, HTTPS — Caddy, секреты — Lockbox, бэкапы — Object Storage. Все данные (база, заявки с телефонами) — в РФ. Vercel остался только как редирект со старого адреса.
+
+### 2.1. Yandex Cloud, ВМ (так работает прод)
+
+Всё ставят и обновляют скрипты из [`deploy/vm`](deploy/vm), руками ничего на ВМ делать не нужно. Пошагово, с объяснением каждого ресурса — [docs/deploy-ru.md → Вариант Б′](docs/deploy-ru.md#вариант-б-вм-под-ключ-cloud-init--lockbox-так-развёрнут-основной-сервис). Коротко:
+
+1. **Сервисный аккаунт** с ролями на каталог: `lockbox.payloadViewer`, `storage.uploader`, `ai.languageModels.user`, `ai.imageGeneration.user`, `search-api.webSearch.user`.
+2. **Бакет** Object Storage для бэкапов (приватный).
+3. **Секрет Lockbox** — только настоящие секреты: `YANDEX_CLIENT_SECRET`, `YANDEX_LOGIN_CLIENT_SECRET`, `VK_ADS_CLIENT_SECRET`, `TELEGRAM_BOT_TOKEN`, `SMTP_URL` и т. п. `APP_SECRET`, `CRON_SECRET` и пароль базы генерируются на ВМ сами; ключ Yandex Cloud не нужен — GPT, ART и Wordstat работают от сервисного аккаунта ВМ.
+4. **ВМ** Ubuntu 24.04 (2 vCPU 20 %, 4 ГБ, диск 20 ГБ, статический IP), сервисный аккаунт из п. 1, метаданные:
+
+   | Ключ | Значение |
+   |---|---|
+   | `user-data` | содержимое [`deploy/vm/cloud-init.yaml`](deploy/vm/cloud-init.yaml) |
+   | `lockbox-secret-id` | ID секрета Lockbox |
+   | `backup-bucket` | имя бакета |
+   | `app-env` | несекретные настройки строками `KEY=VALUE`: `YANDEX_CLIENT_ID`, `YANDEX_LOGIN_CLIENT_ID`, `YANDEX_CLOUD_FOLDER_ID`, `VK_ADS_CLIENT_ID`, при своём домене — `APP_URL` |
+
+5. Через 10–15 минут сервис доступен на `https://<IP-через-дефисы>.sslip.io` (или на `APP_URL`). Добавьте этот адрес в Redirect URI OAuth-приложений ([раздел 4](#4-ключи-и-доступы)).
+
+Дальше ВМ живёт сама: раз в 5 минут забирает `master` из GitHub и пересобирается, раз в час запускает робота, ночью делает бэкап в бакет ([раздел 5](#5-расписание-робота), [раздел 8](#8-эксплуатация-runbook)). Стоимость — около 2 000 ₽/мес (ВМ, диск, IP).
+
+**Проверка:**
+```bash
+curl -s https://<адрес>/api/health                                         # {"ok":true,…}
+curl -sI https://<адрес>/api/health | grep -i x-served-by                 # x-served-by: yc-vm
+curl -s -o /dev/null -w '%{http_code}\n' https://<адрес>/api/cron/run      # 401 — без ключа не пускает
+```
+
+### 2.2. Vercel (разработка и демо)
+
+~20 минут. Подходит для демо и разработки; для клиентов из РФ — только вариант 2.1 (данные на Vercel и Neon лежат за рубежом). Для демо достаточно шагов 1–5, ключи площадок добавляются позже.
 
 > **Тариф.** Vercel Hobby — только для некоммерческого использования. Для работы с реальными клиентами нужен **Vercel Pro** (он же снимает ограничение cron «раз в сутки»). Neon Free (0,5 ГБ) хватит на старт; картинки хранятся в Postgres, поэтому место кончится примерно через несколько десятков клиентов.
 
@@ -108,7 +140,7 @@ npm run build
 - [ ] Настроены бэкапы ([раздел 8](#бэкапы)) — секреты `DATABASE_URL` (direct-строка) и `BACKUP_PASSPHRASE`.
 - [ ] Через сутки в `/api/health` поле `cron.at` свежее, `failed: 0`.
 
-**Другие варианты хостинга.** Для хранения данных в РФ (152-ФЗ) — Yandex Cloud: Managed PostgreSQL + Serverless Containers или ВМ, пошагово в [docs/deploy-ru.md](docs/deploy-ru.md). В корне есть [`Dockerfile`](Dockerfile) (Node 22, порт из `PORT`, по умолчанию 8080):
+**Другие варианты хостинга.** Кроме ВМ из 2.1 — Yandex Cloud Managed PostgreSQL + Serverless Containers, пошагово в [docs/deploy-ru.md](docs/deploy-ru.md). В корне есть [`Dockerfile`](Dockerfile) (Node 22, порт из `PORT`, по умолчанию 8080):
 
 ```bash
 docker build -t samohod .
@@ -147,6 +179,10 @@ docker run -p 8080:8080 --env-file .env samohod
 | `DGIS_API_KEY`, `YANDEX_PLACES_API_KEY` | Запасной путь автозаполнения анкеты, если 2ГИС / Карты показали капчу |
 | `YANDEX_GEOCODER_KEY`, `NOMINATIM_*` | Геокодирование адреса для показов VK в радиусе (без ключа — Nominatim) |
 | `PG_CA_CERT`, `PG_POOL_MAX` | Свой CA для Postgres (Yandex Managed PostgreSQL), размер пула (5) |
+| `YANDEX_CLOUD_METADATA_IAM=1` | YandexGPT / ART / Wordstat без API-ключа — IAM-токеном сервисного аккаунта ВМ (на ВМ из 2.1 ставится сам) |
+| `YANDEX_ART_MODEL` | Модель YandexART; по умолчанию пробуется `yandex-art-2.0/latest`, затем `yandex-art/latest` (старая модель для новых каталогов закрыта — 403) |
+| `LEGACY_ORIGINS` | Прежние адреса сервиса через запятую: с них принимаются заявки и запросы форм после переезда (на ВМ — `https://polny-zal.vercel.app`) |
+| `LEGACY_DATABASE_URL` / `NEON_DATABASE_URL` | Строка старой базы: из неё выводится прежний ключ шифрования, если раньше `APP_SECRET` не был задан, — так токены кабинетов после переезда расшифровываются |
 
 **Квоты на платные вызовы** (на пользователя в сутки по Москве; превышение → `429` с понятным текстом). Значения по умолчанию «обычный / демо»:
 
@@ -203,6 +239,8 @@ docker run -p 8080:8080 --env-file .env samohod
 
 Без ключей: тексты из шаблонов ниш, без YandexART, спрос по Wordstat не собирается (прогноз — грубая оценка по нише).
 
+**На ВМ из 2.1 API-ключ не нужен:** те же три роли выдаются сервисному аккаунту ВМ, сервис получает IAM-токен из метаданных (`YANDEX_CLOUD_METADATA_IAM=1`). Нужен только `YANDEX_CLOUD_FOLDER_ID` (в `app-env`).
+
 ### VK Реклама → `VK_ADS_CLIENT_ID`, `VK_ADS_CLIENT_SECRET`
 
 1. В кабинете [ads.vk.com](https://ads.vk.com) заполните реквизиты (юрлицо — в «Бюджете», физлицо — в «Настройках»).
@@ -247,6 +285,10 @@ Access-токен VK живёт сутки (сервис обновляет ег
 ## 5. Расписание робота
 
 Робот запускается запросом `GET` (или `POST`) `/api/cron/run` с заголовком `Authorization: Bearer <CRON_SECRET>`.
+
+**Прод (ВМ):** таймер systemd `polny-zal-cron` — каждый час в :17, запрос идёт на `127.0.0.1:8080` прямо на ВМ, `CRON_SECRET` с ВМ не уходит. Журнал: `journalctl -u polny-zal-cron`. Робот на ВМ запускается, только если есть метка `/opt/polny-zal/cutover` (ставится после переключения старого адреса) — чтобы старый и новый сервис не управляли одними кампаниями одновременно. GitHub Actions `optimizer` и `backup` после переезда **отключены** (Actions → workflow → Enable, если вернётесь на Vercel).
+
+Для варианта на Vercel:
 
 | Источник | Как часто | Настройка |
 |---|---|---|
@@ -323,7 +365,9 @@ curl -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/run?debug=1"   #
 - **`/api/cron/run`** — только с `Authorization: Bearer <CRON_SECRET>` (сравнение за постоянное время). Без `CRON_SECRET` на Vercel пускается только `vercel-cron` по User-Agent и не чаще раза в 30 минут, вне Vercel — `401`.
 - **Уборка в каждом проходе cron:** демо-аккаунты старше **14 дней** удаляются со всеми данными; контакты в заявках старше 3 лет обезличиваются; история изменений — 2 года; `metrica_daily` — 400 дней; кэш Wordstat — 30 дней; неиспользуемые картинки.
 - **Что не логируется и не отдаётся наружу:** `/api/health` без ключа — только `ok` и время; подробности (флаги интеграций, размер базы, последний крон) — с `Authorization: Bearer <CRON_SECRET>` или `?key=`; `/api/cron/run` без `?debug=1` — только счётчики (логи Actions публичного репозитория видны всем); в диагностике сбора спроса токены вычищаются; трекер `t.js` не читает значения полей форм; ошибки SMTP — только в серверном логе.
-- **Бэкапы** шифруются gpg до загрузки в артефакты (их может скачать любой вошедший в GitHub).
+- **Где лежат данные:** база и приложение — на ВМ в Yandex Cloud (`ru-central1`). Порт базы наружу не открыт (только сеть Docker), снаружи доступны лишь 80/443 через Caddy. Вход на ВМ — OS Login (без SSH-ключей на диске), последовательная консоль выключена.
+- **Секреты прода** — в Lockbox; на ВМ собираются в `/etc/polny-zal.env` (права 600, только root). `APP_SECRET`, `CRON_SECRET` и пароль базы созданы на ВМ и её не покидают.
+- **Бэкапы:** на ВМ — в приватный бакет Object Storage (доступ только сервисному аккаунту); в варианте с GitHub Actions шифруются gpg до загрузки в артефакты (их может скачать любой вошедший в GitHub).
 
 Подробнее — [docs/architecture.md → Безопасность](docs/architecture.md#безопасность).
 
@@ -346,11 +390,38 @@ curl -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/run?debug=1"   #
 }
 ```
 
-Следите за `cron.at` (не старше суток/2 часов), `failed`, `processed < total` (бизнесы не успевают за один проход — нужен более частый cron) и `db.sizeMb` (лимит Neon Free — 512 МБ).
+Следите за `cron.at` (на ВМ — не старше 2 часов), `failed`, `processed < total` (бизнесы не успевают за один проход — нужен более частый cron) и `db.sizeMb` (на ВМ диск 20 ГБ на всё, включая образы Docker). Поле `version` — коммит, который сейчас работает.
+
+### Работа с ВМ
+
+Вход: консоль Yandex Cloud → Compute Cloud → ВМ `polny-zal` → **Подключиться → Cloud Shell** (OS Login, ключи не нужны). Всё лежит в `/opt/polny-zal`:
+
+| Путь | Что это |
+|---|---|
+| `app/` | код (git, ветка `master`), скрипты — `app/deploy/vm/*.sh` |
+| `pgdata/` | данные PostgreSQL (контейнер `polny-zal-db`) |
+| `backups/` | 3 последних дампа (остальное — в бакете) |
+| `local.env`, `db.env` | `APP_SECRET`/`CRON_SECRET` и пароль базы — **не терять** (копия ключей есть только здесь) |
+| `migrated`, `cutover` | метки: база перенесена с Neon; старый адрес переключён на ВМ |
+
+```bash
+systemctl list-timers 'polny-zal*'                           # расписание
+journalctl -u polny-zal-deploy -n 50                         # обновления и сборка
+journalctl -u polny-zal-cron -n 20                           # проходы робота
+sudo docker logs --since 1h polny-zal                        # логи приложения
+sudo systemctl start polny-zal-deploy                        # обновить сейчас, не дожидаясь 5 минут
+sudo docker exec -it polny-zal-db psql -U polnyzal polnyzal  # база
+```
 
 ### Бэкапы
 
-[`backup.yml`](.github/workflows/backup.yml) — ночной `pg_dump -Fc`, зашифрованный gpg (AES256), в артефакт Actions на 7 дней. Секреты: `DATABASE_URL` (**direct**-строка Neon, не pooled — `pg_dump` не работает через PgBouncer) и `BACKUP_PASSPHRASE` (`openssl rand -base64 48`, храните отдельно — без неё бэкап не открыть). Ручной запуск: `Actions → backup → Run workflow`.
+**Прод (ВМ):** таймер `polny-zal-backup` каждую ночь в 01:30 делает `pg_dump` в бакет (`polnyzal-YYYYMMDD-HHMM.sql.gz`) и держит 3 последние копии на диске. Удаление старых копий в бакете — правилом жизненного цикла бакета. Восстановление в пустую базу:
+
+```bash
+gunzip -c polnyzal-….sql.gz | sudo docker exec -i polny-zal-db psql -U polnyzal polnyzal
+```
+
+**Вариант на Vercel:** [`backup.yml`](.github/workflows/backup.yml) — ночной `pg_dump -Fc`, зашифрованный gpg (AES256), в артефакт Actions на 7 дней. Секреты: `DATABASE_URL` (**direct**-строка Neon, не pooled — `pg_dump` не работает через PgBouncer) и `BACKUP_PASSPHRASE` (`openssl rand -base64 48`, храните отдельно — без неё бэкап не открыть). Ручной запуск: `Actions → backup → Run workflow`.
 
 Восстановление:
 
@@ -386,8 +457,15 @@ pg_restore --no-owner --clean --if-exists -d "$DATABASE_URL" db.dump
 | Спрос не собирается, в диагностике код 509 | Wordstat в API Директа v4/Live отключён. Нужен Wordstat через Yandex Cloud: роль `search-api.webSearch.user` и область `yc.search-api.execute` у ключа |
 | `429` у владельца | Исчерпана дневная квота (сообщение говорит какая); при необходимости поднять `QUOTA_*` |
 | `processed < total` в сводке cron | Не хватает времени функции (~60 с) — запускать чаще (Actions каждые 2 часа, Vercel Pro) |
+| ВМ: сайт не открывается | Cloud Shell → `sudo docker ps` (контейнеры `polny-zal`, `polny-zal-db`), `journalctl -u polny-zal-deploy -n 50`, `systemctl status caddy`. Новая сборка упала — продолжает работать прежняя версия, причина в журнале deploy |
+| ВМ: изменения из GitHub не появились | `journalctl -u polny-zal-deploy`: сборка идёт ~1,5 мин, раз в 5 минут. `/api/health?key=…` → `version` показывает текущий коммит |
+| ВМ: новый секрет из Lockbox не подхватился | Секреты перечитываются при каждом запуске deploy; значение длиной ≤ 8 символов или начинающееся с `-`, `TODO`, `ВСТАВ`, `ЗАПОЛН` считается заглушкой и пропускается. Пробелы и переводы строк по краям обрезаются |
+| ВМ: `*.vercel.app` недоступен | Из облака в РФ адреса Vercel часто не открываются — поэтому проверка «старый адрес переключён» сделана меткой `/opt/polny-zal/cutover`, а не запросом |
+| Перенос базы: «server version mismatch» | `pg_dump` должен быть не старше сервера: Neon уже на PostgreSQL 18, поэтому `migrate.sh` использует клиент 18 |
 
 ### Откат релиза
+
+**Прод (ВМ):** ВМ всегда собирает последний коммит `master`. Откат — `git revert <коммит> && git push`: через 5–7 минут ВМ соберёт и запустит версию без него (или сразу: `sudo systemctl start polny-zal-deploy`). Образы прошлых версий остаются на ВМ, пока их не удалит `docker image prune`.
 
 На Vercel: **Deployments** → предыдущий рабочий деплой → **… → Promote to Production** (Instant Rollback). Переменные окружения при этом не откатываются. Миграции аддитивные, поэтому старый код работает на новой схеме; при старте он заново применит свой (идемпотентный) SQL и запишет свою версию, а следующий релиз — свою. Если проблема в данных — восстановление из бэкапа (см. выше).
 
@@ -395,7 +473,7 @@ pg_restore --no-owner --clean --if-exists -d "$DATABASE_URL" db.dump
 
 ## 9. CI и структура репозитория
 
-**CI** — [`ci.yml`](.github/workflows/ci.yml), на каждый push и pull request (Node 22): `npm ci` → `tsc --noEmit` → проверка схемы (колонки, добавленные через `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, засчитываются) → `npm run test:importer` → `npm run build`. Другие workflow: [`optimizer.yml`](.github/workflows/optimizer.yml) (робот), [`backup.yml`](.github/workflows/backup.yml) (бэкап).
+**CI** — [`ci.yml`](.github/workflows/ci.yml), на каждый push и pull request (Node 22): `npm ci` → `tsc --noEmit` → проверка схемы (колонки, добавленные через `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, засчитываются) → `npm run test:importer` → `npm run build`. Другие workflow: [`optimizer.yml`](.github/workflows/optimizer.yml) (робот), [`backup.yml`](.github/workflows/backup.yml) (бэкап) — оба для варианта на Vercel и после переезда на ВМ отключены.
 
 **Стек:** Next.js 16 (App Router, React 19, TypeScript), Tailwind CSS 4, PostgreSQL через Drizzle ORM (локально — PGlite), Satori (`next/og`) и sharp — рендер рекламных картинок, nodemailer.
 
@@ -419,6 +497,8 @@ src/
     db/               schema.ts, migrate.ts (SQL), index.ts (подключение, версия схемы)
     auth.ts, crypto.ts, ratelimit.ts, mail.ts, notify.ts, niches.ts
 scripts/              check-schema.ts, render-samples.tsx
+deploy/vm/            прод на ВМ Yandex Cloud: cloud-init, установка, обновление, перенос базы, робот, бэкап, таймеры systemd
+deploy/vercel-proxy/  vercel.json, которым старый адрес на Vercel перенаправляет на ВМ
 docs/                 документация (ниже)
 ```
 
@@ -427,7 +507,8 @@ docs/                 документация (ниже)
 | Файл | О чём |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Модули, модель данных, площадки и каналы, запуск, робот, отмена, автозаполнение, безопасность, заявки и баланс |
-| [docs/deploy-ru.md](docs/deploy-ru.md) | Развёртывание в Yandex Cloud (152-ФЗ): Managed PostgreSQL + Serverless Containers или ВМ, расписание, перенос с Neon |
+| [docs/handover.md](docs/handover.md) | Передача проекта: где что лежит, доступы, что сменить новому владельцу, чек-лист |
+| [docs/deploy-ru.md](docs/deploy-ru.md) | Развёртывание в Yandex Cloud (152-ФЗ): ВМ «под ключ» (прод), Managed PostgreSQL + Serverless Containers, расписание, перенос с Neon |
 | [docs/research.md](docs/research.md) | Пользователь, возможности и ограничения площадок, почему решения робота такие, гипотезы |
 | [docs/competitors.md](docs/competitors.md) | Конкуренты, сильные и слабые стороны, ценообразование |
 | [docs/interviews.md](docs/interviews.md) | Гайд и план интервью с владельцами |
@@ -447,9 +528,17 @@ docs/                 документация (ниже)
 - **Офлайн-конверсии** в Метрику, условие ретаргетинга Директа, НДС в лимитах Директа (лимит отправляется как бюджет / 1,22; если окажется иначе — `YANDEX_DIRECT_VAT=0`), ссылки «Открыть в кабинете».
 
 **Известные ограничения:**
-- **Бюджет — не жёсткая гарантия.** Площадки отдают расход с задержкой, а робот проверяет рекламу раз в сутки (Vercel Hobby) или раз в 2 часа (Actions). Запас заложен (2 дня трат × 1,3), но возможен небольшой перерасход в последние дни месяца.
-- **Длинные операции на Vercel:** проход робота — до 60 с на запрос, за один запуск обрабатывается ограниченное число бизнесов; при большом числе клиентов нужна очередь задач.
+- **Бюджет — не жёсткая гарантия.** Площадки отдают расход с задержкой, а робот проверяет рекламу раз в час (ВМ). Запас заложен (2 дня трат × 1,3), но возможен небольшой перерасход в последние дни месяца.
+- **Один сервер:** приложение и база на одной ВМ без резерва. Падение ВМ = простой до её перезапуска; данные защищены ночным бэкапом (потеря — до суток). При росте — Managed PostgreSQL и вторая ВМ или Serverless Containers ([docs/deploy-ru.md](docs/deploy-ru.md)).
+- **Технический адрес** `*.sslip.io`: сертификат Let's Encrypt выпускается на IP; для клиентов лучше свой домен — задайте `APP_URL` в `app-env`, A-запись на IP ВМ и обновите Redirect URI.
+- **Ссылки в уже запущенных объявлениях** ведут на `polny-zal.vercel.app/p/…`: Vercel проксирует их на ВМ, но адреса Vercel из части российских сетей открываются нестабильно, и телефоны из заявок проходят через Vercel. Новые кампании создаются уже со ссылками на ВМ; старые стоит перевести (смена ссылки отправляет объявления на повторную модерацию).
 - **Звонки и мессенджеры** считаются как клики по номеру или ссылке, настоящего коллтрекинга нет; интеграции с YCLIENTS и DIKIDI нет — клиентов владелец отмечает сам.
-- **Персональные данные** хранятся в выбранной при деплое базе (Neon — за пределами РФ). Для клиентов из РФ по 152-ФЗ — [docs/deploy-ru.md](docs/deploy-ru.md).
-- **Картинки хранятся в Postgres** (`bytea`) — на Neon Free место кончится примерно через несколько десятков клиентов.
+- **Персональные данные** на проде хранятся в РФ (ВМ Yandex Cloud). Старая база Neon (за рубежом) после переезда ещё существует — удалите её, когда убедитесь, что всё перенесено ([docs/handover.md](docs/handover.md)).
+- **Картинки хранятся в Postgres** (`bytea`) — на диске ВМ 20 ГБ это сотни клиентов, но следите за `db.sizeMb`.
 - **Интервью с пользователями ещё не проведены** — план в [docs/interviews.md](docs/interviews.md).
+
+---
+
+## 11. Передача проекта
+
+Полная опись — [docs/handover.md](docs/handover.md): какие аккаунты и ресурсы есть (GitHub, Yandex Cloud, OAuth-приложения Яндекса, Vercel, Neon), какие секреты новому владельцу нужно сменить и как, что удалить после переезда, и чек-лист приёмки.

@@ -109,6 +109,26 @@ export function decrypt(token: string): string {
   }
 }
 
+/** Зашифровано прежним ключом (до переезда): после перешифровки строку старой базы можно убрать из секретов */
+export function isLegacyEncrypted(token: string | null | undefined): boolean {
+  if (!token) return false;
+  const [v, iv, tag, data] = token.split(".");
+  if (v !== "v1") return false;
+  const opens = (k: Buffer) => {
+    try {
+      const d = createDecipheriv("aes-256-gcm", k, Buffer.from(iv, "base64url"));
+      d.setAuthTag(Buffer.from(tag, "base64url"));
+      Buffer.concat([d.update(Buffer.from(data, "base64url")), d.final()]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (opens(key())) return false;
+  const old = legacyKey();
+  return Boolean(old && opens(old));
+}
+
 export function sign(payload: object): string {
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const mac = createHmac("sha256", secret()).update(body).digest("base64url");
