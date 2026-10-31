@@ -103,7 +103,10 @@ export function proxyVetoes(r: ProxyResult | null, status: "won" | "lost") {
  */
 export type TrafficInput = { channel: string; impressions: number; clicks: number; visits: number; bounces: number; durationSum: number; siteDown?: string | null };
 export function trafficDiagnosis(x: TrafficInput): { cause: "site" | "lost" | "bots" | "mismatch" | null; text: string } {
-  if (x.siteDown) return { cause: "site", text: `Сайт не открывался (${x.siteDown}) — люди кликали, но страница не загружалась. Пока сайт лежит, робот держит рекламу на паузе.` };
+  if (x.siteDown) {
+    const why = /^сайт не открывается/.test(x.siteDown) ? x.siteDown.replace(/^сайт не открывается,?\s*/, "") : x.siteDown;
+    return { cause: "site", text: `Сайт не открывался${why ? ` (${why})` : ""} — люди кликали, а страница не загружалась, поэтому деньги ушли без обращений. Если сайт снова перестанет открываться, робот сам поставит рекламу на паузу.` };
+  }
   if (x.clicks >= 15 && x.visits < x.clicks * 0.5) return { cause: "lost", text: `До сайта дошли ${x.visits} из ${x.clicks} кликнувших — страница слишком долго грузится или не открывается у части людей. Проверьте сайт с телефона.` };
   if (x.visits < 8) return { cause: null, text: "" };
   const bounce = x.bounces / x.visits;
