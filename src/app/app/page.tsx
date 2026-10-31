@@ -73,7 +73,9 @@ export default async function Dashboard() {
   const showing = (a: (typeof ads)[number]) => liveCamp.has(a.campaignId) && liveGroup.has(a.adGroupId);
   // «Модерацию прошло, но показов нет» (нужны документы, нет денег…) — площадка пишет причину, мы храним её с префиксом
   const isBlocked = (a: (typeof ads)[number]) => a.status === "active" && /^Не показывается/.test(a.statusNote ?? "");
-  const blockedAds = ads.filter((a) => isBlocked(a) && liveCamp.has(a.campaignId));
+  // Остановленные роботом (сайт, бюджет) — тоже «хотим показывать»: их лицензия и деньги владелец должен видеть
+  const wantedCamp = new Set(camps.filter((x) => x.status === "active" || (x.status === "paused" && ((x.meta as { pausedBySite?: string; pausedByGuard?: string; pausedBy?: string } | null)?.pausedBySite || (x.meta as { pausedByGuard?: string } | null)?.pausedByGuard || (x.meta as { pausedBy?: string } | null)?.pausedBy === "robot"))).map((x) => x.id));
+  const blockedAds = ads.filter((a) => isBlocked(a) && wantedCamp.has(a.campaignId));
   const blockedDocs = blockedAds.filter((a) => /документ|лиценз/i.test(a.statusNote ?? "")).length;
   const active = ads.filter((a) => a.status === "active" && !isBlocked(a) && showing(a)).length;
   const moderation = ads.filter((a) => a.status === "moderation" && showing(a)).length;
@@ -159,11 +161,6 @@ export default async function Dashboard() {
           <ActionButton url="/api/campaigns/resume" body={{ ids: ownerStopped.map((x) => x.id) }} done="Реклама включена" className={`btn btn-sm ${allStopped ? "btn-primary" : "btn-ghost bg-white"}`}>Включить</ActionButton>
         </StopBanner>
       ) : null}
-      {siteStopped.length ? (
-        <StopBanner tone="bad" title="Сайт не работает — реклама остановлена" text={`${states.get(siteStopped[0].id)?.note ?? "Сайт не открывается."} Если сайт починят нескоро — переключите рекламу на страницу записи, и показы продолжатся.`}>
-          <Link href="/app/settings#landing" className="btn btn-primary btn-sm">Куда ведёт реклама</Link>
-        </StopBanner>
-      ) : null}
       {errorStopped.map((x) => (
         <StopBanner key={x.id} tone="bad" title={`${SHORT[x.channel] ?? x.channel}: показы не идут`} text={x.statusNote || "Площадка вернула ошибку. Робот попробует ещё раз при следующей проверке."}>
           <Link href="/app/settings" className="btn btn-ghost btn-sm bg-white">Настройки</Link>
@@ -198,11 +195,16 @@ export default async function Dashboard() {
       {(["yandex", "vk"] as const).map((pf) => {
         const off = platformStopped.filter((x) => x.platform === pf);
         const notes = off.map((x) => states.get(x.id)?.note ?? "");
-        const money = notes.some((n) => /средств|пополн/i.test(n)) || health.balances.some((x) => x.platform === pf && x.daysLeft === 0 && !x.demo);
+        // Деньги: и у включённых, и у остановленных роботом (сайт) — последнее, что сказала площадка, плюс баланс
+        const wantedPf = camps.filter((x) => x.platform === pf && wantedCamp.has(x.id));
+        const lastMoney = wantedPf.some((x) => /средств|пополн/i.test((x.meta as { delivery?: { note?: string } } | null)?.delivery?.note ?? ""));
+        const money = notes.some((n) => /средств|пополн/i.test(n)) || lastMoney || health.balances.some((x) => x.platform === pf && x.daysLeft === 0 && !x.demo);
+        const siteUrl = siteStopped.filter((x) => x.platform === pf).map((x) => (x.meta as { pausedBySite?: string } | null)?.pausedBySite).find(Boolean);
+        const site = siteUrl ? siteUrl.replace(/^https?:\/\//, "").replace(/\/.*$/, "") : null;
         const other = [...new Set(notes.filter((n) => n && !/средств|пополн/i.test(n)))];
         const docs = pf === "yandex" ? blockedDocs : 0;
         const licenseUnknown = pf === "yandex" && !docs && isMedical(b) && camps.some((x) => x.platform === "yandex" && x.status === "active") && monthCost === 0 && !c.cost;
-        const issues = servingIssues({ platform: pf, money, docs, licenseUnknown, other });
+        const issues = servingIssues({ platform: pf, money, docs, licenseUnknown, other, site });
         return issues.length ? <ServingIssues key={pf} heading={pf === "vk" ? "VK Реклама" : "Яндекс Директ"} issues={issues} /> : null;
       })}
       {blockedAds.length && !platformStopped.length && !blockedDocs ? (

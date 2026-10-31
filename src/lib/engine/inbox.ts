@@ -76,23 +76,36 @@ export async function inboxFor(b: Business): Promise<{ items: InboxItem[]; unrea
     items.push({ id: `acc-${a.id}`, at: now, group: "now", unread: false, tone: "bad", title: `Нет доступа к кабинету ${a.login}`, text: a.statusNote ?? "Подключите кабинет заново — без доступа робот не управляет рекламой.", href: "/app/settings" });
   const ads = await db.select({ status: schema.ads.status, note: schema.ads.statusNote, campaignId: schema.ads.campaignId }).from(schema.ads)
     .where(and(eq(schema.ads.businessId, b.id), inArray(schema.ads.status, ["moderation", "rejected", "active"])));
-  const live = new Set(camps.filter((c) => c.status === "active").map((c) => c.id));
-  const offCamps = camps.filter((c) => c.status === "active" && (c.meta as { delivery?: { ok?: boolean; note?: string } } | null)?.delivery?.ok === false);
-  const money = offCamps.filter((c) => /средств|пополн/i.test((c.meta as { delivery?: { note?: string } }).delivery?.note ?? ""));
+  // «Хотим показывать» — включённые и те, что остановил робот (сайт, бюджет): их проблемы владелец должен видеть.
+  // Паузу владельца не считаем: он остановил сам
+  type M = { delivery?: { ok?: boolean; note?: string }; pausedBy?: string | null; pausedBySite?: string | null; pausedByGuard?: string | null };
+  const metaOf = (c: (typeof camps)[number]) => (c.meta ?? {}) as M;
+  const wanted = camps.filter((c) => c.status === "active" || (c.status === "paused" && (metaOf(c).pausedBySite || metaOf(c).pausedByGuard || metaOf(c).pausedBy === "robot")));
+  const live = new Set(wanted.map((c) => c.id));
+  // Сайт не работает — главная причина: без него деньги и лицензия ничего не дадут
+  const siteOff = wanted.filter((c) => metaOf(c).pausedBySite);
+  if (siteOff.length) {
+    const host = String(metaOf(siteOff[0]).pausedBySite).replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    items.push({ id: "site", at: now, group: "now", unread: false, tone: "bad", title: `Сайт ${host} не работает — реклама на паузе`, text: `Остановили ${siteOff.map((c) => CHANNEL_NAME[c.channel] ?? c.channel).join(", ")}, чтобы не тратить деньги впустую. Проверьте адрес сайта и сам сайт — или переключите рекламу на страницу записи. Как только сайт откроется, включим сами.`, href: "/app/settings#landing" });
+  }
+  const offCamps = camps.filter((c) => c.status === "active" && metaOf(c).delivery?.ok === false);
+  const balances = await getBalances(b);
+  const empty = new Set(balances.filter((x) => !x.demo && x.daysLeft === 0).map((x) => x.accountId));
+  const money = wanted.filter((c) => /средств|пополн/i.test(metaOf(c).delivery?.note ?? "") || empty.has(c.accountId));
   if (money.length)
-    items.push({ id: "money", at: now, group: "now", unread: false, tone: "bad", title: "Нет денег на счёте — реклама не показывается", text: `Стоит: ${money.map((c) => CHANNEL_NAME[c.channel] ?? c.channel).join(", ")}. Пополните кабинет — показы начнутся сами.`, href: "/app" });
+    items.push({ id: "money", at: now, group: "now", unread: false, tone: "bad", title: "Нет денег на счёте", text: `Без денег не покажутся: ${money.map((c) => CHANNEL_NAME[c.channel] ?? c.channel).join(", ")}. Пополните кабинет — показы начнутся сами${siteOff.length ? ", когда заработает сайт" : ""}.`, href: "/app" });
   for (const c of offCamps.filter((x) => !money.includes(x)))
-    items.push({ id: `off-${c.id}`, at: now, group: "now", unread: false, tone: "bad", title: `${CHANNEL_NAME[c.channel] ?? c.channel}: не показывается`, text: (c.meta as { delivery?: { note?: string } }).delivery?.note, href: `/app/ads#c-${c.id}` });
+    items.push({ id: `off-${c.id}`, at: now, group: "now", unread: false, tone: "bad", title: `${CHANNEL_NAME[c.channel] ?? c.channel}: не показывается`, text: metaOf(c).delivery?.note, href: `/app/ads#c-${c.id}` });
   const docs = ads.filter((a) => a.status === "active" && live.has(a.campaignId) && /документ|лиценз/i.test(a.note ?? "")).length;
   if (docs)
-    items.push({ id: "docs", at: now, group: "now", unread: false, tone: "bad", title: "Директ ждёт лицензию", text: `${pl(docs, "объявление не показывается", "объявления не показываются", "объявлений не показываются")}, пока Директ не проверит лицензию. В кабинете Директа: объявление → «Отправить документы».`, href: "/app" });
+    items.push({ id: "docs", at: now, group: "now", unread: false, tone: "bad", title: "Директ ждёт лицензию", text: `${pl(docs, "объявление не покажется", "объявления не покажутся", "объявлений не покажутся")}, пока Директ не проверит лицензию. В кабинете Директа: объявление → «Отправить документы».`, href: "/app" });
   const rejected = ads.filter((a) => a.status === "rejected").length;
   if (rejected)
     items.push({ id: "rejected", at: now, group: "now", unread: false, tone: "warn", title: `${pl(rejected, "объявление отклонено", "объявления отклонены", "объявлений отклонены")}`, text: "Робот перепишет их при следующей проверке — или поправьте сами. Причины — у каждого объявления.", href: "/app/ads" });
   const moderation = ads.filter((a) => a.status === "moderation" && live.has(a.campaignId)).length;
   if (moderation)
     items.push({ id: "moderation", at: now, group: "now", unread: false, tone: "info", title: `${pl(moderation, "объявление", "объявления", "объявлений")} на модерации`, text: "Обычно проверка занимает до суток. Проверяем статусы сами — как только Директ ответит, здесь появится уведомление.", href: "/app/ads" });
-  for (const x of (await getBalances(b)).filter((x) => !x.demo && x.daysLeft !== null && x.daysLeft > 0 && x.daysLeft <= LOW_DAYS))
+  for (const x of balances.filter((x) => !x.demo && x.daysLeft !== null && x.daysLeft > 0 && x.daysLeft <= LOW_DAYS))
     items.push({ id: `bal-${x.accountId}`, at: now, group: "now", unread: false, tone: "warn", title: "Скоро кончатся деньги в кабинете", text: `Хватит примерно на ${pl(x.daysLeft!, "день", "дня", "дней")}.`, href: "/app" });
 
   // Канал тратит деньги впустую: за 3 дня клики есть, обращений нет, а почти все сразу уходят с сайта

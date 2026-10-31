@@ -14,6 +14,8 @@ export type ServingInput = {
   licenseUnknown: boolean;
   /** Прочие причины от площадки (уже без денег) */
   other?: string[];
+  /** Сайт, куда ведёт реклама, не открывается — робот держит рекламу на паузе */
+  site?: string | null;
 };
 
 type Issue = { title: string; text: string; tone: "bad" | "warn"; action?: React.ReactNode };
@@ -21,6 +23,8 @@ type Issue = { title: string; text: string; tone: "bad" | "warn"; action?: React
 /** Одни и те же причины и тексты — на «Главном» и в карточке кампании */
 export function servingIssues(x: ServingInput): Issue[] {
   const out: Issue[] = [];
+  if (x.site)
+    out.push({ tone: "bad", title: "Сайт не работает", text: `${x.site} не открывается — робот остановил рекламу и включит её сам, когда сайт заработает. Проверьте адрес сайта или переключите рекламу на страницу записи.`, action: <a className="btn btn-primary btn-sm" href="/app/settings#landing">Куда ведёт реклама</a> });
   if (x.money)
     out.push({ tone: "bad", title: "Нет денег на счёте", text: `Пополните кабинет ${CABINET[x.platform] ?? ""} — показы начнутся сами.`, action: <a className="btn btn-primary btn-sm" href={TOPUP[x.platform] ?? TOPUP.yandex} target="_blank" rel="noreferrer">Пополнить кабинет</a> });
   if (x.docs)
@@ -36,6 +40,7 @@ export function ServingIssues({ issues, heading, compact = false }: { issues: Is
   const bad = issues.some((x) => x.tone === "bad");
   const title = bad ? `Реклама не показывается${issues.length > 1 ? ` — причин: ${issues.length}` : ""}` : "Проверьте лицензию";
   const Icon = issues[0].title.startsWith("Нет денег") ? Wallet : PauseCircle;
+  // Если реклама уже на паузе из-за сайта — заголовок «стоит», а не «не показывается»
   return (
     <section className={`rounded-[var(--radius-card)] border ${compact ? "p-4" : "p-4 sm:p-5"} flex items-start gap-3 ${bad ? "bg-bad-soft border-bad/30" : "bg-warn-soft border-warn/30"}`} role="status">
       <Icon size={22} className={`shrink-0 mt-0.5 ${bad ? "text-bad" : "text-warn"}`} />

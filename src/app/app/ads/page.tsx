@@ -512,14 +512,16 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                 const st = states.get(camp.id);
                 const note = st?.note ?? "Площадка сейчас не показывает кампанию.";
                 const platformOff = st?.stopped === "platform";
-                const money = platformOff && /средств|пополн/i.test(note);
+                // Остановлена роботом из-за сайта: деньги — по последнему ответу площадки, сайт — отдельной причиной
+                const siteUrl = st?.stopped === "site" ? (camp.meta as { pausedBySite?: string } | null)?.pausedBySite ?? null : null;
+                const money = (platformOff && /средств|пополн/i.test(note)) || (!!siteUrl && /средств|пополн/i.test((camp.meta as { delivery?: { note?: string } } | null)?.delivery?.note ?? ""));
                 const campAds = ads.filter((x) => x.campaignId === camp.id && x.status !== "archived");
-                const docs = campAds.filter((x) => x.status === "active" && /документ/i.test(x.statusNote ?? "")).length;
+                const docs = campAds.filter((x) => x.status === "active" && /документ|лиценз/i.test(x.statusNote ?? "")).length;
                 const everShown = campAds.some((x) => (scores.get(x.id)?.s.impressions ?? 0) > 0) || row.s.cost > 0;
                 // Медицина в Директе: пока показов не было ни разу, лицензия могла ещё не пройти проверку — напоминаем,
                 // даже если Директ не отдал это через API
                 const licenseUnknown = !docs && camp.platform === "yandex" && isMedical(b) && !everShown && camp.status === "active";
-                const issues = servingIssues({ platform: camp.platform, money, docs, licenseUnknown, other: platformOff && !money ? [note] : [] });
+                const issues = servingIssues({ platform: camp.platform, money, docs, licenseUnknown, other: platformOff && !money ? [note] : [], site: siteUrl ? siteUrl.replace(/^https?:\/\//, "").replace(/\/.*$/, "") : null });
                 return issues.length ? <div className="mt-3"><ServingIssues issues={issues} compact /></div> : null;
               })()}
 
