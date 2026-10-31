@@ -23,6 +23,7 @@ import { isMedical } from "@/lib/niches";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { landingAfterSiteCheck } from "@/app/api/business/site";
+import { siteTrackingStatus } from "@/lib/engine/site-tracking";
 
 /** Этап 2 «Запуск рекламы»: кабинеты → бюджет → объявления → запуск (разделы одной страницы) */
 export default async function Launch() {
@@ -36,6 +37,24 @@ export default async function Launch() {
     b.landing = site.landing as Record<string, unknown>;
     const db = await getDb();
     await db.update(schema.businesses).set({ landing: b.landing }).where(eq(schema.businesses.id, b.id));
+  }
+  // Код Самохода на сайте не стоит — по умолчанию ведём рекламу на страницу записи: там обращения считаются сами,
+  // а на сайте без кода мы их не увидим. Выбор владельца («Сайт») не трогаем — его предупредим в мастере
+  const siteState = b.siteUrl ? (await siteTrackingStatus(b.id))?.state ?? "unknown" : null;
+  {
+    const l = (b.landing ?? {}) as LandingSettings & { autoPage?: boolean; noCode?: boolean };
+    const mode = l.mode ?? "auto";
+    if (b.siteUrl && siteState !== "ok" && mode === "auto") {
+      b.landing = { ...l, mode: "page", autoPage: true, noCode: true };
+      const db = await getDb();
+      await db.update(schema.businesses).set({ landing: b.landing }).where(eq(schema.businesses.id, b.id));
+    } else if (b.siteUrl && siteState === "ok" && l.noCode && l.autoPage && mode === "page") {
+      // Код появился до запуска — возвращаем «как обычно» (сайт)
+      const { noCode: _n, autoPage: _a, ...rest } = l;
+      b.landing = { ...rest, mode: "auto" };
+      const db = await getDb();
+      await db.update(schema.businesses).set({ landing: b.landing }).where(eq(schema.businesses.id, b.id));
+    }
   }
   const accounts = await accountsFor(user.id);
   const photos = await listPhotos(b.id);
@@ -66,7 +85,7 @@ export default async function Launch() {
         logo={logo ? `/api/images/${logo.id}` : null}
         vkRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null}
         legalInfo={b.legalInfo}
-        landing={{ initial: (b.landing ?? {}) as LandingSettings, siteUrl: b.siteUrl, pageUrl: pageUrl(b, appUrl()) }}
+        landing={{ initial: (b.landing ?? {}) as LandingSettings, siteUrl: b.siteUrl, pageUrl: pageUrl(b, appUrl()), siteCode: siteState }}
         show={{ initial: (b.showSettings ?? {}) as ShowSettings, city: b.city, address: b.address, autoTime: timeTargeting({ ...b, showSettings: {} })?.note ?? null, autoRadiusKm: b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null }}
       />
     </div>

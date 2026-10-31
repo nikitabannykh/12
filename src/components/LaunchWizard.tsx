@@ -78,7 +78,7 @@ type Props = {
   vkRadiusKm?: number | null;
   /** Настройки показа: регион, пол и возраст, расписание */
   legalInfo?: string | null;
-  landing: { initial: LandingSettings; siteUrl: string | null; pageUrl: string };
+  landing: { initial: LandingSettings; siteUrl: string | null; pageUrl: string; siteCode?: "ok" | "missing" | "unknown" | null };
   show: { initial: ShowSettings; city: string; address: string | null; autoTime: string | null; autoRadiusKm: number | null };
 };
 
@@ -748,8 +748,18 @@ export function LaunchWizard(p: Props) {
           <li className="flex gap-2"><Check size={18} className="text-good shrink-0 mt-0.5" />
             {(() => {
               const l = landingFor({ siteUrl: p.landing.siteUrl, publicKey: "x", landing: p.landing.initial }, null);
+              if (l.kind === "page" && (p.landing.initial as { noCode?: boolean }).noCode)
+                return <span>Объявления будут вести на вашу страницу записи — обращения с неё считаются автоматически. На сайт не ведём, потому что на нём пока нет кода Самохода: без него не видно заявок. Поставите код — переключите рекламу на сайт в «Настройках».</span>;
               if (l.kind === "page") return <span>Объявления будут вести на вашу страницу записи — обращения с неё считаются автоматически.</span>;
-              if (l.kind === "site") return <span>Объявления будут вести на ваш сайт. Чтобы считать обращения, вставьте код счётчика на сайт — он появится в «Настройках» сразу после запуска.</span>;
+              if (l.kind === "site")
+                return p.landing.siteCode === "ok" ? (
+                  <span>Объявления будут вести на ваш сайт. Код Самохода на нём стоит — обращения с сайта будут считаться.</span>
+                ) : (
+                  <span className="block rounded-xl bg-warn-soft text-ink p-3">
+                    <b className="text-warn">Код на сайте не установлен — обращений видно не будет.</b> Мы увидим клики и визиты, но не заявки и звонки с сайта: цену клиента не посчитаем, а робот будет улучшать рекламу только по визитам. Лучше пока вести рекламу на страницу записи (выше, «Куда ведёт реклама») — там обращения считаются сами — или сначала поставить код.
+                    <a href="/app/settings?tab=site#site" className="block mt-1.5 font-semibold underline underline-offset-2">Инструкция и код для сайта →</a>
+                  </span>
+                );
               return <span>Объявления будут вести на {l.label}. Заявки там мы не видим — считаем переходы, а записи отмечайте раз в неделю в «Статистике».</span>;
             })()}
           </li>

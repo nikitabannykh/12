@@ -6,6 +6,7 @@ import { getBalances, LOW_DAYS } from "./balance";
 import { CHANNEL_NAME } from "../platforms";
 import { trafficDiagnosis } from "./quality";
 import { siteDownInfo } from "./site-guard";
+import { siteTrackingStatus } from "./site-tracking";
 import { pl } from "../util";
 
 /**
@@ -99,6 +100,12 @@ export async function inboxFor(b: Business): Promise<{ items: InboxItem[]; unrea
   const docs = ads.filter((a) => a.status === "active" && live.has(a.campaignId) && /документ|лиценз/i.test(a.note ?? "")).length;
   if (docs)
     items.push({ id: "docs", at: now, group: "now", unread: false, tone: "bad", title: "Директ ждёт лицензию", text: `${pl(docs, "объявление не покажется", "объявления не покажутся", "объявлений не покажутся")}, пока Директ не проверит лицензию. В кабинете Директа: объявление → «Отправить документы».`, href: "/app" });
+  // Рекламу увели на страницу записи, потому что на сайте не было кода, — код появился: подсказываем вернуть сайт
+  if (b.siteUrl && (b.landing as { noCode?: boolean } | null)?.noCode && (b.landing as { mode?: string } | null)?.mode === "page") {
+    const st = await siteTrackingStatus(b.id).catch(() => null);
+    if (st?.state === "ok")
+      items.push({ id: "site-code-ok", at: now, group: "now", unread: false, tone: "info", title: "Код на сайте работает — можно вести рекламу на сайт", text: "Сейчас реклама ведёт на страницу записи, потому что раньше кода на сайте не было. Переключите на сайт в «Куда ведёт реклама».", href: "/app/settings?tab=site#landing" });
+  }
   const rejected = ads.filter((a) => a.status === "rejected").length;
   if (rejected)
     items.push({ id: "rejected", at: now, group: "now", unread: false, tone: "warn", title: `${pl(rejected, "объявление отклонено", "объявления отклонены", "объявлений отклонены")}`, text: "Робот перепишет их при следующей проверке — или поправьте сами. Причины — у каждого объявления.", href: "/app/ads" });
