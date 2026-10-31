@@ -466,56 +466,36 @@ function StopBanner({ tone, title, text, children, icon }: { tone: "bad" | "warn
 }
 
 /** «Здоровье рекламы»: балл 0–100 и чек-лист с кнопкой «исправить» у каждого невыполненного пункта */
+/**
+ * «Что ещё улучшить» — только советы по настройке, которых нет в плашках сверху. Деньги, модерация, лицензия и сайт
+ * показываются выше из живых статусов площадки; здесь их не дублируем (и не пишем «в порядке» по устаревшим данным).
+ */
+const SHOWN_ABOVE = new Set(["delivery", "balance", "rejected", "license", "accounts", "counter"]);
 function HealthCard({ h }: { h: Health }) {
-  const bad = h.items.filter((x) => !x.ok).sort((a, b) => b.weight - a.weight);
-  const good = h.items.filter((x) => x.ok);
-  const tone = h.score >= 80 ? "text-good" : h.score >= 50 ? "text-warn" : "text-bad";
-  const bar = h.score >= 80 ? "bg-good" : h.score >= 50 ? "bg-warn" : "bg-bad";
-  const verdict = h.score >= 80 ? "Реклама в хорошей форме" : h.score >= 50 ? "Есть что поправить" : "Реклама работает вполсилы";
+  const todo = h.items.filter((x) => !x.ok && !SHOWN_ABOVE.has(x.key)).sort((a, b) => b.weight - a.weight);
+  if (!todo.length) return null;
   return (
     <section className="card p-5 sm:p-7" aria-labelledby="health-title">
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-        <div className="flex items-baseline gap-1.5">
-          <span className={`text-4xl font-extrabold tracking-tight ${tone}`}>{h.score}</span>
-          <span className="text-muted text-sm">из 100</span>
-        </div>
-        <div className="flex-1 min-w-[12rem]">
-          <h2 id="health-title" className="text-lg font-bold leading-snug">Здоровье рекламы: {verdict.toLowerCase()}</h2>
-          <div className="mt-2 h-2 rounded-full bg-paper overflow-hidden" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={h.score} aria-label="Здоровье рекламы">
-            <div className={`h-full ${bar}`} style={{ width: `${h.score}%` }} />
-          </div>
-        </div>
-      </div>
-      {bad.length ? (
-        <ul className="mt-5 grid gap-3">
-          {bad.map((x) => (
-            <li key={x.key} className="rounded-xl border border-line p-3.5 sm:p-4 flex flex-wrap items-start gap-3">
-              <CircleAlert size={18} className={`shrink-0 mt-0.5 ${x.weight >= 15 ? "text-bad" : "text-warn"}`} />
-              <div className="flex-1 min-w-[12rem]">
-                <div className="font-semibold leading-snug">{x.todo}</div>
-                {x.hint ? <p className="text-sm text-muted mt-0.5 leading-relaxed">{x.hint}</p> : null}
-              </div>
-              {x.fix ? (
-                x.fix.external ? (
-                  <a href={x.fix.href} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm shrink-0">{x.fix.label} <ExternalLink size={14} /></a>
-                ) : (
-                  <Link href={x.fix.href} className="btn btn-ghost btn-sm shrink-0">{x.fix.label}</Link>
-                )
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {good.length ? (
-        <details className="mt-4 group">
-          <summary className="cursor-pointer text-sm font-semibold text-ink-2 select-none">В порядке: {pl(good.length, "пункт", "пункта", "пунктов")}</summary>
-          <ul className="mt-2 grid gap-1.5 text-sm">
-            {good.map((x) => (
-              <li key={x.key} className="flex items-center gap-2"><CheckCircle2 size={16} className="text-good shrink-0" />{x.title}</li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
+      <h2 id="health-title" className="text-lg font-bold leading-snug">Что ещё улучшить</h2>
+      <p className="text-sm text-muted mt-1">Реклама работает и без этого, но с этим — дешевле и точнее.</p>
+      <ul className="mt-4 grid gap-3">
+        {todo.map((x) => (
+          <li key={x.key} className="rounded-xl border border-line p-3.5 sm:p-4 flex flex-wrap items-start gap-3">
+            <CircleAlert size={18} className={`shrink-0 mt-0.5 ${x.weight >= 15 ? "text-bad" : "text-warn"}`} />
+            <div className="flex-1 min-w-[12rem]">
+              <div className="font-semibold leading-snug">{x.todo}</div>
+              {x.hint ? <p className="text-sm text-muted mt-0.5 leading-relaxed">{x.hint}</p> : null}
+            </div>
+            {x.fix ? (
+              x.fix.external ? (
+                <a href={x.fix.href} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm shrink-0">{x.fix.label} <ExternalLink size={14} /></a>
+              ) : (
+                <Link href={x.fix.href} className="btn btn-ghost btn-sm shrink-0">{x.fix.label}</Link>
+              )
+            ) : null}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
