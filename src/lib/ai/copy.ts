@@ -672,6 +672,9 @@ export async function pickNegativeWords(b: Business, queries: string[], already:
   for (const q of queries) {
     for (const w of rules) if (q.toLowerCase().includes(w) && !found.has(w)) found.set(w, q);
   }
+  // Слова, которые минусовать нельзя: город и адрес бизнеса, аудитории, названия его услуг
+  const ownWords = `${b.city ?? ""} ${b.address ?? ""} ${(b.services ?? []).map((s) => s.name).join(" ")} дети детский ребенок подросток школьник взрослый беременная малыш новорожденный`
+    .toLowerCase().replace(/ё/g, "е").split(/[^\p{L}]+/u).filter((w) => w.length >= 4).map((w) => w.slice(0, Math.max(4, w.length - 2)));
   if (aiConfigured() && queries.length) {
     try {
       const r = await gptJson<{ items: { word: string; query: string }[] }>(
@@ -679,14 +682,15 @@ export async function pickNegativeWords(b: Business, queries: string[], already:
         `${bizBrief(b)}
 Поисковые запросы, по которым показывалась реклама:
 ${queries.slice(0, 150).map((q) => `- ${q}`).join("\n")}
-Найди запросы людей, которые точно не станут клиентами (ищут обучение, работу, товары, бесплатное, другой город, другую услугу).
+Найди запросы людей, которые точно не станут клиентами: ищут обучение, работу, товары, бесплатное, другой город, другую услугу, конкретного другого врача или мастера (имя, фамилия), чужую клинику, салон, сеть или бренд, справку (лекарства, «что это», рецепты).
 Для каждого верни одно минус-слово (одно слово в начальной форме), которое отсечёт такие запросы, но не заденет целевые.
+Нельзя минусовать: аудитории (дети, подростки, взрослые, беременные), город, район и улицу бизнеса, его услуги, слова «цена», «отзывы», «рядом», «записаться».
 JSON: {"items":[{"word":"...","query":"пример запроса"}]}. Если таких нет — {"items":[]}.`,
         { temperature: 0.2, maxTokens: 1500 },
       );
       for (const it of r.items ?? []) {
         const w = cleanKeyword(it.word).split(" ")[0];
-        if (w && w.length > 2 && !known.has(w) && !found.has(w)) found.set(w, it.query);
+        if (w && w.length > 2 && !known.has(w) && !found.has(w) && !ownWords.some((o) => w.startsWith(o) || o.startsWith(w.slice(0, Math.max(4, w.length - 2))))) found.set(w, it.query);
       }
     } catch {
       /* только правила */

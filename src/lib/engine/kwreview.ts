@@ -1,7 +1,7 @@
 import "server-only";
 import type { Business } from "../db/schema";
 import { aiConfigured, gptJson } from "../ai/yandex";
-import { conflicts, displayKeyword, phraseKey, type SemanticCore } from "./semantics";
+import { conflicts, displayKeyword, phraseKey, stem, type SemanticCore } from "./semantics";
 
 /**
  * Чистка ключевых фраз перед объявлениями — как директолог смотрит готовую семантику.
@@ -20,6 +20,16 @@ const ADULT = /взросл/;
 
 /** Слова намерения: человек ищет, кто поможет, а не справку */
 const INTENT = /(лечени|лечить|вылечить|врач|доктор|специалист|кому|куда|обратит|клиник|центр|кабинет|прием|приём|цен|стоимост|сколько стоит|запис|помощ|терапи|массаж|процедур|сеанс|рядом|недорог|отзыв)/;
+
+/**
+ * Смысл названия группы для слияния: «Остеопат для детей» и «Детский приём остеопата» — одно и то же.
+ * Без предлогов и слов-оболочек («приём», «консультация»), «детский/для детей» → «дет», остальное — по основе
+ */
+const SHELL = new Set(["для", "у", "в", "во", "на", "и", "с", "со", "к", "по", "при", "прием", "консультация", "консультации", "услуги", "услуга", "сеанс", "запись"]);
+export function intentKey(name: string): string {
+  return [...new Set(name.toLowerCase().replace(/ё/g, "е").split(/[^\p{L}]+/u).filter((w) => w.length >= 2 && !SHELL.has(w))
+    .map((w) => (/^(дет|ребен)/.test(w) ? "дет" : /^взросл/.test(w) ? "взросл" : stem(w))))].sort().join(" ");
+}
 
 const keep = (all: string[], next: string[]) => (next.length >= KEEP_MIN ? next : [...next, ...all.filter((k) => !next.includes(k))].slice(0, Math.min(KEEP_MIN, all.length)));
 
@@ -99,11 +109,12 @@ export async function reviewKeywords(b: Business, core: SemanticCore, opts: { un
   await Promise.all(Array.from({ length: 4 }, async () => {
     while (next < groups.length && (!opts.until || Date.now() < opts.until - 3_000)) await one(next++);
   }));
-  // Слияние групп услуг с одинаковым названием: фразы вместе, без повторов; минус-слова — только не задевающие фразы
+  // Слияние групп услуг с одинаковым смыслом названия («Остеопат для детей» = «Детский приём остеопата»): фразы вместе, без повторов; минус-слова — только не задевающие фразы
   const merged: typeof groups = [];
   groups.forEach((g, gi) => {
     const nm = proposed.get(gi);
-    const into = nm ? merged.find((m) => m.layer === "service" && m.name.toLowerCase() === nm.toLowerCase()) : undefined;
+    const key = intentKey(nm ?? g.name);
+    const into = g.layer === "service" && key ? merged.find((m) => m.layer === "service" && intentKey(m.name) === key) : undefined;
     if (into) {
       const keys = new Set(into.keywords.map(phraseKey));
       into.keywords.push(...g.keywords.filter((k) => !keys.has(phraseKey(k))));
