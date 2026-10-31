@@ -16,7 +16,7 @@ import { ShowSettingsEditor } from "./ShowSettingsEditor";
 import { MedicalLicenseGuide } from "./MedicalLicenseGuide";
 import { LandingEditor } from "./LandingEditor";
 import { landingFor, type LandingSettings } from "@/lib/engine/landing";
-import { REACH_INFO, recommendedReach, type ShowSettings } from "@/lib/engine/show";
+import { DEFAULT_EXAMPLE, REACH_INFO, recommendedReach, type Reach, type ReachExample, type ShowSettings } from "@/lib/engine/show";
 import type { ExtrasBiz } from "@/lib/engine/extras";
 import { allocate, forecastWithDemand, MAX_MONTHLY, minMonthlyFor, recommendedBudget, type Range } from "@/lib/engine/budget";
 import { LAYER_ITEM } from "@/lib/niches";
@@ -79,7 +79,7 @@ type Props = {
   /** Настройки показа: регион, пол и возраст, расписание */
   legalInfo?: string | null;
   landing: { initial: LandingSettings; siteUrl: string | null; pageUrl: string; siteCode?: "ok" | "missing" | "unknown" | null };
-  show: { initial: ShowSettings; city: string; address: string | null; autoTime: string | null; autoRadiusKm: number | null };
+  show: { initial: ShowSettings; city: string; address: string | null; autoTime: string | null; autoRadiusKm: number | null; example?: ReachExample };
 };
 
 /** Раздел этапа: заголовок, справа — состояние («Готово», «Необязательно», «Сначала подключите кабинет») */
@@ -253,6 +253,16 @@ export function LaunchWizard(p: Props) {
   const accKey = usable.map((a) => `${a.id}:${a.status}`).join(",");
   // Охват поиска меняет итог спроса: сохранили другой охват (или бюджет сменил советуемый) — пересчитываем
   const reachKey = p.show.initial.reach ?? recommendedReach(savedBudget);
+  // Охват выбран в форме, но ещё не сохранён — итог спроса пересчитываем сразу (без нового сбора в Wordstat)
+  const [reachPreview, setReachPreview] = useState<Reach | null>(null);
+  useEffect(() => {
+    if (!reachPreview || demand?.status !== "done") return;
+    let off = false;
+    fetch(`/api/launch/demand?reach=${reachPreview}`).then((r) => (r.ok ? r.json() : null)).then((d: DemandView | null) => { if (d && !off) setDemand(d); }).catch(() => null);
+    return () => { off = true; };
+    // demand в зависимостях не нужен: пересчёт — только по смене охвата
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reachPreview]);
   useEffect(() => {
     if (!accKey) return;
     let off = false;
@@ -553,7 +563,7 @@ export function LaunchWizard(p: Props) {
                 </li>
               ))}
             </ul>
-            <p className="text-xs text-muted">Зачёркнуты слишком общие запросы («ногти», «маникюр»): по ним в основном ищут фото и идеи. Они показывают спрос, но покупать их робот не будет, если охват поиска не «Широко» (настройка в «Где, кому и когда показывать»).</p>
+            <p className="text-xs text-muted">Зачёркнуты слишком общие запросы («{(p.show.example ?? DEFAULT_EXAMPLE).word}» и похожие): по ним в основном ищут фото и идеи. Они показывают спрос, но покупать их робот не будет, если охват поиска не «Широко» (настройка в «Где, кому и когда показывать»).</p>
             {demand.summary.groups.length > 6 ? (
               <button type="button" className="btn btn-ghost btn-sm justify-self-start" onClick={() => setAllGroups(!allGroups)}>{allGroups ? "Свернуть" : `Показать все группы (${demand.summary.groups.length})`}</button>
             ) : null}
@@ -662,7 +672,7 @@ export function LaunchWizard(p: Props) {
       </Section>
 
       <Section id="show" title="Где, кому и когда показывать" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>
-        <ShowSettingsEditor monthlyBudget={budget} initial={p.show.initial} city={p.show.city} address={p.show.address} autoTime={p.show.autoTime} autoRadiusKm={p.show.autoRadiusKm} live={false} />
+        <ShowSettingsEditor monthlyBudget={budget} initial={p.show.initial} city={p.show.city} address={p.show.address} autoTime={p.show.autoTime} autoRadiusKm={p.show.autoRadiusKm} live={false} example={p.show.example} onReach={setReachPreview} />
       </Section>
 
       <Section id="landing" title="Куда ведёт реклама" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>

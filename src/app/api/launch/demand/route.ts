@@ -12,9 +12,12 @@ import { demandState } from "@/lib/engine/demand";
  */
 export const maxDuration = 60;
 
-export const GET = route(async ({ user, business }) => {
+export const GET = route(async ({ user, business, req }) => {
   needBusiness(business);
-  return json(await demandState(business, await accountsFor(user.id)));
+  // ?reach= — посчитать итог под охват, выбранный в форме, но ещё не сохранённый (сбор не запускается)
+  const reach = new URL(req.url).searchParams.get("reach");
+  const b = reach === "precise" || reach === "balanced" || reach === "wide" ? { ...business, showSettings: { ...((business.showSettings ?? {}) as object), reach } } : business;
+  return json(await demandState(b, await accountsFor(user.id)));
 });
 
 export const POST = route(async ({ user, business }) => {

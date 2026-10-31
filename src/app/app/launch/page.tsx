@@ -1,6 +1,6 @@
 import { isLaunched } from "@/lib/util";
 import { timeTargeting } from "@/lib/engine/extras";
-import type { ShowSettings } from "@/lib/engine/show";
+import { reachExample, type ShowSettings } from "@/lib/engine/show";
 import { pageUrl, type LandingSettings } from "@/lib/engine/landing";
 import { appUrl } from "@/lib/util";
 import { vkRadiusFor } from "@/lib/platforms/vk-formats";
@@ -86,7 +86,7 @@ export default async function Launch() {
         vkRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null}
         legalInfo={b.legalInfo}
         landing={{ initial: (b.landing ?? {}) as LandingSettings, siteUrl: b.siteUrl, pageUrl: pageUrl(b, appUrl()), siteCode: siteState }}
-        show={{ initial: (b.showSettings ?? {}) as ShowSettings, city: b.city, address: b.address, autoTime: timeTargeting({ ...b, showSettings: {} })?.note ?? null, autoRadiusKm: b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null }}
+        show={{ initial: (b.showSettings ?? {}) as ShowSettings, city: b.city, address: b.address, autoTime: timeTargeting({ ...b, showSettings: {} })?.note ?? null, autoRadiusKm: b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null, example: reachExample(b) }}
       />
     </div>
   );

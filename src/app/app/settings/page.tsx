@@ -9,7 +9,7 @@ import { siteTrackingStatus } from "@/lib/engine/site-tracking";
 import { pageUrl, type LandingSettings } from "@/lib/engine/landing";
 import { timeTargeting } from "@/lib/engine/extras";
 import { vkRadiusFor } from "@/lib/platforms/vk-formats";
-import type { ShowSettings } from "@/lib/engine/show";
+import { reachExample, type ShowSettings } from "@/lib/engine/show";
 import Link from "next/link";
 import { SETTINGS_TABS, type SettingsTab } from "@/lib/settings-tabs";
 import { SettingsHashRedirect, DeleteProject } from "@/components/SettingsClient";
@@ -184,7 +184,7 @@ export default async function Settings({ searchParams }: { searchParams: Promise
       <section id="show" className="card p-5 sm:p-7 scroll-mt-6">
         <h2 className="text-lg font-bold">Где, кому и когда показывать</h2>
         <p className="hint mt-1 mb-5">Регион, пол и возраст, дни и часы показа — для всех кампаний сразу. Что не задано, подбирает робот.</p>
-        <ShowSettingsEditor monthlyBudget={b.monthlyBudget} initial={(b.showSettings ?? {}) as ShowSettings} city={b.city} address={b.address} autoTime={timeTargeting({ ...b, showSettings: {} })?.note ?? null} autoRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null} live={b.status === "active" || b.status === "paused"} />
+        <ShowSettingsEditor monthlyBudget={b.monthlyBudget} initial={(b.showSettings ?? {}) as ShowSettings} city={b.city} address={b.address} autoTime={timeTargeting({ ...b, showSettings: {} })?.note ?? null} autoRadiusKm={b.geo ? Math.round(vkRadiusFor(b.city) / 100) / 10 : null} live={b.status === "active" || b.status === "paused"} example={reachExample(b)} />
       </section>
       <section id="budget" className="card p-5 sm:p-7 scroll-mt-6">
         <h2 className="text-lg font-bold">Бюджет</h2>

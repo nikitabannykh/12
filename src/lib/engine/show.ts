@@ -45,6 +45,25 @@ export const REACH_INFO: Record<Reach, { label: string; short: string; text: str
     text: "Показываемся по всем подходящим запросам, включая общие, и с автотаргетингом. Больше людей, но и больше случайных кликов — подходит при большом бюджете и в начале, чтобы найти работающие запросы.",
   },
 };
+/** Примеры для подсказок про охват — из этого бизнеса, а не про маникюр у всех */
+export type ReachExample = { word: string; phrase: string };
+export const DEFAULT_EXAMPLE: ReachExample = { word: "услуга", phrase: "услуга" };
+
+export function reachExample(b: { searchTopics?: string[] | null; services?: { name: string }[] | null; niche?: string }): ReachExample {
+  const clean = (x: string) => x.toLowerCase().replace(/ё/g, "е").replace(/\([^)]*\)/g, " ").replace(/[^a-zа-я0-9\s-]/g, " ").replace(/\s+/g, " ").trim();
+  const topics = (b.searchTopics ?? []).map(clean).filter(Boolean);
+  const svc = (b.services ?? []).map((s) => clean(s.name)).filter(Boolean);
+  const phrase = topics[0] ?? svc[0]?.split(" ").slice(0, 3).join(" ") ?? "услуга";
+  const word = topics.find((t) => !t.includes(" ")) ?? phrase.split(" ").sort((a, z) => z.length - a.length)[0] ?? "услуга";
+  return { word, phrase };
+}
+
+export function reachText(r: Reach, ex: ReachExample = DEFAULT_EXAMPLE): string {
+  if (r === "precise") return `Показываемся только тем, кто ищет с ценой, записью, «рядом», городом или районом — «${ex.phrase} цена», «${ex.phrase} рядом». Меньше показов, зато почти без случайных кликов. Автотаргетинг выключен.`;
+  if (r === "balanced") return `Убираем однословные и слишком общие запросы («${ex.word}») и информационные («${ex.word} фото», «идеи», «как сделать»). Двухсловные фразы фиксируем, чтобы Директ не расширял их сам. Подходит большинству.`;
+  return REACH_INFO.wide.text;
+}
+
 /** Что советуем по бюджету: на маленьком бюджете общие запросы съедают деньги за 1–2 дня */
 export const recommendedReach = (monthlyBudget: number): Reach => (monthlyBudget < 25_000 ? "precise" : monthlyBudget < 80_000 ? "balanced" : "wide");
 

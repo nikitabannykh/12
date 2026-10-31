@@ -7,7 +7,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Clock, Loader2, MapPin, Plus, Target, Users, X } from "lucide-react";
 import { api, useToast } from "./client";
-import { AGE_MAX, AGE_MIN, DAY_SHORT, RADIUS_STEPS, REACH_INFO, recommendedReach, sanitizeShow, showSummary, type Reach, type ShowSettings } from "@/lib/engine/show";
+import { AGE_MAX, AGE_MIN, DAY_SHORT, DEFAULT_EXAMPLE, RADIUS_STEPS, REACH_INFO, reachText, recommendedReach, sanitizeShow, showSummary, type Reach, type ReachExample, type ShowSettings } from "@/lib/engine/show";
 
 const Seg = <T extends string>({ value, options, onChange, label }: { value: T; options: { v: T; label: string; disabled?: boolean; title?: string }[]; onChange: (v: T) => void; label: string }) => (
   <div role="radiogroup" aria-label={label} className="inline-flex w-fit max-w-full flex-wrap rounded-lg border border-line overflow-hidden text-sm">
@@ -20,7 +20,7 @@ const Seg = <T extends string>({ value, options, onChange, label }: { value: T; 
 
 const hh = (h: number) => `${String(h).padStart(2, "0")}:00`;
 
-export function ShowSettingsEditor({ initial, city, address, autoTime, live, autoRadiusKm, monthlyBudget }: {
+export function ShowSettingsEditor({ initial, city, address, autoTime, live, autoRadiusKm, monthlyBudget, onReach, example }: {
   initial: ShowSettings;
   city: string;
   address: string | null;
@@ -32,6 +32,10 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
   autoRadiusKm: number | null;
   /** Бюджет в месяц — от него зависит совет по охвату поиска */
   monthlyBudget?: number;
+  /** Охват выбран (ещё до сохранения) — мастер запуска сразу пересчитывает спрос */
+  onReach?: (r: Reach) => void;
+  /** Примеры из этого бизнеса для подсказок: общий запрос («суши») и фраза («доставка суши») */
+  example?: ReachExample;
 }) {
   const hasGeo = autoRadiusKm != null;
   const [s, setS] = useState<ShowSettings>(() => sanitizeShow(initial));
@@ -76,11 +80,11 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
       {/* Охват поиска: насколько широко покупать запросы — главный рычаг, чтобы не сливать бюджет на общие слова */}
       <div className="grid gap-2.5">
         <div className="font-semibold flex items-center gap-2"><Target size={16} /> Охват поиска</div>
-        <Seg label="Охват поиска" value={reach} onChange={(v) => set({ reach: v })}
+        <Seg label="Охват поиска" value={reach} onChange={(v) => { set({ reach: v }); onReach?.(v); }}
           options={(["precise", "balanced", "wide"] as Reach[]).map((v) => ({ v, label: `${REACH_INFO[v].label}${v === rec ? " · советуем" : ""}` }))} />
-        <p className="text-sm text-muted leading-relaxed max-w-2xl">{REACH_INFO[reach].text}</p>
+        <p className="text-sm text-muted leading-relaxed max-w-2xl">{reachText(reach, example)}</p>
         {reach === "wide" && rec !== "wide" ? (
-          <p className="text-sm text-warn leading-relaxed max-w-2xl">При бюджете {monthlyBudget ? `${new Intl.NumberFormat("ru-RU").format(monthlyBudget)} ₽ в месяц` : "как у вас"} общие запросы вроде «маникюр» и «ногти» съедят деньги за несколько дней: по ним ищут фото и идеи, а не запись. Советуем «{REACH_INFO[rec].label}».</p>
+          <p className="text-sm text-warn leading-relaxed max-w-2xl">При бюджете {monthlyBudget ? `${new Intl.NumberFormat("ru-RU").format(monthlyBudget)} ₽ в месяц` : "как у вас"} общие запросы вроде «{(example ?? DEFAULT_EXAMPLE).word}» съедят деньги за несколько дней: по ним ищут фото и идеи, а не запись. Советуем «{REACH_INFO[rec].label}».</p>
         ) : null}
         {live ? <p className="text-xs text-faint">Для идущей рекламы: лишние фразы ставим на паузу в Директе, а не удаляем — охват можно вернуть.</p> : null}
       </div>
