@@ -1,7 +1,7 @@
 import "server-only";
 import type { Business } from "../db/schema";
 import { aiConfigured, gptJson } from "../ai/yandex";
-import { conflicts, displayKeyword, type SemanticCore } from "./semantics";
+import { conflicts, displayKeyword, phraseKey, type SemanticCore } from "./semantics";
 
 /**
  * Чистка ключевых фраз перед объявлениями — как директолог смотрит готовую семантику.
@@ -56,6 +56,8 @@ export async function reviewKeywords(b: Business, core: SemanticCore, opts: { un
   const services = (b.services ?? []).map((s) => s.name).filter(Boolean).slice(0, 30);
   const dropped = [...ruled.dropped];
   const campaignNeg: string[] = [];
+  // Предложенные названия: совпали у двух групп услуг («Взрослый приём» и «Взрослый вторичный приём» → «Остеопат для взрослых») — сольём
+  const proposed = new Map<number, string>();
   const one = async (gi: number) => {
     const g = groups[gi];
     const list = g.keywords.slice(0, 80);
@@ -73,13 +75,13 @@ export async function reviewKeywords(b: Business, core: SemanticCore, opts: { un
           "— фраза явно про другую группу из списка — ей место там;\n" +
           "— обрывки без смысла («остеопат лет», «прием от и старше»).\n" +
           "Целевые фразы с «цена», «отзывы», «рядом», «записаться», «лучший», городом, улицей бизнеса — оставляй.\n" +
-          "negatives — минус-слова (одно слово), которые отсекут найденные имена, бренды и чужие значения во всей кампании и не заденут целевые фразы.\n" +
+          "negatives — минус-слова (одно слово) ТОЛЬКО из найденных имён и фамилий людей, названий чужих брендов и клиник, чужих городов и чужих значений слова. Не минусуй аудитории (дети, подростки, взрослые, беременные), услуги и проблемы.\n" +
           "name — название группы так, как это ищут люди (2–4 слова, до 35 символов, без скобок, возрастов в цифрах и слов «первичный», «вторичный», «повторный»): «Взрослый вторичный прием остеопата» → «Остеопат для взрослых». Если название уже такое — верни его же.\n" +
           'JSON: {"drop": [номера], "negatives": ["..."], "name": "..."}',
         { temperature: 0.1, maxTokens: 600, timeoutMs: 15_000, until: opts.until },
       );
       const nm = String(r.name ?? "").replace(/[«»"()]/g, "").replace(/\s+/g, " ").trim();
-      if (g.layer === "service" && nm.length >= 4 && nm.length <= 40 && !/\d/.test(nm) && !groups.some((x, xi) => xi !== gi && x.name.toLowerCase() === nm.toLowerCase())) g.name = nm[0].toUpperCase() + nm.slice(1);
+      if (g.layer === "service" && nm.length >= 4 && nm.length <= 40 && !/\d/.test(nm)) proposed.set(gi, nm[0].toUpperCase() + nm.slice(1));
       const drop = new Set((r.drop ?? []).map(Number).filter((n) => n >= 1 && n <= list.length).map((n) => list[n - 1]));
       if (list.length <= KEEP_MIN || drop.size >= list.length - 1) return; // модель выкинула почти всё — не верим
       const next = keep(g.keywords, g.keywords.filter((k) => !drop.has(k)));
@@ -97,8 +99,35 @@ export async function reviewKeywords(b: Business, core: SemanticCore, opts: { un
   await Promise.all(Array.from({ length: 4 }, async () => {
     while (next < groups.length && (!opts.until || Date.now() < opts.until - 3_000)) await one(next++);
   }));
-  const all = groups.flatMap((g) => g.keywords);
-  // Минус-слово не должно задевать оставшиеся фразы ни одной группы
-  const negatives = [...new Set(campaignNeg)].filter((n) => !all.some((k) => conflicts(n, k))).slice(0, 40);
-  return { core: { ...ruled.core, groups, negatives: [...new Set([...ruled.core.negatives, ...negatives])], total: all.length }, dropped, negatives };
+  // Слияние групп услуг с одинаковым названием: фразы вместе, без повторов; минус-слова — только не задевающие фразы
+  const merged: typeof groups = [];
+  groups.forEach((g, gi) => {
+    const nm = proposed.get(gi);
+    const into = nm ? merged.find((m) => m.layer === "service" && m.name.toLowerCase() === nm.toLowerCase()) : undefined;
+    if (into) {
+      const keys = new Set(into.keywords.map(phraseKey));
+      into.keywords.push(...g.keywords.filter((k) => !keys.has(phraseKey(k))));
+      into.services = [...new Set([...into.services, ...g.services])];
+      into.negatives = into.negatives.filter((n) => !into.keywords.some((k) => conflicts(n, k)));
+      if (into.demand != null || g.demand != null) into.demand = (into.demand ?? 0) + (g.demand ?? 0);
+      return;
+    }
+    merged.push(nm && !merged.some((m) => m.name.toLowerCase() === nm.toLowerCase()) ? { ...g, name: nm } : g);
+  });
+  // Минус-слово: не аудитория и не намерение, не задевает оставшиеся фразы и слова прайса
+  const own = `${services.join(" ")} ${merged.map((g) => g.name).join(" ")}`.toLowerCase().replace(/ё/g, "е");
+  const before = merged.flatMap((g) => g.keywords);
+  const negatives = [...new Set(campaignNeg)]
+    .filter((n) => !KID.test(n) && !ADULT.test(n) && !INTENT.test(n) && !/беремен|мам|женщин|мужчин|пожил|спорт/.test(n) && !own.includes(n.slice(0, Math.max(4, n.length - 2))))
+    .filter((n) => before.filter((k) => conflicts(n, k)).length <= Math.max(2, before.length * 0.02))
+    .slice(0, 40);
+  // Фразы с найденными именами и брендами («хамов остеопат екатеринбург») убираем и из тех групп, где модель их пропустила
+  for (const g of merged) {
+    const next = keep(g.keywords, g.keywords.filter((k) => !negatives.some((n) => conflicts(n, k))));
+    dropped.push(...g.keywords.filter((k) => !next.includes(k)).map(displayKeyword));
+    g.keywords = next;
+  }
+  const all = merged.flatMap((g) => g.keywords);
+  const safeNeg = negatives.filter((n) => !all.some((k) => conflicts(n, k)));
+  return { core: { ...ruled.core, groups: merged, negatives: [...new Set([...ruled.core.negatives, ...safeNeg])], total: all.length }, dropped, negatives: safeNeg };
 }

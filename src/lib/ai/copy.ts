@@ -354,6 +354,21 @@ JSON: {"ads": [{"ok": true|false, "problems": ["…"], "angle": "…", "title": 
   return out.length ? out : ads;
 }
 
+/** Что за группа для автора объявлений: проблема, аудитория или смежный запрос — объявление строится от неё */
+function layerNote(g: GroupDraft, hook?: { ask?: string } | null): string {
+  const ask = hook?.ask ? ` (${hook.ask})` : "";
+  switch (g.layer) {
+    case "problem":
+      return `Это группа проблемы клиента: человек ищет, кто поможет${ask}. Заголовок — проблема и специалист («Остеопат при боли в шее»), текст — что будет на приёме и как записаться. Без обещаний вылечить и без диагнозов читателю.\n`;
+    case "audience":
+      return `Это группа аудитории${ask}: заголовок — услуга для этой аудитории, текст — почему подходит именно им (только факты из описания).\n`;
+    case "adjacent":
+      return `Это смежный запрос${ask}: человек ищет похожую услугу. Объясни, чем поможет ваша услуга, не выдавая её за другую.\n`;
+    default:
+      return "";
+  }
+}
+
 /** deadline — к какому моменту нужен ответ (лимит времени функции): не успела модель — шаблонные объявления */
 export async function generateCopyPlan(b: Business, channels: { search: boolean; network: boolean; vk: boolean }, core: SemanticCore = buildSemanticCore(b), opts: { deadline?: number } = {}): Promise<CopyPlan> {
   const n = nicheById(b.niche);
@@ -403,7 +418,8 @@ ${KIND_RULE}
     // и один долгий ответ на все группы больше не уходит в таймаут (тогда все объявления были шаблонными)
     const until = opts.deadline ?? Date.now() + 45_000;
     const perGroup = async (gs: GroupDraft[], ch: "search" | "network") => {
-      const list = gs.map((g, gi) => ({ g, gi })).filter(({ g }) => (g.layer ?? "service") === "service").slice(0, 16);
+      // Все группы — и услуги, и проблемы, аудитории, смежные: шаблон «проблема → решение» был одинаковым у всех групп
+      const list = gs.map((g, gi) => ({ g, gi })).slice(0, 20);
       const out: { group: number; ads: AdDraft[] }[] = [];
       let next = 0;
       const worker = async () => {
@@ -420,7 +436,7 @@ ${medical ? `\n${MEDICAL_RULES}\n` : ""}
 ${KIND_RULE}
 
 Группа «${g.name}». Люди ищут: ${queries.join("; ")}.
-${svc ? `Позиция прайса: ${svc.name}${svc.price ? ` — ${svc.price}` : ""}${svc.note ? ` (${svc.note})` : ""}.` : others.length ? `Это раздел «${g.name}». Позиции раздела (можно назвать одну-две как пример, с ценой): ${others.join("; ")}.` : "Это общий запрос о бизнесе, а не конкретная позиция прайса."}
+${layerNote(g, core.groups.find((c) => c.name === g.name)?.hook)}${svc ? `Позиция прайса: ${svc.name}${svc.price ? ` — ${svc.price}` : ""}${svc.note ? ` (${svc.note})` : ""}. Название из прайса не копируй: без скобок, возрастов в скобках, слов «вторичный», «повторный» — называй, как говорит клиент.` : others.length ? `Это раздел «${g.name}». Позиции раздела (можно назвать одну-две как пример, с ценой): ${others.join("; ")}.` : "Это общий запрос о бизнесе, а не конкретная позиция прайса."}
 Напиши 4 объявления ${ch === "search" ? "для поиска Яндекса" : "для РСЯ (картинка + текст)"} ровно под эти запросы: главные слова первого запроса — в заголовке; ни слова о позициях и услугах, которые не относятся к этим запросам.
 Разные подходы (angle: price|offer|proof|convenience|result|emotion), у каждого свой первый факт в тексте.
 JSON: {"ads": [{"angle": "...", "title": "до 56 символов", ${ch === "search" ? '"title2": "до 30 символов", ' : ""}"text": "до 81 символа"}]}`,
@@ -434,7 +450,7 @@ JSON: {"ads": [{"angle": "...", "title": "до 56 символов", ${ch === "s
           }
         }
       };
-      await Promise.all(Array.from({ length: 4 }, worker));
+      await Promise.all(Array.from({ length: 6 }, worker));
       return out;
     };
     const [raw, searchAds, networkAds] = await Promise.all([
@@ -448,7 +464,6 @@ JSON: {"ads": [{"angle": "...", "title": "до 56 символов", ${ch === "s
     // Объявления модели — в группы семантики по номеру; выдуманный факт — шаблонное объявление того же места
     const fill = (items: Raw["search"], ch: keyof typeof LIMITS, fb: GroupDraft[]): GroupDraft[] =>
       fb.map((g, gi) => {
-        if ((g.layer ?? "service") !== "service") return g;
         const got = (items ?? []).find((x, xi) => (x?.group ?? xi + 1) === gi + 1);
         if (!got?.ads?.length) return g;
         // До 4 вариантов модели: прошедшие проверку фактов — в приоритете, шаблон — только если модели не хватило
@@ -729,7 +744,8 @@ export function specialistOf(b: Pick<Business, "name" | "description" | "service
  * «Сеанс 60 минут»), добавляем специалиста: «Приём остеопата для взрослых», «Первичная консультация остеопата».
  */
 export function humanService(b: Pick<Business, "name" | "description" | "services" | "niche">, raw: string | null | undefined): string {
-  const name = cleanText(raw);
+  // Скобки прайса («(от 14 лет и старше)») и «вторичный» в объявлении не нужны — так не ищут и не говорят
+  const name = cleanText(raw).replace(/\s*\([^)]*\)/g, "").replace(/(^|\s)вторичн\S*/gi, "$1").replace(/\s+/g, " ").trim().replace(/^./, (c) => c.toUpperCase());
   if (!name) return name;
   const sp = specialistOf(b);
   if (!sp) return name;
