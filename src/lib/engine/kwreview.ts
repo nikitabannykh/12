@@ -18,6 +18,9 @@ const ORPHAN = /(^|\s)(лет|месяцев|мес|минут|мин|шт|см|
 const KID = /(дет|ребен|ребён|малыш|новорожд|грудн|младен|подрост|школьн)/;
 const ADULT = /взросл/;
 
+/** Слова намерения: человек ищет, кто поможет, а не справку */
+const INTENT = /(лечени|лечить|вылечить|врач|доктор|специалист|кому|куда|обратит|клиник|центр|кабинет|прием|приём|цен|стоимост|сколько стоит|запис|помощ|терапи|массаж|процедур|сеанс|рядом|недорог|отзыв)/;
+
 const keep = (all: string[], next: string[]) => (next.length >= KEEP_MIN ? next : [...next, ...all.filter((k) => !next.includes(k))].slice(0, Math.min(KEEP_MIN, all.length)));
 
 export function cleanByRules(core: SemanticCore): { core: SemanticCore; dropped: string[] } {
@@ -25,9 +28,13 @@ export function cleanByRules(core: SemanticCore): { core: SemanticCore; dropped:
   const groups = core.groups.map((g) => {
     const own = `${g.name} ${g.service}`.toLowerCase();
     const kid = KID.test(own), adult = ADULT.test(own);
+    const noun = (g.hook?.noun ?? "").toLowerCase().split(" ").filter((w) => w.length >= 4).map((w) => w.slice(0, Math.max(4, w.length - 2)));
+    const geo = [...core.geo.city, ...core.geo.local].map((w) => w.toLowerCase().slice(0, Math.max(4, w.length - 2)));
     const next = g.keywords.filter((k) => {
       const p = displayKeyword(k);
       if (ORPHAN.test(p)) return false;
+      // Группа проблемы: фраза должна говорить, что человек ищет помощь (специалист, лечение, цена, город)
+      if (g.layer === "problem" && !INTENT.test(p) && !noun.some((n) => p.includes(n)) && !geo.some((c) => c.length >= 4 && p.includes(c))) return false;
       if (kid && !adult && ADULT.test(p)) return false;
       if (adult && !kid && KID.test(p)) return false;
       return true;
@@ -52,9 +59,8 @@ export async function reviewKeywords(b: Business, core: SemanticCore, opts: { un
   const one = async (gi: number) => {
     const g = groups[gi];
     const list = g.keywords.slice(0, 80);
-    if (list.length <= KEEP_MIN) return;
     try {
-      const r = await gptJson<{ drop: number[]; negatives: string[] }>(
+      const r = await gptJson<{ drop: number[]; negatives: string[]; name?: string }>(
         "Ты опытный директолог. Проверяешь ключевые фразы одной группы объявлений перед запуском в Яндекс Директе. Ответ — строго JSON.",
         `Бизнес: ${b.name}, город ${b.city}. ${(b.description ?? "").slice(0, 400)}\nУслуги бизнеса: ${services.join("; ")}\nВсе группы кампании: ${names.join("; ")}\n\n` +
           `Группа: «${g.name}» (${g.layer === "problem" ? "проблема клиента, которую решает услуга" : g.layer === "audience" ? "аудитория" : g.layer === "adjacent" ? "смежный запрос" : "услуга"}).\nФразы:\n${list.map((k, i) => `${i + 1}. ${displayKeyword(k)}`).join("\n")}\n\n` +
@@ -67,11 +73,15 @@ export async function reviewKeywords(b: Business, core: SemanticCore, opts: { un
           "— фраза явно про другую группу из списка — ей место там;\n" +
           "— обрывки без смысла («остеопат лет», «прием от и старше»).\n" +
           "Целевые фразы с «цена», «отзывы», «рядом», «записаться», «лучший», городом, улицей бизнеса — оставляй.\n" +
-          'negatives — минус-слова (одно слово), которые отсекут найденные имена, бренды и чужие значения во всей кампании и не заденут целевые фразы. JSON: {"drop": [номера], "negatives": ["..."]}',
+          "negatives — минус-слова (одно слово), которые отсекут найденные имена, бренды и чужие значения во всей кампании и не заденут целевые фразы.\n" +
+          "name — название группы так, как это ищут люди (2–4 слова, до 35 символов, без скобок, возрастов в цифрах и слов «первичный», «вторичный», «повторный»): «Взрослый вторичный прием остеопата» → «Остеопат для взрослых». Если название уже такое — верни его же.\n" +
+          'JSON: {"drop": [номера], "negatives": ["..."], "name": "..."}',
         { temperature: 0.1, maxTokens: 600, timeoutMs: 15_000, until: opts.until },
       );
+      const nm = String(r.name ?? "").replace(/[«»"()]/g, "").replace(/\s+/g, " ").trim();
+      if (g.layer === "service" && nm.length >= 4 && nm.length <= 40 && !/\d/.test(nm) && !groups.some((x, xi) => xi !== gi && x.name.toLowerCase() === nm.toLowerCase())) g.name = nm[0].toUpperCase() + nm.slice(1);
       const drop = new Set((r.drop ?? []).map(Number).filter((n) => n >= 1 && n <= list.length).map((n) => list[n - 1]));
-      if (drop.size >= list.length - 1) return; // модель выкинула почти всё — не верим
+      if (list.length <= KEEP_MIN || drop.size >= list.length - 1) return; // модель выкинула почти всё — не верим
       const next = keep(g.keywords, g.keywords.filter((k) => !drop.has(k)));
       dropped.push(...g.keywords.filter((k) => !next.includes(k)).map(displayKeyword));
       g.keywords = next;

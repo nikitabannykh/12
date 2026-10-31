@@ -120,7 +120,8 @@ async function creativeConcepts(b: Business, ideas: string[], count: number): Pr
 }
 
 /** Сюжет картинки под конкретную услугу: человеческий заголовок, выгода именно этой услуги и кадр для YandexART */
-export type ServiceArt = { service: string; headline: string; benefit: string; scene: string; photoId?: string | null; /** не сгенерировалось и после повтора — больше не пробуем */ failed?: boolean };
+export type ServiceArt = { service: string; headline: string; benefit: string; scene: string; photoId?: string | null; /** не сгенерировалось и после повтора — больше не пробуем */ failed?: boolean;
+  /** Второй кадр для A/B-теста в группе: другой сюжет под те же запросы */ scene2?: string; photoId2?: string | null; failed2?: boolean };
 
 /** Строка для картинки: без кавычек и лишних пробелов, не длиннее max, без хвостовой пунктуации */
 const cleanLine = (s: unknown, max: number) => String(s ?? "").replace(/[«»"]/g, "").replace(/\s+/g, " ").trim().slice(0, max).replace(/[\s,.;:–—-]+$/, "");
@@ -131,7 +132,7 @@ const cleanLine = (s: unknown, max: number) => String(s ?? "").replace(/[«»"]/
  * и кадр, который снимал бы фотограф именно под эту услугу (малыш и руки мамы, блюдо крупно, зал с ковриками…).
  * Не вышло — заголовок из названия без скобок, кадр по шаблону ниши.
  */
-export async function serviceArt(b: Business, ideas: string[], count: number, opts: { until?: number; subjects?: string[]; queries?: Record<string, string[]> } = {}): Promise<ServiceArt[]> {
+export async function serviceArt(b: Business, ideas: string[], count: number, opts: { until?: number; subjects?: string[]; queries?: Record<string, string[]>; /** кому нужен второй кадр (A/B) */ alt?: Set<string> } = {}): Promise<ServiceArt[]> {
   const n = nicheById(b.niche);
   // subjects — то, под что реально идут объявления (группы поиска: «Доставка еды», услуги), по важности; иначе — услуги прайса
   const services = (opts.subjects?.length ? [...new Set(opts.subjects)] : spreadServices((b.services ?? []).filter((s) => s.name), Math.max(1, count)).map((s) => s.name)).slice(0, Math.max(1, count));
@@ -142,7 +143,7 @@ export async function serviceArt(b: Business, ideas: string[], count: number, op
   };
   if (!aiConfigured()) return fallback();
   try {
-    const r = await gptJson<{ items: { service: number; headline: string; benefit: string; scene: string }[] }>(
+    const r = await gptJson<{ items: { service: number; headline: string; benefit: string; scene: string; scene2?: string }[] }>(
       "Ты арт-директор и копирайтер рекламы малого бизнеса. Для каждой услуги или запроса (это то, что человек искал перед тем, как увидел объявление) готовишь рекламную картинку, которая выглядит как работа живого фотографа и дизайнера, а не нейросети.\n" +
         "headline — подпись на картинке, до 32 символов: услуга так, как её назвал бы клиент, живо и кликабельно. Не копируй название из прайса: без скобок, кодов, перечислений, канцелярита. «Остеопатия (новорождённые и дети до 14 лет)» → «Остеопат для малышей с рождения».\n" +
         "benefit — до 45 символов: зачем эта услуга именно её аудитории, по смыслу услуги. Только факты из описания бизнеса или очевидная суть услуги; нельзя выдумывать рейтинги, цифры, скидки, сроки, гарантии и «лучший».\n" +
@@ -151,8 +152,8 @@ export async function serviceArt(b: Business, ideas: string[], count: number, op
         "Все кадры одного бизнеса — как одна фотосессия: одинаковый свет и цветовая гамма, но разные планы и сюжеты.\n" +
         (isMedical(b) ? "Это медицинские услуги: в headline и benefit не обещай излечение, результат и безопасность, не пиши «без боли», «эффективно», «поможем», не предполагай болезнь у читателя. Можно — для кого приём и что в него входит.\n" : "") +
         'Ответ — JSON {"items": [{"service": номер, "headline": "...", "benefit": "...", "scene": "..."}]}.',
-      `Бизнес: ${b.name}, ${n.label}, город ${b.city}.\n${b.description ? `Описание: ${b.description.slice(0, 500)}\n` : ""}${(b.advantages ?? []).length ? `Преимущества: ${(b.advantages ?? []).join("; ")}\n` : ""}${ideas.length ? `Идеи для картинок: ${ideas.join("; ")}\n` : ""}Услуги и группы объявлений (в скобках — что ищут люди):\n${list.map((x, i) => `${i + 1}. ${x}${opts.queries?.[x]?.length ? ` (ищут: ${opts.queries[x].join("; ")})` : ""}`).join("\n")}`,
-      { temperature: 0.8, maxTokens: Math.min(6000, 600 + list.length * 220), timeoutMs: 30_000, until: opts.until },
+      `Бизнес: ${b.name}, ${n.label}, город ${b.city}.\n${b.description ? `Описание: ${b.description.slice(0, 500)}\n` : ""}${(b.advantages ?? []).length ? `Преимущества: ${(b.advantages ?? []).join("; ")}\n` : ""}${ideas.length ? `Идеи для картинок: ${ideas.join("; ")}\n` : ""}Услуги и группы объявлений (в скобках — что ищут люди):\n${list.map((x, i) => `${i + 1}. ${opts.alt?.has(x) ? "* " : ""}${x}${opts.queries?.[x]?.length ? ` (ищут: ${opts.queries[x].join("; ")})` : ""}`).join("\n")}`,
+      { temperature: 0.8, maxTokens: Math.min(8000, 600 + list.length * 220 + (opts.alt?.size ?? 0) * 120), timeoutMs: 30_000, until: opts.until },
     );
     const base = fallback();
     const out = base.map((f, i) => {
@@ -160,7 +161,8 @@ export async function serviceArt(b: Business, ideas: string[], count: number, op
       if (!it) return f;
       const headline = cleanLine(it.headline, 34);
       const scene = String(it.scene ?? "").trim();
-      return { service: f.service, headline: headline.length >= 6 ? headline : f.headline, benefit: withoutSuperlatives(cleanLine(it.benefit, 48)) || "", scene: scene.length > 20 ? scene : f.scene };
+      const scene2 = String(it.scene2 ?? "").trim();
+      return { service: f.service, headline: headline.length >= 6 ? headline : f.headline, benefit: withoutSuperlatives(cleanLine(it.benefit, 48)) || "", scene: scene.length > 20 ? scene : f.scene, ...(opts.alt?.has(f.service) && scene2.length > 20 ? { scene2 } : {}) };
     });
     return out;
   } catch {
@@ -177,34 +179,41 @@ export async function generateServicePhotos(b: Business, items: ServiceArt[], op
   // Запасной кадр, если генератор отказался рисовать сюжет (дети, тело, медицина): нейтральный кадр ниши без людей
   const safe = photoPrompts(b, []);
   const out = [...items];
+  // Задачи: основной кадр каждой группы, затем вторые кадры (A/B) — сначала у всех групп по одному
+  const tasks: [number, 1 | 2][] = [
+    ...out.map((_, i) => [i, 1] as [number, 1]),
+    ...out.map((it, i) => [i, 2] as [number, 2]).filter(([i]) => out[i].scene2),
+  ];
   let next = 0;
-  const one = async (i: number) => {
+  const one = async ([i, which]: [number, 1 | 2]) => {
     const it = out[i];
-    if (it.photoId || it.failed) return;
+    if (which === 1 ? it.photoId || it.failed : it.photoId2 || it.failed2 || !it.scene2) return;
+    const own = which === 1 ? it.scene : it.scene2!;
     let last: unknown = null;
-    let scene = it.scene;
+    let scene = own;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const img = await art(`${style}. ${scene}`, { w: 1, h: 1 }, seed + i + attempt * 1000);
-        out[i] = { ...it, photoId: (await saveImage(b.id, "generated", img, { prompt: `${it.service} :: ${it.scene}` })).id };
+        const img = await art(`${style}. ${scene}`, { w: 1, h: 1 }, seed + i * 7 + which * 3 + attempt * 1000);
+        const id = (await saveImage(b.id, "generated", img, { prompt: `${it.service} :: ${own}` })).id;
+        out[i] = which === 1 ? { ...out[i], photoId: id } : { ...out[i], photoId2: id };
         return;
       } catch (e) {
         last = e;
         const msg = String((e as Error)?.message ?? e);
-        if (/не могу|cannot|can't|policy|запрещ|другую тему/i.test(msg) && scene === it.scene && safe.length) {
-          scene = `${safe[i % safe.length]}. Без людей в кадре`;
+        if (/не могу|cannot|can't|policy|запрещ|другую тему/i.test(msg) && scene === own && safe.length) {
+          scene = `${safe[(i + which) % safe.length]}. Без людей в кадре`;
           continue;
         }
         if (!/endpoint|unavailable|internal|timeout|429|resource/i.test(msg)) break;
         await new Promise((r) => setTimeout(r, 2000));
       }
     }
-    out[i] = { ...out[i], failed: true };
+    out[i] = which === 1 ? { ...out[i], failed: true } : { ...out[i], failed2: true };
     errors.push(String((last as Error)?.message ?? last));
   };
   // По 3 одновременно; после until новые кадры не начинаем — продолжим следующим шагом
   await Promise.all(Array.from({ length: 3 }, async () => {
-    while (next < out.length && (!opts.until || Date.now() < opts.until)) await one(next++);
+    while (next < tasks.length && (!opts.until || Date.now() < opts.until)) await one(tasks[next++]);
   }));
   return { items: out, errors };
 }

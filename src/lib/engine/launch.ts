@@ -413,7 +413,7 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
       const key = c.channel === "search" ? g.name : g.service ?? g.name;
       if (!queries[key]) queries[key] = (g.keywords ?? []).map((k) => k.replace(/\s-\S+/g, " ").replace(/["!+[\]]/g, "").trim()).filter(Boolean).slice(0, 4);
     }
-    arts = await serviceArt(b, plan.imageIdeas, Math.max(want, Math.min(20, subjects.length)), { until: Date.now() + 30_000, subjects, queries });
+    arts = await serviceArt(b, plan.imageIdeas, Math.max(want, Math.min(20, subjects.length)), { until: Date.now() + 30_000, subjects, queries, alt: new Set(enabled.filter((c) => c.channel === "search").flatMap((c) => c.groups.map((g) => g.name))) });
     // Кадры, уже сгенерированные под ту же группу (повторная подготовка), берём снова — не платим дважды
     const before = own.filter((p) => p.kind === "generated");
     // Своё фото с подписью позиции («Сет Свежесть» на сайте) — лучше любой генерации: берём его, а не рисуем
@@ -434,12 +434,14 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
     arts = arts.map((a) => {
       const mine = ownFor(a.service);
       const ownId = mine && !usedOwn.has(mine) ? (usedOwn.add(mine), mine) : null;
-      return { ...a, photoId: ownId ?? before.find((p) => p.prompt?.startsWith(`${a.service} :: `))?.id ?? null };
+      const prev = before.filter((p) => p.prompt?.startsWith(`${a.service} :: `));
+      return { ...a, photoId: ownId ?? prev.find((p) => p.prompt === `${a.service} :: ${a.scene}`)?.id ?? prev[0]?.id ?? null, photoId2: a.scene2 ? prev.find((p) => p.prompt === `${a.service} :: ${a.scene2}`)?.id ?? null : null };
     });
   }
   // Генерация кадров идёт шагами: не успели все — продолжим следующим вызовом, а картинки объявлений собираем,
   // только когда у каждой группы есть свой кадр (или он точно не получился). Иначе группы получали общий кадр
-  if (arts.some((a) => !a.photoId && !a.failed)) {
+  const pendingArt = () => arts.some((a) => (!a.photoId && !a.failed) || (a.scene2 && !a.photoId2 && !a.failed2));
+  if (pendingArt()) {
     const g = await generateServicePhotos(b, arts, { until: Math.max(deadline - 8_000, Date.now() + 12_000) });
     arts = g.items;
     if (g.errors.length) warnings.push(/denied|доступ|permission|403/i.test(g.errors[0])
@@ -447,16 +449,17 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
       : `Часть картинок не сгенерировалась (для них — карточка с текстом): ${g.errors[0]}`);
     // Ошибка доступа — не ждём остальных: всё равно не получится
     if (g.errors.some((e) => /denied|permission|403/i.test(e))) arts = arts.map((a) => (a.photoId ? a : { ...a, failed: true }));
-    if (arts.some((a) => !a.photoId && !a.failed)) {
+    const pendingArt = () => arts.some((a) => (!a.photoId && !a.failed) || (a.scene2 && !a.photoId2 && !a.failed2));
+  if (pendingArt()) {
       const made = arts.filter((a) => a.photoId || a.failed).length;
       const total = plan.channels.flatMap((c) => c.groups.flatMap((g) => g.ads)).length;
       const next: LaunchPlan = { ...plan, photoIds, art: arts, stage: "images", warnings: [...new Set(warnings)] };
       return { plan: next, done: false, made: 0, total: 0, steps: total + arts.length, stepsDone: made };
     }
   }
-  photoIds = [...new Set([...photoIds, ...arts.map((a) => a.photoId).filter((x): x is string => Boolean(x))])];
+  photoIds = [...new Set([...photoIds, ...arts.flatMap((a) => [a.photoId, a.photoId2]).filter((x): x is string => Boolean(x))])];
   deadline = Math.max(deadline, Date.now() + 15_000);
-  const ownSet = new Set(photoIds.filter((id) => !arts.some((a) => a.photoId === id)));
+  const ownSet = new Set(photoIds.filter((id) => !arts.some((a) => a.photoId === id || a.photoId2 === id)));
   const ownList = [...ownSet];
   const artFor = (name?: string | null) => (name ? arts.find((a) => a.service === name) : undefined);
   const artAt = (i: number) => (arts.length ? arts[i % arts.length] : undefined);
@@ -488,6 +491,7 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
         }
         const service = b.services?.find((x) => x.name === (g.service ?? g.name)) ?? svc;
         let imageId: string | null = null;
+        let imageId2: string | null = null;
         try {
           // Группы поиска чередуют: фото с карточкой услуги — и рисунок с преимуществом без фото,
           // чтобы у разных услуг были разные картинки, а не одно и то же фото везде
@@ -499,10 +503,12 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
           // Кадр только свой: чужой группы не берём — лучше карточка с подписью этой группы, чем одинаковое фото везде
           const photoId = own ? own.photoId ?? null : a?.photoId ?? null;
           imageId = await creative({ layout: photoId || layout === "benefit" ? layout : "tag", photoId, width: 1080, height: 607, headline: own?.headline ?? g.name, price: service?.price, benefit: own?.benefit || undefined });
+          // Второй кадр группы — для A/B: объявления группы чередуют кадры, робот оставит тот, после которого чаще обращаются
+          if (own?.photoId2 && g.ads.length > 1) imageId2 = await creative({ layout: layout === "tag" ? "benefit" : "tag", photoId: own.photoId2, width: 1080, height: 607, headline: own.headline ?? g.name, price: service?.price, benefit: own.benefit || undefined });
         } catch (e) {
           warnings.push(`Картинка для поиска «${g.name}»: ${errorText(e)}`);
         }
-        groups.push({ ...g, ads: g.ads.map((ad) => ({ ...ad, imageId: ad.imageId ?? imageId, layout: ad.layout ?? null })) });
+        groups.push({ ...g, ads: g.ads.map((ad, i) => ({ ...ad, imageId: ad.imageId ?? (i % 2 === 1 && imageId2 ? imageId2 : imageId), layout: ad.layout ?? null })) });
       }
       channels.push({ ...ch, groups });
       continue;

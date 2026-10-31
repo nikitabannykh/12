@@ -765,9 +765,12 @@ function layerGroups(b: B, nicheId: string, services: Service[], geo: SemanticCo
     const nounStems = new Set(sigWords(noun).map(stem));
     const hasNoun = (p: string) => sigWords(p).some((w) => nounStems.has(stem(w)));
     const city = geo.city;
-    const tiers: string[][] = [phrases];
+    // Проблема без намерения («болит спина») — справочный запрос: человек ещё не ищет специалиста.
+    // Берём только фразы с намерением обратиться: «остеопат при боли в спине», «болит спина к кому обратиться», «… лечение»
+    const tiers: string[][] = [e.layer === "problem" ? [] : phrases];
     if (e.layer === "problem") {
       tiers.push((e.at ?? []).slice(0, 2).map((a) => `${noun} при ${a}`));
+      tiers.push(phrases.slice(0, 6).map((p) => `${p} лечение`));
       const short = sigWords(noun).length <= 2;
       tiers.push(phrases.filter((p) => short && !hasNoun(p) && sigWords(p).length <= 4).slice(0, 8).map((p) => `${p} ${noun}`));
       tiers.push(phrases.slice(0, 8).flatMap((p) => city.slice(0, 1).map((ct) => `${p} ${ct}`)));
