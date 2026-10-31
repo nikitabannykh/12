@@ -73,7 +73,9 @@ const key = () => createHash("sha256").update("enc:" + secret()).digest();
  */
 function legacySecret(): string | null {
   const app = process.env.APP_SECRET?.trim();
-  const dbUrl = (process.env.DATABASE_URL || process.env.POSTGRES_URL)?.trim();
+  // После переезда на другую базу старый ключ выводится из прежней строки подключения: NEON_DATABASE_URL
+  // (её же берёт перенос данных) или LEGACY_DATABASE_URL — ровно то значение DATABASE_URL, что было на старом сервере
+  const dbUrl = (process.env.LEGACY_DATABASE_URL || process.env.NEON_DATABASE_URL || process.env.DATABASE_URL || process.env.POSTGRES_URL)?.trim();
   if (!app || app.length < 16 || !dbUrl) return null;
   return createHash("sha256").update("pz-secret:" + dbUrl).digest("hex");
 }
