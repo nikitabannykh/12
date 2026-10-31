@@ -242,7 +242,26 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     return h;
   }
 
+  /**
+   * Вызов API v5. Директ иногда отвечает «Сервис временно недоступен» (1000), «Ошибка сервера» (1002, 52) или 5xx —
+   * такое проходит за секунды, поэтому повторяем до 3 раз с паузой. Кроме add: если Директ успел создать объект
+   * и только потом упал, повтор создал бы дубль.
+   */
   async call<T = any>(service: string, method: string, params: unknown): Promise<T> {
+    const retryable = method !== "add";
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.callOnce<T>(service, method, params);
+      } catch (e) {
+        const code = Number(((e as PlatformError).detail as { error_code?: unknown } | undefined)?.error_code ?? NaN);
+        const transient = [1000, 1001, 1002, 52].includes(code) || /временно недоступен|не JSON \(5\d\d\)|fetch failed|ECONNRESET|ETIMEDOUT/i.test((e as Error).message);
+        if (!retryable || !transient || attempt >= 2) throw e;
+        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      }
+    }
+  }
+
+  private async callOnce<T = any>(service: string, method: string, params: unknown): Promise<T> {
     const res = await fetch(`${API()}/${service}`, {
       method: "POST",
       headers: this.headers(),
