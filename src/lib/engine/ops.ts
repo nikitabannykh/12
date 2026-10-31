@@ -61,7 +61,7 @@ export async function applyOp(op: UndoOp, cx?: Ctx): Promise<UndoOp> {
       if (camp.externalId) await (await platformFor(c, camp)).setCampaignActive(camp.externalId, op.status === "active");
       // Запоминаем, кто поставил паузу: паузу владельца робот не снимает. Пометку «стоит из-за бюджета»
       // сбрасываем при любой смене статуса — робот ставит её заново сам, когда останавливает кампанию из-за бюджета.
-      const meta = { ...(camp.meta ?? {}), pausedBy: op.status === "paused" ? c.who : null, pausedByGuard: null };
+      const meta = { ...(camp.meta ?? {}), pausedBy: op.status === "paused" ? c.who : null, pausedByGuard: null, pausedBySite: null };
       await db.update(schema.campaigns).set({ status: op.status, meta }).where(eq(schema.campaigns.id, camp.id));
       return { op: "campaignStatus", campaignId: camp.id, status: prev };
     }

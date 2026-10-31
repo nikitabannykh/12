@@ -4,6 +4,8 @@ import { getDb, schema } from "../db";
 import type { Business } from "../db/schema";
 import { getBalances, LOW_DAYS } from "./balance";
 import { CHANNEL_NAME } from "../platforms";
+import { trafficDiagnosis } from "./quality";
+import { siteDownInfo } from "./site-guard";
 import { pl } from "../util";
 
 /**
@@ -92,6 +94,30 @@ export async function inboxFor(b: Business): Promise<{ items: InboxItem[]; unrea
     items.push({ id: "moderation", at: now, group: "now", unread: false, tone: "info", title: `${pl(moderation, "объявление", "объявления", "объявлений")} на модерации`, text: "Обычно проверка занимает до суток. Проверяем статусы сами — как только Директ ответит, здесь появится уведомление.", href: "/app/ads" });
   for (const x of (await getBalances(b)).filter((x) => !x.demo && x.daysLeft !== null && x.daysLeft > 0 && x.daysLeft <= LOW_DAYS))
     items.push({ id: `bal-${x.accountId}`, at: now, group: "now", unread: false, tone: "warn", title: "Скоро кончатся деньги в кабинете", text: `Хватит примерно на ${pl(x.daysLeft!, "день", "дня", "дней")}.`, href: "/app" });
+
+  // Канал тратит деньги впустую: за 3 дня клики есть, обращений нет, а почти все сразу уходят с сайта
+  {
+    const d3 = new Date(Date.now() - 3 * 86400_000).toISOString().slice(0, 10);
+    const live2 = camps.filter((c) => c.status === "active" && c.platform !== "demo");
+    if (live2.length) {
+      const st = await db.select({ campaignId: schema.statsDaily.campaignId, impressions: schema.statsDaily.impressions, clicks: schema.statsDaily.clicks, cost: schema.statsDaily.cost, conv: schema.statsDaily.conversions }).from(schema.statsDaily)
+        .where(and(eq(schema.statsDaily.businessId, b.id), gte(schema.statsDaily.day, d3), inArray(schema.statsDaily.campaignId, live2.map((c) => c.id))));
+      const siteDown = await siteDownInfo(b.id);
+      const mt = await db.select({ campaignId: schema.metricaDaily.campaignId, visits: schema.metricaDaily.visits, bounces: schema.metricaDaily.bounces, durationSum: schema.metricaDaily.durationSum, adId: schema.metricaDaily.adId, phrase: schema.metricaDaily.phrase }).from(schema.metricaDaily)
+        .where(and(eq(schema.metricaDaily.businessId, b.id), gte(schema.metricaDaily.day, d3)));
+      for (const c of live2) {
+        const s1 = st.filter((x) => x.campaignId === c.id);
+        const clicks = s1.reduce((a, x) => a + x.clicks, 0), cost = s1.reduce((a, x) => a + x.cost, 0), conv = s1.reduce((a, x) => a + x.conv, 0);
+        const m1 = mt.filter((x) => x.campaignId === c.id && x.adId === "" && x.phrase === "");
+        const visits = m1.reduce((a, x) => a + x.visits, 0), bounces = m1.reduce((a, x) => a + x.bounces, 0);
+        if (clicks < 15 || conv > 0) continue;
+        const imps = s1.reduce((a, x) => a + x.impressions, 0);
+        const d = trafficDiagnosis({ channel: c.channel, impressions: imps, clicks, visits, bounces, durationSum: m1.reduce((a, x) => a + x.durationSum, 0), siteDown });
+        if (d.cause)
+          items.push({ id: `waste-${c.id}`, at: now, group: "now", unread: false, tone: "bad", title: `${CHANNEL_NAME[c.channel] ?? c.channel}: ${Math.round(cost)} ₽ за 3 дня без обращений`, text: d.text, href: "/app/stats" });
+      }
+    }
+  }
 
   // ─── События ───
   const since = new Date(Date.now() - 30 * 86400_000);

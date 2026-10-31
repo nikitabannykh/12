@@ -73,6 +73,8 @@ export function scoreGroup(rows: { id: string; s: S; live: boolean }[], channel:
 
   return rows.map((r) => {
     if (!r.live) return { id: r.id, rank: null, verdict: "off", why: "Не показывается", rel: 0, s: r.s };
+    // Деньги потрачены, обращений нет — это не «средне», что бы ни показывал CTR
+    if (r.s.clicks >= 20 && r.s.conversions === 0) return { id: r.id, rank: null, verdict: "weak", why: `${r.s.clicks} кликов за ${rub(r.s.cost)} — ни одного обращения`, rel: 0, s: r.s };
     const idx = sorted.findIndex((x) => x.id === r.id);
     if (idx < 0) {
       const left = Math.max(0, Math.ceil(min / 3 - r.s.impressions));

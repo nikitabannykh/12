@@ -1,3 +1,4 @@
+import { siteGuard } from "./site-guard";
 import "server-only";
 import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { getDb, schema } from "../db";
@@ -70,6 +71,9 @@ export async function runBusiness(businessId: string, opts: { optimize?: boolean
     const off = await syncOfflineConversions(b).catch((e) => ({ uploaded: 0, error: errorText(e) }));
     if (off.error) log.push(`офлайн-конверсии: ${off.error}`);
     else if (off.uploaded) log.push(`офлайн-конверсии: загружено в Метрику ${off.uploaded}`);
+    // Сайт, куда ведёт реклама, не работает — останавливаем рекламу, пока не починят (и включаем обратно сами)
+    const sg = await siteGuard(b).catch((e) => ({ log: [`сторож сайта: ${errorText(e)}`] }));
+    log.push(...sg.log);
     if (opts.optimize !== false && b.status === "active") {
       // Осторожный режим: лимиты только снижаем и ничего не включаем, пока статистика не обновится по всем кабинетам
       const o = await optimizeBusiness(b, { safe: syncFailed });

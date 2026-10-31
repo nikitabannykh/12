@@ -1386,7 +1386,7 @@ async function flagWeakPhrases(cx: Ctx) {
 const YANDEX_OWN = /(^|\.)(yandex\.[a-z]+|ya\.ru|dzen\.ru|kinopoisk\.ru|auto\.ru|avia\.yandex)$/i;
 
 async function excludePlacements(cx: Ctx) {
-  if (!(await jobDue(cx, "placements", 70))) return;
+  if (!(await jobDue(cx, "placements", 20))) return;
   const from = isoDay(addDays(cx.now, -(SITE_RULE.days - 1))), to = isoDay(cx.now);
   let did = 0;
   for (const camp of cx.campaigns.filter((c) => c.status === "active" && c.channel === "network" && c.externalId && !cx.protected.has(c.id))) {

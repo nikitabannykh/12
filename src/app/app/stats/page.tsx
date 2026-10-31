@@ -5,6 +5,8 @@ import { desc, eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth";
 import { getBusinessForUser } from "@/lib/engine/launch";
 import { metricaVisits, report, reportNow, weeksForMarking } from "@/lib/engine/report";
+import { trafficDiagnosis } from "@/lib/engine/quality";
+import { siteDownInfo } from "@/lib/engine/site-guard";
 import { PeriodPicker } from "./PeriodPicker";
 import { METRICA_REASON_TEXT, metricaStatus } from "@/lib/engine/metrica-sync";
 import { getDb, schema } from "@/lib/db";
@@ -19,6 +21,35 @@ const KIND: Record<string, string> = { form: "Заявка", phone: "Звоно�
 const SRC: Record<string, string> = { yandex: "Реклама в Яндексе", vk: "Реклама ВКонтакте", demo: "Реклама (демо)" };
 const CH: Record<string, string> = { ...CHANNEL_NAME, unknown: "Реклама, канал не определён" };
 /** Среднее время визита: «1 мин 05 с» */
+const pctFmt = (x: number) => `${(x * 100).toLocaleString("ru-RU", { maximumFractionDigits: x < 0.1 ? 1 : 0 })}%`;
+/** Нормы по типу канала: CTR [терпимо, хорошо] */
+const NORMS: Record<string, { ctr: [number, number] }> = { search: { ctr: [0.02, 0.05] }, network: { ctr: [0.004, 0.01] }, vk: { ctr: [0.003, 0.008] } };
+const normKey = (ch: string) => (ch === "search" ? "search" : /vk|ok/.test(ch) ? "vk" : "network");
+type T = { impressions: number; clicks: number; cost: number; leads: number; clients: number };
+/** Оценка канала простыми словами: хорошо / терпимо / плохо / мало данных — и почему */
+function channelVerdict(ch: string, t: T, m?: { visits: number; bounces: number; durationSum: number } | null, siteDown?: string | null): { label: string; tone: "good" | "warn" | "bad" | "muted"; text: string } {
+  // Разбор причины, как у директолога: сайт лежал, клики теряются, боты, страница не та
+  const d = trafficDiagnosis({ channel: ch, impressions: t.impressions, clicks: t.clicks, visits: m?.visits ?? 0, bounces: m?.bounces ?? 0, durationSum: m?.durationSum ?? 0, siteDown: t.clicks ? siteDown : null });
+  if (d.cause) return { label: d.cause === "site" ? "Сайт не работал" : d.cause === "bots" ? "Мусорные клики" : d.cause === "lost" ? "Клики теряются" : "Страница не цепляет", tone: "bad", text: d.text };
+  if (t.clicks >= 30 && t.leads === 0) return { label: "Плохо", tone: "bad", text: `${num(t.clicks)} кликов и ни одного обращения. Проверьте, стоит ли код Самохода на сайте и есть ли на странице кнопки записи.` };
+  if (t.clicks < 20) return { label: "Мало данных", tone: "muted", text: t.impressions ? "Оценим, когда наберётся хотя бы 20 кликов." : "" };
+  const conv = t.leads / t.clicks;
+  const ctr = t.impressions ? t.clicks / t.impressions : 0;
+  const n = NORMS[normKey(ch)];
+  if (conv >= 0.03 && ctr >= n.ctr[0]) return { label: "Хорошо", tone: "good", text: `${pctFmt(conv)} кликнувших обращаются — канал работает.` };
+  return { label: "Терпимо", tone: "warn", text: conv < 0.01 ? "Обращаются меньше 1% кликнувших — робот проверяет другие тексты и площадки." : "Есть обращения, но можно лучше — робот продолжает тесты." };
+}
+function Metric({ label, value, tone = null, hint }: { label: string; value: string; tone?: "good" | "warn" | "bad" | null; hint?: string }) {
+  const dot = tone === "good" ? "bg-good" : tone === "warn" ? "bg-warn" : tone === "bad" ? "bg-bad" : null;
+  return (
+    <div className="rounded-xl bg-paper px-3 py-2.5 min-w-0">
+      <div className="text-xs text-muted flex items-center gap-1.5">{dot ? <span className={`w-2 h-2 rounded-full ${dot}`} /> : null}{label}</div>
+      <div className={`font-bold tabular-nums mt-0.5 ${tone === "bad" ? "text-bad" : ""}`}>{value}</div>
+      {hint ? <div className="text-[11px] text-faint mt-0.5 leading-tight">{hint}</div> : null}
+    </div>
+  );
+}
+
 const dur = (sec: number) => (sec >= 60 ? `${Math.floor(sec / 60)} мин ${String(Math.round(sec % 60)).padStart(2, "0")} с` : `${Math.round(sec)} с`);
 
 /** Готовые периоды — как в Директе */
@@ -76,6 +107,7 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
   const rows = Object.entries(r.byChannel);
   const mstatus = await metricaStatus(b.id);
   const mv = await metricaVisits(b, r.from, r.to);
+  const siteDown = await siteDownInfo(b.id);
   const funnel = rows
     .filter(([ch]) => ch !== "unknown")
     .map(([ch, t]) => ({ ch, impressions: t.impressions, clicks: t.clicks, visits: mv.byChannel.get(ch)?.visits ?? 0, quality: mv.byChannel.get(ch)?.quality ?? 0, leads: t.leads }));
@@ -151,64 +183,41 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
       </section>
 
       <section className="card p-5 sm:p-7">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-lg font-bold">По каналам</h2>
-          <span className="text-xs text-muted">Под каждым каналом — что было после клика: визиты, отказы и цели по Метрике</span>
-        </div>
+        <h2 className="text-lg font-bold">По каналам</h2>
+        <p className="text-sm text-muted mt-1">У каждого канала — оценка и норма рядом с цифрой: зелёное — хорошо, жёлтое — терпимо, красное — надо разбираться.</p>
         {rows.length ? (
           <>
-            <div className="mt-4 -mx-1 overflow-x-auto">
-              <table className="w-full text-sm min-w-[46rem]">
-                <thead>
-                  <tr className="text-left text-muted border-b border-line text-xs">
-                    <th className="py-2 px-1 font-semibold">Канал</th>
-                    <th className="py-2 px-2 font-semibold text-right" title="Сколько раз объявления показали">Показы</th>
-                    <th className="py-2 px-2 font-semibold text-right">Клики</th>
-                    <th className="py-2 px-2 font-semibold text-right" title="Доля показов, после которых кликнули">CTR</th>
-                    <th className="py-2 px-2 font-semibold text-right">Ср. цена клика</th>
-                    <th className="py-2 px-2 font-semibold text-right">Расход</th>
-                    <th className="py-2 px-2 font-semibold text-right">Обращения</th>
-                    <th className="py-2 px-2 font-semibold text-right" title="Доля кликов, после которых человек обратился">Конверсия</th>
-                    <th className="py-2 px-2 font-semibold text-right">Цена обращения</th>
-                    <th className="py-2 px-1 font-semibold text-right">Цена клиента</th>
-                  </tr>
-                </thead>
-                {rows.map(([ch, t]) => {
-                  const m = mv.byChannel.get(ch);
-                  const pct = (a: number, b: number) => (b ? `${((a / b) * 100).toLocaleString("ru-RU", { maximumFractionDigits: a / b < 0.1 ? 2 : 1 })}%` : "—");
-                  return (
-                    <tbody key={ch} className="border-b border-line last:border-0 group/ch">
-                      <tr>
-                        <td className="py-3 px-1 font-semibold">
-{CH[ch] ?? ch}
-                        </td>
-                        <td className="py-3 px-2 text-right tabular-nums">{num(t.impressions)}</td>
-                        <td className="py-3 px-2 text-right tabular-nums">{num(t.clicks)}</td>
-                        <td className="py-3 px-2 text-right tabular-nums">{pct(t.clicks, t.impressions)}</td>
-                        <td className="py-3 px-2 text-right tabular-nums">{t.clicks ? rub(t.cost / t.clicks) : "—"}</td>
-                        <td className="py-3 px-2 text-right tabular-nums">{rub(t.cost)}</td>
-                        <td className="py-3 px-2 text-right tabular-nums">{num(t.leads)}</td>
-                        <td className="py-3 px-2 text-right tabular-nums">{pct(t.leads, t.clicks)}</td>
-                        <td className="py-3 px-2 text-right tabular-nums">{t.leads && t.cost ? rub(t.cost / t.leads) : "—"}</td>
-                        <td className="py-3 px-1 text-right tabular-nums font-semibold">{t.clients && t.cost ? `${t.clientsEstimated ? "≈ " : ""}${rub(t.cost / t.clients)}` : "—"}</td>
-                      </tr>
-                      <tr>
-                        <td colSpan={10} className="pb-3 px-1">
-                          <div className="grid grid-cols-2 sm:grid-cols-5 gap-x-4 gap-y-2 rounded-xl bg-paper px-3 py-2.5 text-xs">
-                            <div><div className="text-muted">Визиты (Метрика)</div><div className="font-semibold text-sm tabular-nums">{m ? num(m.visits) : "—"}</div></div>
-                            <div><div className="text-muted">Отказы</div><div className="font-semibold text-sm tabular-nums">{m && m.visits ? pct(m.bounces, m.visits) : "—"}</div></div>
-                            <div><div className="text-muted">Время на сайте</div><div className="font-semibold text-sm tabular-nums">{m && m.visits ? dur(m.durationSum / m.visits) : "—"}</div></div>
-                            <div><div className="text-muted">Цели в Метрике</div><div className="font-semibold text-sm tabular-nums">{m ? num(m.goalLeads) : "—"}</div></div>
-                            <div><div className="text-muted">Клиенты{t.clientsEstimated ? ", оценка" : ""}</div><div className="font-semibold text-sm tabular-nums">{num(t.clients)}</div></div>
-                          </div>
-                        </td>
-                      </tr>
-                    </tbody>
-                  );
-                })}
-              </table>
+            <div className="mt-4 grid gap-3">
+              {rows.map(([ch, t]) => {
+                const m = mv.byChannel.get(ch);
+                const v = channelVerdict(ch, t, m, siteDown);
+                const ctr = t.impressions ? t.clicks / t.impressions : null;
+                const conv = t.clicks ? t.leads / t.clicks : null;
+                const bounce = m && m.visits ? m.bounces / m.visits : null;
+                const n = NORMS[normKey(ch)];
+                return (
+                  <div key={ch} className="rounded-2xl border border-line p-4 sm:p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="font-bold text-base">{CH[ch] ?? ch}</span>
+                        <span className={`pill ${v.tone === "good" ? "bg-good-soft text-good" : v.tone === "bad" ? "bg-bad-soft text-bad" : v.tone === "warn" ? "bg-warn-soft text-warn" : "bg-paper text-muted"}`}>{v.label}</span>
+                      </div>
+                      <div className="text-sm text-muted">Потрачено <b className="text-ink text-base tabular-nums">{rub(t.cost)}</b></div>
+                    </div>
+                    {v.text ? <p className={`text-sm mt-1.5 ${v.tone === "bad" ? "text-bad" : "text-ink-2"}`}>{v.text}</p> : null}
+                    <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                      <Metric label="Показы" value={num(t.impressions)} />
+                      <Metric label="Клики · CTR" value={`${num(t.clicks)} · ${ctr === null ? "—" : pctFmt(ctr)}`} tone={ctr === null || t.impressions < 300 ? null : ctr >= n.ctr[1] ? "good" : ctr >= n.ctr[0] ? "warn" : "bad"} hint={`норма ${pctFmt(n.ctr[0])}–${pctFmt(n.ctr[1])}`} />
+                      <Metric label="Цена клика" value={t.clicks ? rub(t.cost / t.clicks) : "—"} />
+                      <Metric label="Ушли сразу" value={bounce === null ? "—" : pctFmt(bounce)} tone={bounce === null || (m?.visits ?? 0) < 10 ? null : bounce <= 0.35 ? "good" : bounce <= 0.6 ? "warn" : "bad"} hint={m && m.visits ? `из ${num(m.visits)} визитов · хорошо до 35%` : "нужна Метрика на сайте"} />
+                      <Metric label="Обращения" value={`${num(t.leads)}${conv !== null && t.clicks >= 20 ? ` · ${pctFmt(conv)}` : ""}`} tone={t.clicks < 20 ? null : conv! >= 0.03 ? "good" : conv! >= 0.01 ? "warn" : "bad"} hint="из кликов · хорошо от 3%" />
+                      <Metric label="Цена клиента" value={t.clients && t.cost ? `${t.clientsEstimated ? "≈ " : ""}${rub(t.cost / t.clients)}` : t.leads && t.cost ? `обращение ${rub(t.cost / t.leads)}` : "—"} />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-            <p className="hint mt-3">Суммы по каналам равны итогу выше.{r.byChannel.unknown ? " «Канал не определён» — заявки с рекламной меткой, но без номера объявления: расход по ним уже учтён в своих каналах." : ""}</p>
+            <p className="hint mt-3">Суммы по каналам равны итогу выше. Расход — с НДС, поэтому он на 22% больше, чем в кабинете Директа.{r.byChannel.unknown ? " «Канал не определён» — заявки с рекламной меткой, но без номера объявления: расход по ним уже учтён в своих каналах." : ""}</p>
           </>
         ) : (
           <p className="text-muted mt-3">Данных пока нет — показы начнутся после модерации.</p>

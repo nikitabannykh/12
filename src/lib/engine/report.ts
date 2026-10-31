@@ -308,7 +308,7 @@ const PAUSE_KINDS = new Set(["pause", "resume", "revert"]);
 
 export type CampaignState = {
   /** почему стоит (null — идёт); audience — ретаргетинг копит аудиторию и включится сам */
-  stopped: null | "guard" | "owner" | "robot" | "error" | "audience" | "platform";
+  stopped: null | "guard" | "owner" | "robot" | "error" | "audience" | "platform" | "site";
   stoppedAt?: Date;
   note?: string | null;
   /** пауза пришла вместе с другим изменением (например, со снижением бюджета) — его заголовок */
@@ -352,6 +352,8 @@ export async function campaignStates(b: Business, camps: Campaign[], now: Date):
     const pauseCh = mine.find((ch) => (ch.undo ?? []).some((u) => u.op === "campaignStatus" && u.campaignId === c.id && u.status === "active"));
     // Та же логика, что у робота: стоит из-за бюджета, если робот пометил паузу «бюджетной» и владелец её не ставил сам
     // (в том числе когда канал остановлен вместе со снижением бюджета владельцем — это решение робота, не владельца)
+    const siteUrl = (c.meta as { pausedBySite?: string | null } | null)?.pausedBySite;
+    if (siteUrl) { out.set(c.id, { stopped: "site", stoppedAt: pauseCh?.at, note: `Сайт ${siteUrl.replace(/^https?:\/\//, "")} не открывается — робот остановил рекламу и включит её сам, когда сайт заработает`, learningLeft: 0 }); continue; }
     if (pausedForBudget(c)) out.set(c.id, { stopped: "guard", stoppedAt: pauseCh?.at, note: pauseCh?.reason ?? null, via: pauseCh && !PAUSE_KINDS.has(pauseCh.kind) ? pauseCh.title : null, learningLeft: 0 });
     else out.set(c.id, { stopped: pauseCh?.actor === "robot" ? "robot" : "owner", stoppedAt: pauseCh?.at, note: pauseCh?.reason, via: pauseCh && !PAUSE_KINDS.has(pauseCh.kind) ? pauseCh.title : null, learningLeft: 0 });
   }

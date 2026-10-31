@@ -3,6 +3,7 @@ import { route, json, needBusiness } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { syncBusiness } from "@/lib/engine/sync";
 import { checkBalances } from "@/lib/engine/balance";
+import { siteGuard } from "@/lib/engine/site-guard";
 import { hit } from "@/lib/ratelimit";
 import { isLaunched } from "@/lib/util";
 
@@ -29,6 +30,8 @@ async function counts(businessId: string) {
  */
 export const POST = route(async ({ business }) => {
   needBusiness(business);
+  // Пока кабинет открыт — проверяем, открывается ли сайт, куда ведёт реклама (не чаще раза в 3 минуты, см. site-guard)
+  const sg = isLaunched(business.status) ? await siteGuard(business).catch(() => null) : null;
   const before = await counts(business.id);
   // Проверяем, пока есть что ждать: модерация, «прошло, но не показывается» или кампании без подтверждённых показов
   if (!isLaunched(business.status) || !(before.moderation || before.blocked || before.notServing)) return json({ checked: false, changed: false, fast: false, ...before, sig: undefined });
@@ -39,6 +42,6 @@ export const POST = route(async ({ business }) => {
   await syncBusiness(business, { only: "states" }).catch((e) => console.error("modcheck", e));
   if (fast) await checkBalances(business, { force: true }).catch(() => null);
   const after = await counts(business.id);
-  const changed = after.moderation !== before.moderation || after.rejected !== before.rejected || after.active !== before.active || after.blocked !== before.blocked || after.notServing !== before.notServing || after.sig !== before.sig;
+  const changed = Boolean(sg && (sg.paused || sg.resumed)) || after.moderation !== before.moderation || after.rejected !== before.rejected || after.active !== before.active || after.blocked !== before.blocked || after.notServing !== before.notServing || after.sig !== before.sig;
   return json({ checked: true, changed, fast, ...after, sig: undefined });
 });

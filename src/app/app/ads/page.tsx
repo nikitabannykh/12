@@ -641,7 +641,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                   </div>
                   <div className="mt-2.5 overflow-x-auto">
                     <table className="w-full text-sm min-w-[36rem]">
-                      <thead><tr className="text-left text-xs text-muted"><th className="font-medium py-1.5 pr-3">Аудитория</th><th className="font-medium pr-3 text-right">Показы</th><th className="font-medium pr-3 text-right">Кликают</th><th className="font-medium pr-3 text-right">Обращения</th><th className="font-medium pr-3 text-right">Обращение</th><th className="font-medium text-right">Итог</th></tr></thead>
+                      <thead><tr className="text-left text-xs text-muted"><th className="font-medium py-1.5 pr-3">Аудитория</th><th className="font-medium pr-3 text-right">Показы</th><th className="font-medium pr-3 text-right">Клики · CTR</th><th className="font-medium pr-3 text-right">Расход</th><th className="font-medium pr-3 text-right">Обращения</th><th className="font-medium pr-3 text-right">Цена обращения</th><th className="font-medium text-right">Итог</th></tr></thead>
                       <tbody>
                         {rows.map(({ g, s: gs }) => {
                           const x = byId.get(g.id);
@@ -650,7 +650,8 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                             <tr key={g.id} className="border-t border-line">
                               <td className="py-2 pr-3"><div className="font-medium">{g.name}</div><div className="text-xs text-muted">{g.audience}</div></td>
                               <td className="pr-3 text-right tabular-nums">{num(gs.impressions)}</td>
-                              <td className="pr-3 text-right tabular-nums">{gs.impressions ? pct(ctrOf(gs)) : "—"}</td>
+                              <td className="pr-3 text-right tabular-nums">{num(gs.clicks)}{gs.impressions ? ` · ${pct(ctrOf(gs))}` : ""}</td>
+                              <td className="pr-3 text-right tabular-nums font-semibold">{rub(gs.cost)}</td>
                               <td className="pr-3 text-right tabular-nums">{num(gs.conversions)}</td>
                               <td className="pr-3 text-right tabular-nums">{gs.conversions ? rub(gs.cost / gs.conversions) : "—"}</td>
                               <td className="text-right"><span className={`pill ${V.cls}`} title={x?.why}>{V.label}</span></td>
@@ -805,8 +806,8 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                                     </div>
                                   ) : null}
                                   <div className="grid grid-cols-3 gap-1 text-xs text-center">
-                                    <div><div className="text-faint">Клики</div><div className="font-semibold tabular-nums">{num(s.clicks)}</div></div>
-                                    <div><div className="text-faint">Кликают</div><div className="font-semibold tabular-nums">{s.impressions ? pct(ctrOf(s)) : "—"}</div></div>
+                                    <div><div className="text-faint">Клики · CTR</div><div className="font-semibold tabular-nums">{num(s.clicks)}{s.impressions ? <span className="text-muted font-normal"> · {pct(ctrOf(s))}</span> : null}</div></div>
+                                    <div><div className="text-faint">Расход</div><div className="font-semibold tabular-nums">{rub(s.cost)}</div></div>
                                     <div><div className="text-faint">Обращения</div><div className="font-semibold tabular-nums">{num(s.conversions)}</div></div>
                                   </div>
                                   <div className="flex items-center justify-end gap-1 text-xs text-ink-2 font-medium">
@@ -948,6 +949,7 @@ function CampaignPill({ s, ch, short = false, mod }: { s?: { stopped: string | n
       if (/модерац/i.test(s.note ?? "") && !money) return <span className="pill bg-info-soft text-ink-2">На модерации</span>;
       return <span className="pill bg-bad-soft text-bad" title={s.note ?? undefined}>{money ? (mod?.docs ? "Не показывается: деньги, лицензия" : "Не показывается: нет денег") : mod?.docs ? "Не показывается: лицензия" : "Не показывается"}</span>;
     }
+    if (s?.stopped === "site") return <span className="pill bg-bad-soft text-bad" title={s.note ?? undefined}>{short ? "Стоит: сайт" : "Стоит: сайт не работает"}</span>;
     if (s?.stopped === "audience") return <span className="pill bg-good-soft text-good">Копим аудиторию</span>;
     if (s?.stopped === "robot") return <span className="pill bg-paper text-muted">{short ? "Пауза — робот" : "На паузе — остановил робот"}</span>;
     if (s?.stopped) return <span className="pill bg-paper text-muted">{short ? "Пауза — вы" : "На паузе — вы остановили"}</span>;

@@ -92,6 +92,7 @@ export default async function Dashboard() {
   const guardStopped = stopped.filter((x) => states.get(x.id)?.stopped === "guard");
   const ownerStopped = stopped.filter((x) => states.get(x.id)?.stopped === "owner" || states.get(x.id)?.stopped === "robot");
   const errorStopped = stopped.filter((x) => states.get(x.id)?.stopped === "error");
+  const siteStopped = stopped.filter((x) => states.get(x.id)?.stopped === "site");
   const platformStopped = stopped.filter((x) => states.get(x.id)?.stopped === "platform");
   const learning = camps.filter((x) => (states.get(x.id)?.learningLeft ?? 0) > 0);
   const nextMonth = nextMonthStart(r.now).toLocaleDateString("ru-RU", { day: "numeric", month: "long", timeZone: "UTC" });
@@ -156,6 +157,11 @@ export default async function Dashboard() {
         >
           {ownerStopped.some((x) => states.get(x.id)?.via) ? <Link href="/app/settings#budget" className="btn btn-ghost btn-sm bg-white">Поднять бюджет</Link> : null}
           <ActionButton url="/api/campaigns/resume" body={{ ids: ownerStopped.map((x) => x.id) }} done="Реклама включена" className={`btn btn-sm ${allStopped ? "btn-primary" : "btn-ghost bg-white"}`}>Включить</ActionButton>
+        </StopBanner>
+      ) : null}
+      {siteStopped.length ? (
+        <StopBanner tone="bad" title="Сайт не работает — реклама остановлена" text={`${states.get(siteStopped[0].id)?.note ?? "Сайт не открывается."} Если сайт починят нескоро — переключите рекламу на страницу записи, и показы продолжатся.`}>
+          <Link href="/app/settings#landing" className="btn btn-primary btn-sm">Куда ведёт реклама</Link>
         </StopBanner>
       ) : null}
       {errorStopped.map((x) => (

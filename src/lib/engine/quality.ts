@@ -34,9 +34,10 @@ export const PROXY = {
 /** РСЯ: площадка с кликами и без качества */
 export const SITE_RULE = {
   days: 30,
-  minClicks: 30,
-  minVisits: 10,
-  bounce: 0.85,
+  // На маленьком бюджете 30 кликов на площадку — это весь бюджет: решаем раньше, но только при почти сплошных отказах
+  minClicks: 12,
+  minVisits: 6,
+  bounce: 0.8,
   /** без данных Метрики по площадке — только при большом объёме: столько кликов и ≥ 3 ожидаемых обращения */
   noMetricaClicks: 60,
   perRun: 20,
@@ -91,4 +92,28 @@ export function proxyVerdict(r: ProxyResult): "won" | "lost" | null {
 export function proxyVetoes(r: ProxyResult | null, status: "won" | "lost") {
   if (!r?.eligible || r.conflict) return false;
   return status === "won" ? r.p <= 1 - PROXY.veto : r.p >= PROXY.veto;
+}
+
+/**
+ * Почему люди уходят с сайта — как разобрал бы директолог, а не «отказов много»:
+ *  - сайт не открывался (сторож сайта ловил ошибки) — люди физически не попадали на страницу;
+ *  - визитов намного меньше кликов — страница не грузится или кликают не люди;
+ *  - в сетях CTR выше нормы в 2+ раза и на сайте 0–5 секунд — случайные клики в приложениях и боты;
+ *  - 5–30 секунд и уход — страница не совпадает с объявлением или неудобна с телефона.
+ */
+export type TrafficInput = { channel: string; impressions: number; clicks: number; visits: number; bounces: number; durationSum: number; siteDown?: string | null };
+export function trafficDiagnosis(x: TrafficInput): { cause: "site" | "lost" | "bots" | "mismatch" | null; text: string } {
+  if (x.siteDown) return { cause: "site", text: `Сайт не открывался (${x.siteDown}) — люди кликали, но страница не загружалась. Пока сайт лежит, робот держит рекламу на паузе.` };
+  if (x.clicks >= 15 && x.visits < x.clicks * 0.5) return { cause: "lost", text: `До сайта дошли ${x.visits} из ${x.clicks} кликнувших — страница слишком долго грузится или не открывается у части людей. Проверьте сайт с телефона.` };
+  if (x.visits < 8) return { cause: null, text: "" };
+  const bounce = x.bounces / x.visits;
+  const avg = x.durationSum / x.visits;
+  const ctr = x.impressions ? x.clicks / x.impressions : 0;
+  const net = x.channel !== "search";
+  if (bounce >= 0.7 && avg <= 6 && net && ctr >= 0.015)
+    return { cause: "bots", text: `Похоже на случайные клики и ботов: CTR ${(ctr * 100).toFixed(1)}% — в 2–3 раза выше обычного для сетей, а на сайте в среднем ${Math.round(avg)} с. Так кликают в мобильных играх и на мусорных площадках — робот их отключает.` };
+  if (bounce >= 0.6 && avg > 6)
+    return { cause: "mismatch", text: `Люди открывают страницу и через ${Math.round(avg)} с уходят — она не отвечает на то, что обещает объявление (цена, услуга, запись), или неудобна с телефона.` };
+  if (bounce >= 0.7) return { cause: "bots", text: `${Math.round(bounce * 100)}% уходят почти сразу — похоже на случайные клики. Робот отключает площадки, откуда они идут.` };
+  return { cause: null, text: "" };
 }
