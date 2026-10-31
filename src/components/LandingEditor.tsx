@@ -27,13 +27,15 @@ function SiteCodeNote({ code }: { code: SiteCode }) {
   );
 }
 
-function TargetPicker({ value, onChange, siteUrl, pageUrl, allowAuto, autoLabel, yandex, siteCode = null }: {
+function TargetPicker({ value, onChange, siteUrl, pageUrl, allowAuto, autoLabel, yandex, siteCode = null, newSite, onNewSite }: {
   value: LandingTarget; onChange: (t: LandingTarget) => void; siteUrl: string | null; pageUrl: string; allowAuto?: boolean; autoLabel?: string; yandex?: boolean; siteCode?: SiteCode;
+  /** Сайт ещё не указан — его можно вписать прямо здесь (только в выборе «для всех каналов») */
+  newSite?: string; onNewSite?: (v: string) => void;
 }) {
   const opts: { v: LandingMode; label: string; hint: string; disabled?: boolean }[] = [
     ...(allowAuto ? [{ v: "auto" as const, label: autoLabel ?? "Как для всех", hint: "" }] : []),
     { v: "page", label: "Страница записи", hint: "Наша страница с формой записи и кнопками связи. Заявки считаются сами." },
-    { v: "site", label: siteUrl ? `Сайт — ${siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}` : "Сайт (не указан)", hint: "", disabled: !siteUrl },
+    { v: "site", label: siteUrl ? `Сайт — ${siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}` : onNewSite ? "Свой сайт" : "Сайт (не указан)", hint: "", disabled: !siteUrl && !onNewSite && !newSite },
     { v: "link", label: "Другая ссылка", hint: "Онлайн-запись (YCLIENTS, DIKIDI), Taplink, нужная страница сайта, WhatsApp или Telegram. Заявки там мы не видим — считаем переходы; записи отмечайте в «Статистике»." },
   ];
   const url = value.mode === "link" ? value.url ?? "" : "";
@@ -47,7 +49,13 @@ function TargetPicker({ value, onChange, siteUrl, pageUrl, allowAuto, autoLabel,
             <span className="font-medium">{o.label}</span>
             {o.v === "page" ? <a href={pageUrl} target="_blank" rel="noreferrer" className="ml-2 text-sm text-ink-2 underline inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>открыть <ExternalLink size={12} /></a> : null}
             {o.hint && value.mode === o.v ? <span className="block text-sm text-muted mt-0.5">{o.hint}</span> : null}
-            {o.v === "site" && value.mode === "site" ? <SiteCodeNote code={siteCode} /> : null}
+            {o.v === "site" && value.mode === "site" && siteUrl ? <SiteCodeNote code={siteCode} /> : null}
+            {o.v === "site" && !siteUrl && onNewSite && value.mode === "site" ? (
+              <span className="mt-2 grid gap-1" onClick={(e) => e.preventDefault()}>
+                <input className="field" autoFocus placeholder="Адрес сайта, например lak-studio.ru" value={newSite ?? ""} onChange={(e) => onNewSite(e.target.value)} />
+                <span className="text-sm text-muted">Проверим, что сайт открывается, и сохраним его в данных о бизнесе. Чтобы считать заявки с сайта, после сохранения поставьте на него наш код.</span>
+              </span>
+            ) : null}
           </span>
         </label>
       ))}
@@ -70,16 +78,19 @@ export function LandingEditor({ initial, siteUrl, pageUrl, channels, live, hasYa
   const [s, setS] = useState<LandingSettings>(start);
   const [saved, setSaved] = useState(JSON.stringify(start));
   const [busy, setBusy] = useState(false);
+  const [newSite, setNewSite] = useState("");
   const toast = useToast();
   const router = useRouter();
   const main: LandingTarget = s.mode === "auto" ? { mode: siteUrl ? "site" : "page" } : s;
-  const dirty = JSON.stringify(s) !== saved;
+  const dirty = JSON.stringify(s) !== saved || Boolean(newSite.trim());
   const perCount = Object.keys(s.channels ?? {}).length;
 
   async function save() {
     setBusy(true);
     try {
-      const r = await api<{ settings: LandingSettings; updated: number; warnings: string[] }>("PUT", "/api/landing", s);
+      if (!siteUrl && main.mode === "site" && !newSite.trim()) throw new Error("Впишите адрес сайта");
+      const r = await api<{ settings: LandingSettings; updated: number; warnings: string[] }>("PUT", "/api/landing", newSite.trim() ? { ...s, siteUrl: newSite.trim() } : s);
+      setNewSite("");
       setS(r.settings);
       setSaved(JSON.stringify(r.settings));
       if (r.warnings.length) toast(`Сохранили. Обратите внимание:\n${r.warnings.slice(0, 3).join("\n")}`, "error");
@@ -96,7 +107,7 @@ export function LandingEditor({ initial, siteUrl, pageUrl, channels, live, hasYa
     <div className="grid gap-5">
       <div className="grid gap-2">
         <div className="font-semibold flex items-center gap-2"><Link2 size={16} /> Для всех каналов</div>
-        <TargetPicker siteCode={siteCode} value={main} onChange={(t) => setS({ ...s, ...t })} siteUrl={siteUrl} pageUrl={pageUrl} yandex={hasYandex} />
+        <TargetPicker siteCode={siteCode} value={main} onChange={(t) => setS({ ...s, ...t })} siteUrl={siteUrl} pageUrl={pageUrl} yandex={hasYandex} newSite={newSite} onNewSite={siteUrl ? undefined : setNewSite} />
       </div>
       {channels.length > 1 ? (
         <details className="rounded-xl border border-line" open={perCount > 0}>
@@ -106,7 +117,7 @@ export function LandingEditor({ initial, siteUrl, pageUrl, channels, live, hasYa
             {channels.map((ch) => (
               <div key={ch} className="grid gap-1.5">
                 <div className="text-sm font-semibold">{CH_NAME[ch] ?? ch}</div>
-                <TargetPicker siteCode={siteCode} allowAuto autoLabel="Как для всех каналов" value={s.channels?.[ch] ?? { mode: "auto" }} siteUrl={siteUrl} pageUrl={pageUrl} yandex={!/vk/.test(ch)}
+                <TargetPicker siteCode={siteCode} allowAuto autoLabel="Как для всех каналов" value={s.channels?.[ch] ?? { mode: "auto" }} siteUrl={siteUrl} pageUrl={pageUrl} yandex={!/vk/.test(ch)} newSite={newSite}
                   onChange={(t) => {
                     const next = { ...(s.channels ?? {}) };
                     if (t.mode === "auto") delete next[ch];
@@ -120,7 +131,7 @@ export function LandingEditor({ initial, siteUrl, pageUrl, channels, live, hasYa
       ) : null}
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" className="btn btn-primary" disabled={!dirty || busy} onClick={save}>{busy ? <Loader2 size={16} className="spin" /> : null} Сохранить</button>
-        {dirty ? <button type="button" className="btn btn-ghost" onClick={() => setS(JSON.parse(saved))}>Отменить</button> : null}
+        {dirty ? <button type="button" className="btn btn-ghost" onClick={() => { setS(JSON.parse(saved)); setNewSite(""); }}>Отменить</button> : null}
         <span className="text-sm text-muted">{live ? "Ссылки поменяем в кабинетах сразу; объявления пройдут модерацию заново, статистика сохранится." : "Применим при запуске рекламы."}</span>
       </div>
     </div>

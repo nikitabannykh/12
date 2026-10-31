@@ -198,13 +198,13 @@ export default async function Settings({ searchParams }: { searchParams: Promise
       <section className="card p-5 sm:p-7">
         <h2 className="text-lg font-bold">Рекламные кабинеты</h2>
         <p className="hint mt-1 max-w-2xl">Через них робот создаёт и ведёт рекламу. Деньги остаются в ваших кабинетах — пополняете их вы.</p>
-        <div className="mt-5 grid gap-3">
+        <div className="mt-5 grid grid-cols-[minmax(0,1fr)] gap-3">
           {(["yandex", "vk"] as const).map((pf) => {
             const list = accounts.filter((a) => a.platform === pf);
             const name = pf === "yandex" ? "Яндекс Директ" : "VK Реклама";
             const sub = pf === "yandex" ? "Поиск, сайты и приложения (РСЯ), Карты" : "ВКонтакте, Одноклассники, Дзен";
             return (
-              <div key={pf} id={pf === "vk" ? "vk" : undefined} className="rounded-2xl border border-line p-4 sm:p-5 scroll-mt-6">
+              <div key={pf} id={pf === "vk" ? "vk" : undefined} className="rounded-2xl border border-line p-4 sm:p-5 scroll-mt-6 min-w-0 [&_.btn]:max-w-full [&_.btn]:h-auto [&_.btn]:min-h-9 [&_.btn]:py-1.5 [&_.btn]:whitespace-normal">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                   <span className={`w-7 h-7 rounded-lg grid place-items-center text-white text-xs font-bold ${pf === "yandex" ? "bg-[#fc3f1d]" : "bg-[#0077ff]"}`} aria-hidden>{pf === "yandex" ? "Я" : "VK"}</span>
                   <span className="font-semibold">{name}</span>

@@ -284,11 +284,12 @@ docker run -d --name polny-zal --restart unless-stopped -p 127.0.0.1:8080:8080 \
 | `DATABASE_URL` | да | `postgresql://…@c-<ID>.rw.mdb.yandexcloud.net:6432/polnyzal?sslmode=verify-full` |
 | `PG_CA_CERT` | для Yandex MDB | Сертификат `CA.pem`: base64, PEM-текст или путь к файлу |
 | `PG_POOL_MAX` | нет | Соединений к базе на один экземпляр, по умолчанию 5. Для Serverless Containers × `concurrency` экземпляров держите сумму ниже лимита соединений кластера |
-| `ALLOW_DEMO` | нет | `false` в продакшене, если демо-вход не нужен |
+| `ALLOW_DEMO` | нет | Демо-вход и демо-кабинет: только `true` для показа; в продакшене не задавайте (по умолчанию выключено) |
 | `TRUSTED_IP_HEADER` | нет | `x-real-ip` за своим прокси (Caddy, nginx). В Serverless Containers не задавайте, пока не проверите, какой заголовок с IP клиента ставит платформа: без него лимиты по IP не применяются, защита формы токеном и пометка «похоже на спам» работают |
 | `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET` | для Директа | Redirect URI в oauth.yandex.ru: `{APP_URL}/api/connect/yandex/callback` |
 | `VK_ADS_CLIENT_ID`, `VK_ADS_CLIENT_SECRET` | для VK | Redirect URI: `{APP_URL}/api/connect/vk/callback` |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | для входа | Redirect URI: `{APP_URL}/api/auth/google/callback` |
+| `YANDEX_LOGIN_CLIENT_ID`, `YANDEX_LOGIN_CLIENT_SECRET` | для входа | Отдельное приложение «Для авторизации пользователей», права `login:email`, `login:info`, Redirect URI: `{APP_URL}/api/auth/yandex/callback` |
 | `YANDEX_CLOUD_API_KEY`, `YANDEX_CLOUD_FOLDER_ID` | для генерации | YandexGPT и YandexART — тот же Yandex Cloud |
 | `TELEGRAM_BOT_TOKEN` | нет | Вебхук `{APP_URL}/api/notify/telegram` ставится сам при https-адресе |
 

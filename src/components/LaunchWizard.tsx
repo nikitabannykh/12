@@ -117,6 +117,41 @@ function parseSemantics(data: unknown): Semantics | null {
   return out.length ? out : null;
 }
 
+/**
+ * Подключённый кабинет до запуска: сменить аккаунт (отключаем текущий и сразу ведём на подключение — Яндекс покажет выбор аккаунта)
+ * или просто отключить. Если в кабинете уже идёт реклама, сервер откажет и объяснит почему
+ */
+function AccountActions({ id, platform, reconnect }: { id: string; platform: string; reconnect: string | null }) {
+  const [busy, setBusy] = useState<null | "switch" | "off">(null);
+  const toast = useToast();
+  const router = useRouter();
+  async function drop(kind: "switch" | "off") {
+    if (kind === "off" && !window.confirm("Отключить кабинет? Подключить можно будет заново в любой момент.")) return;
+    setBusy(kind);
+    try {
+      await api("DELETE", `/api/accounts/${id}`);
+      if (kind === "switch" && reconnect) {
+        window.location.href = reconnect;
+        return;
+      }
+      toast(kind === "switch" ? "Кабинет отключён — подключите другой" : "Кабинет отключён");
+      router.refresh();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+    setBusy(null);
+  }
+  return (
+    <div className="grid gap-1.5">
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className="btn btn-ghost btn-sm" disabled={!!busy} onClick={() => drop("switch")}>{busy === "switch" ? <Loader2 size={14} className="spin" /> : null}Сменить аккаунт</button>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={!!busy} onClick={() => drop("off")}>{busy === "off" ? <Loader2 size={14} className="spin" /> : null}Отключить</button>
+      </div>
+      {platform === "yandex" ? <p className="text-xs text-muted">Яндекс спросит, какой аккаунт подключить. Нужного нет в списке — нажмите «Войти в другой аккаунт».</p> : null}
+    </div>
+  );
+}
+
 export function LaunchWizard(p: Props) {
   const router = useRouter();
   const toast = useToast();
@@ -465,14 +500,19 @@ export function LaunchWizard(p: Props) {
             return (
               <div key={x.platform} className="rounded-xl border border-line p-4 flex flex-col gap-3 min-w-0 [&_.btn]:max-w-full [&_.btn]:h-auto [&_.btn]:min-h-9 [&_.btn]:py-1.5 [&_.btn]:whitespace-normal [&_.btn]:text-left">
                 <div>
-                  <div className="font-bold">{x.name}</div>
-                  <div className="text-sm text-muted">{x.desc}</div>
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="font-bold">{x.name}</span>
+                    {!acc ? <span className="pill bg-paper text-muted">Не подключён</span> : acc.status === "ok" ? <span className="pill bg-good-soft text-good"><Check size={13} /> Подключён</span> : <span className="pill bg-bad-soft text-bad"><TriangleAlert size={13} /> Нет доступа</span>}
+                  </div>
+                  <div className="text-sm text-muted mt-0.5">{x.desc}</div>
                 </div>
                 {acc ? (
-                  <div className="grid gap-2">
-                    <div className={`text-sm ${acc.status === "ok" ? "text-good" : "text-bad"}`}>
-                      {acc.status === "ok" ? <><Check size={14} className="inline -mt-0.5" /> Подключён: {acc.login}</> : <>Ошибка: {acc.statusNote}</>}
+                  <div className="grid gap-2.5">
+                    <div className="rounded-lg bg-paper px-3 py-2 text-sm min-w-0">
+                      <span className="text-muted">Аккаунт: </span><b className="break-all">{acc.login}</b>
+                      {acc.status !== "ok" && acc.statusNote ? <div className="text-bad mt-1">{acc.statusNote}</div> : null}
                     </div>
+                    <AccountActions id={acc.id} platform={x.platform} reconnect={x.platform === "yandex" ? x.href : x.on ? x.href : null} />
                     {x.platform === "vk" && acc.status === "ok" ? <VkPixelSetup /> : null}
                   </div>
                 ) : x.platform === "vk" ? (

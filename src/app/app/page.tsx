@@ -302,7 +302,8 @@ export default async function Dashboard() {
             </div>
           ))}
           {needMark ? <ClientsWeek weekStart={lastWeek.weekStart} leads={lastWeek.leads} otherLeads={lastWeek.otherLeads} /> : null}
-          {rejected ? (
+          {/* Отклонённые уже показаны в карточке модерации вверху — здесь только если её нет */}
+          {rejected && !(mod.moderation || mod.rejected) ? (
             <div className="rounded-xl bg-warn-soft text-warn p-4 text-sm leading-relaxed">
               <b>{rejected === 1 ? "1 объявление не прошло модерацию." : `${pl(rejected, "объявление", "объявления", "объявлений")} не прошли модерацию.`}</b>{" "}
               Робот перепишет {rejected === 1 ? "его" : "их"} при следующей проверке — или поправьте сами в разделе <Link href="/app/ads" className="underline">«Реклама»</Link>.
