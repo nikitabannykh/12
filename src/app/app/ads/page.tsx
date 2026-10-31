@@ -250,15 +250,14 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
             </ul>
             {/* Компьютер: таблица */}
             <div className="mt-3 hidden md:block">
-              <table className="w-full text-sm">
+              <table className="dtable">
                 <thead>
-                  <tr className="text-left text-faint">
-                    <th className="font-medium py-2 pr-2">Кампания</th>
-                    <th className="font-medium py-2 px-2">Статус</th>
-                    <th className="font-medium py-2 px-2 text-right">Потрачено</th>
-                    <th className="font-medium py-2 px-2 text-right">Обращения</th>
-                    <th className="font-medium py-2 px-2 text-right">Обращение</th>
-                    <th className="font-medium py-2 pl-2 text-right">Клиент</th>
+                  <tr>
+                    <th>Кампания</th>
+                    <th className="!text-left">Статус</th>
+                    <th>Потрачено</th>
+                    <th>Обращения</th>
+                    <th>Цена клиента</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -266,8 +265,8 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                     const r = it.camp ? chRows.find((x) => x.c.id === it.camp!.id) : null;
                     const best = r && bestCh && r.c.id === bestCh.c.id && withLeads.length > 1;
                     return (
-                      <tr key={it.key} className="border-t border-line align-middle group/row">
-                        <td className="py-2.5 pr-2">
+                      <tr key={it.key} className="group/row">
+                        <td>
                           <a href={`#${anchorOf(it.key)}`} className="flex items-start gap-2.5 min-w-0 rounded-lg -m-1 p-1 hover:bg-paper">
                             <span className="mt-0.5"><PlatformMark family={it.family} size={20} /></span>
                             <span className="min-w-0">
@@ -280,11 +279,10 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                             </span>
                           </a>
                         </td>
-                        <td className="py-2.5 px-2 w-[11rem]"><ItemStatus it={it} /></td>
-                        <td className="py-2.5 px-2 text-right tabular-nums whitespace-nowrap">{r ? rub(r.s.cost) : "—"}</td>
-                        <td className="py-2.5 px-2 text-right tabular-nums">{r ? num(r.s.conversions) : "—"}</td>
-                        <td className="py-2.5 px-2 text-right tabular-nums whitespace-nowrap">{r?.cpl != null ? rub(r.cpl) : "—"}</td>
-                        <td className="py-2.5 pl-2 text-right tabular-nums font-semibold whitespace-nowrap">{r?.cac != null ? `${r.estimated ? "≈ " : ""}${rub(r.cac)}` : "—"}</td>
+                        <td className="l w-[13rem]"><ItemStatus it={it} /></td>
+                        <td>{r ? <><span className="num">{rub(r.s.cost)}</span>{r.s.clicks ? <span className="sub">{num(r.s.clicks)} кликов</span> : null}</> : "—"}</td>
+                        <td>{r ? <><span className="num">{num(r.s.conversions)}</span>{r.cpl != null ? <span className="sub">по {rub(r.cpl)}</span> : null}</> : "—"}</td>
+                        <td>{r?.cac != null ? <span className="num">{`${r.estimated ? "≈ " : ""}${rub(r.cac)}`}</span> : "—"}</td>
                       </tr>
                     );
                   })}
@@ -640,21 +638,20 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                     <div className="text-xs text-muted">за {pl(DAYS, "день", "дня", "дней")}</div>
                   </div>
                   <div className="mt-2.5 overflow-x-auto">
-                    <table className="w-full text-sm min-w-[36rem]">
-                      <thead><tr className="text-left text-xs text-muted"><th className="font-medium py-1.5 pr-3">Аудитория</th><th className="font-medium pr-3 text-right">Показы</th><th className="font-medium pr-3 text-right">Клики · CTR</th><th className="font-medium pr-3 text-right">Расход</th><th className="font-medium pr-3 text-right">Обращения</th><th className="font-medium pr-3 text-right">Цена обращения</th><th className="font-medium text-right">Итог</th></tr></thead>
+                    <table className="dtable min-w-[40rem]">
+                      <thead><tr><th>Аудитория</th><th>Показы</th><th>Клики</th><th>Расход</th><th>Обращения</th><th>Итог</th></tr></thead>
                       <tbody>
                         {rows.map(({ g, s: gs }) => {
                           const x = byId.get(g.id);
                           const V = VERDICT[x?.verdict ?? "learning"];
                           return (
-                            <tr key={g.id} className="border-t border-line">
-                              <td className="py-2 pr-3"><div className="font-medium">{g.name}</div><div className="text-xs text-muted">{g.audience}</div></td>
-                              <td className="pr-3 text-right tabular-nums">{num(gs.impressions)}</td>
-                              <td className="pr-3 text-right tabular-nums">{num(gs.clicks)}{gs.impressions ? ` · ${pct(ctrOf(gs))}` : ""}</td>
-                              <td className="pr-3 text-right tabular-nums font-semibold">{rub(gs.cost)}</td>
-                              <td className="pr-3 text-right tabular-nums">{num(gs.conversions)}</td>
-                              <td className="pr-3 text-right tabular-nums">{gs.conversions ? rub(gs.cost / gs.conversions) : "—"}</td>
-                              <td className="text-right"><span className={`pill ${V.cls}`} title={x?.why}>{V.label}</span></td>
+                            <tr key={g.id}>
+                              <td><span className="name">{g.name}</span><span className="desc">{g.audience}</span></td>
+                              <td>{num(gs.impressions)}</td>
+                              <td><span className="num">{num(gs.clicks)}</span>{gs.impressions ? <span className="sub">CTR {pct(ctrOf(gs))}</span> : null}</td>
+                              <td><span className="num">{rub(gs.cost)}</span>{gs.clicks ? <span className="sub">{rub(gs.cost / gs.clicks)} за клик</span> : null}</td>
+                              <td><span className="num">{num(gs.conversions)}</span>{gs.conversions ? <span className="sub">по {rub(gs.cost / gs.conversions)}</span> : null}</td>
+                              <td><span className={`pill ${V.cls}`}>{V.label}</span>{x?.why ? <span className="sub max-w-[14rem] ml-auto whitespace-normal">{x.why}</span> : null}</td>
                             </tr>
                           );
                         })}

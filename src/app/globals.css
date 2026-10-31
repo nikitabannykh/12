@@ -298,3 +298,19 @@
 @keyframes lp-fadein-k { from { opacity: 0; } to { opacity: 1; } }
 .lp-fadein { opacity: 0; animation: lp-fadein-k 2s ease 0.8s forwards; }
 @media (prefers-reduced-motion: reduce) { .lp-draw { animation: none; stroke-dashoffset: 0; } .lp-fadein { animation: none; opacity: 1; } }
+
+/* Таблицы данных: шапка на сером, воздух между колонками, числа по правому краю моноширинными цифрами,
+   вторая строка ячейки (.sub) — мелко и серым, чтобы «5 · 0,88%» не сливалось в одну строку */
+.dtable { width: 100%; font-size: 14px; border-collapse: separate; border-spacing: 0; }
+.dtable thead th { background: var(--color-paper); color: var(--color-muted); font-weight: 600; font-size: 12px; padding: 10px 14px; text-align: right; white-space: nowrap; }
+.dtable thead th:first-child { text-align: left; border-radius: 10px 0 0 10px; }
+.dtable thead th:last-child { border-radius: 0 10px 10px 0; }
+.dtable td { padding: 14px; border-bottom: 1px solid var(--color-line); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; vertical-align: middle; }
+.dtable td:first-child { text-align: left; white-space: normal; }
+.dtable tbody tr:last-child td { border-bottom: 0; }
+.dtable tbody tr:hover td { background: rgba(20, 22, 50, 0.018); }
+.dtable .l { text-align: left; }
+.dtable .num { font-weight: 600; color: var(--color-ink, inherit); }
+.dtable .sub { display: block; font-size: 12px; color: var(--color-muted); font-weight: 400; margin-top: 2px; }
+.dtable .name { font-weight: 600; }
+.dtable .desc { display: block; font-size: 12px; color: var(--color-muted); margin-top: 2px; }

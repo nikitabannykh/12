@@ -295,26 +295,24 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
               ))}
             </ul>
             <div className="hidden sm:block mt-3 overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="dtable">
                 <thead>
-                  <tr className="text-left text-muted border-b border-line">
-                    <th className="py-2 pr-2 font-semibold">Кампания</th>
-                    <th className="py-2 px-2 font-semibold text-right">Клики</th>
-                    <th className="py-2 px-2 font-semibold text-right">Визиты</th>
-                    <th className="py-2 px-2 font-semibold text-right">Качественные</th>
-                    <th className="py-2 px-2 font-semibold text-right">Отказы</th>
-                    <th className="py-2 pl-2 font-semibold text-right">Среднее время на сайте</th>
+                  <tr>
+                    <th>Кампания</th>
+                    <th>Клики</th>
+                    <th>Визиты</th>
+                    <th>Ушли сразу</th>
+                    <th>Время на сайте</th>
                   </tr>
                 </thead>
                 <tbody>
                   {mv.campaigns.map((k) => (
-                    <tr key={k.id} className="border-b border-line last:border-0">
-                      <td className="py-3 pr-2"><div className="font-semibold">{CH[k.channel] ?? k.channel}</div><div className="text-xs text-faint">{k.name}</div></td>
-                      <td className="py-3 px-2 text-right">{num(k.clicks)}</td>
-                      <td className="py-3 px-2 text-right">{num(k.visits)}</td>
-                      <td className="py-3 px-2 text-right">{num(k.visits - k.bounces)}</td>
-                      <td className="py-3 px-2 text-right">{k.visits ? `${Math.round((k.bounces / k.visits) * 100)}%` : "—"}</td>
-                      <td className="py-3 pl-2 text-right">{k.visits ? dur(k.durationSum / k.visits) : "—"}</td>
+                    <tr key={k.id}>
+                      <td><span className="name">{CH[k.channel] ?? k.channel}</span><span className="desc">{k.name}</span></td>
+                      <td><span className="num">{num(k.clicks)}</span></td>
+                      <td><span className="num">{num(k.visits)}</span>{k.visits ? <span className="sub">{num(k.visits - k.bounces)} без отказа</span> : null}</td>
+                      <td><span className={`num ${k.visits && k.bounces / k.visits > 0.6 ? "!text-bad" : ""}`}>{k.visits ? `${Math.round((k.bounces / k.visits) * 100)}%` : "—"}</span></td>
+                      <td><span className="num">{k.visits ? dur(k.durationSum / k.visits) : "—"}</span></td>
                     </tr>
                   ))}
                 </tbody>
