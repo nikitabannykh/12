@@ -7,9 +7,11 @@ import type { WordstatPhrase } from "./types";
  * search-api.webSearch.user у сервисного аккаунта. Ответ: {totalCount, results:[{phrase, count}], associations}; числа — строками.
  * https://aistudio.yandex.ru/docs/en/search-api/operations/wordstat-gettop.html
  */
+import { cloudAuthConfigured, cloudAuthHeader } from "../ai/cloud-auth";
+
 const URL_TOP = () => process.env.YANDEX_WORDSTAT_URL || "https://searchapi.api.cloud.yandex.net/v2/wordstat/topRequests";
 
-export const cloudWordstatConfigured = () => Boolean(process.env.YANDEX_CLOUD_API_KEY && process.env.YANDEX_CLOUD_FOLDER_ID) && process.env.YANDEX_WORDSTAT_CLOUD !== "off";
+export const cloudWordstatConfigured = () => cloudAuthConfigured() && process.env.YANDEX_WORDSTAT_CLOUD !== "off";
 
 export class CloudWordstatError extends Error {
   constructor(message: string, public status: number) {
@@ -34,7 +36,7 @@ export async function cloudWordstat(phrase: string, regionIds: number[], opts: {
   try {
     res = await fetch(URL_TOP(), {
       method: "POST",
-      headers: { Authorization: `Api-Key ${process.env.YANDEX_CLOUD_API_KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: await cloudAuthHeader(), "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
     });

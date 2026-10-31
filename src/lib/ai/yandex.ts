@@ -1,5 +1,6 @@
 import "server-only";
 import { sleep } from "../util";
+import { cloudAuthConfigured, cloudAuthHeader } from "./cloud-auth";
 
 /**
  * YandexGPT (тексты, семантика, разбор запросов) и YandexART (картинки) из Yandex Cloud Foundation Models.
@@ -8,10 +9,10 @@ import { sleep } from "../util";
 const LLM = "https://llm.api.cloud.yandex.net/foundationModels/v1";
 const OPS = "https://llm.api.cloud.yandex.net/operations";
 
-export const aiConfigured = () => Boolean(process.env.YANDEX_CLOUD_API_KEY && process.env.YANDEX_CLOUD_FOLDER_ID);
+export const aiConfigured = cloudAuthConfigured;
 
-const headers = () => ({
-  Authorization: `Api-Key ${process.env.YANDEX_CLOUD_API_KEY}`,
+const headers = async () => ({
+  Authorization: await cloudAuthHeader(),
   "x-folder-id": process.env.YANDEX_CLOUD_FOLDER_ID || "",
   "Content-Type": "application/json",
 });
@@ -33,7 +34,7 @@ export async function gpt(system: string, user: string, opts: { temperature?: nu
   const timeoutMs = Math.max(1_000, opts.timeoutMs ?? GPT_TIMEOUT_MS);
   let res: Response;
   try {
-    res = await fetch(`${LLM}/completion`, { method: "POST", headers: headers(), body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+    res = await fetch(`${LLM}/completion`, { method: "POST", headers: await headers(), body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
   } catch (e) {
     if ((e as Error)?.name === "TimeoutError" || (e as Error)?.name === "AbortError") throw new Error(`YandexGPT: нет ответа за ${Math.round(timeoutMs / 1000)} с`);
     throw e;
@@ -90,7 +91,7 @@ async function startArt(model: string, prompt: string, aspect: { w: number; h: n
   return fetch(`${LLM}/imageGenerationAsync`, {
     signal: AbortSignal.timeout(20_000),
     method: "POST",
-    headers: headers(),
+    headers: await headers(),
     body: JSON.stringify({
       modelUri: `art://${process.env.YANDEX_CLOUD_FOLDER_ID}/${model}`,
       generationOptions: {
@@ -123,7 +124,7 @@ export async function art(prompt: string, aspect: { w: number; h: number }, seed
   const deadline = Date.now() + 55_000;
   while (Date.now() < deadline) {
     await sleep(3000);
-    const r = await fetch(`${OPS}/${op.id}`, { headers: headers(), signal: AbortSignal.timeout(20_000) });
+    const r = await fetch(`${OPS}/${op.id}`, { headers: await headers(), signal: AbortSignal.timeout(20_000) });
     const j = await r.json().catch(() => ({}));
     if (j.done) {
       if (j.error) throw new Error(`YandexART: ${j.error.message}`);

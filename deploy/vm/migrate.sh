@@ -7,10 +7,13 @@ set -a; . /etc/polny-zal.env; set +a
 # Прошлый перенос не сошёлся — дальше вслепую не идём (нужно разобраться вручную и удалить файл migrate-failed)
 if [ -f $ROOT/migrate-failed ]; then echo "migrate: прошлый перенос не удался — см. $ROOT/migrate-failed"; exit 1; fi
 trap 'rc=$?; [ $rc -ne 0 ] && date -Is > $ROOT/migrate-failed; exit $rc' EXIT
-if [ -z "${NEON_DATABASE_URL:-}" ]; then echo "migrate: NEON_DATABASE_URL нет — начинаем с пустой базы"; touch $ROOT/migrated; exit 0; fi
+# Строки старой базы ещё нет в Lockbox — сервис работает на пустой базе, перенос выполнится, когда её добавят
+if [ -z "${NEON_DATABASE_URL:-}" ]; then echo "migrate: NEON_DATABASE_URL нет — переносить пока нечего"; exit 0; fi
 PG="docker run --rm --network pz -e SRC=$NEON_DATABASE_URL -e DST=$DATABASE_URL mirror.gcr.io/library/postgres:17"
-n=$($PG sh -c 'psql "$DST" -tAc "select count(*) from information_schema.tables where table_schema = '"'"'public'"'"'"')
-if [ "$n" != "0" ]; then echo "migrate: в новой базе уже $n таблиц — перенос пропускаем"; touch $ROOT/migrated; exit 0; fi
+# Переносим, только если в новой базе ещё нет ни одного проекта (пустые таблицы, созданные самим сервисом, — не в счёт)
+n=$($PG sh -c 'psql "$DST" -tAc "select case when to_regclass('"'"'public.businesses'"'"') is null then 0 else (select count(*) from businesses) end"')
+if [ "$n" != "0" ]; then echo "migrate: в новой базе уже $n проектов — перенос пропускаем"; touch $ROOT/migrated; exit 0; fi
+$PG sh -c 'psql -q "$DST" -c "drop schema public cascade" -c "create schema public"' 
 echo "migrate: копируем базу"
 # Ошибки вида «schema public already exists» безвредны, поэтому без --exit-on-error; проверяем результат по числу заявок
 $PG sh -c 'pg_dump --no-owner --no-acl -Fc "$SRC" -f /tmp/db.dump && pg_restore --no-owner --no-acl -d "$DST" /tmp/db.dump; \
