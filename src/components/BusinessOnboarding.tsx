@@ -822,7 +822,7 @@ function LinkBlock({ mode, links, all, setLinks, rows, running, onRun, draft, ed
                   </ul>
                 </div>
               ) : null}
-              {draft && (kept.length || changes.summary.length) ? (
+              {draft ? (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-1 border-t border-line">
                   <button type="button" className="btn btn-ghost btn-sm" onClick={onReplaceAll}>Заменить всё данными по ссылке</button>
                   <span className="text-xs text-muted">если это другой бизнес: прежние адрес, сфера, услуги и фото уберём</span>
