@@ -27,6 +27,7 @@ export const BOOKED_GOAL = GOALS.find((g) => g.key === "booked")!;
 
 async function call(token: string, path: string, init?: RequestInit) {
   const res = await fetch(`${API_URL()}${path}`, {
+    signal: AbortSignal.timeout(20_000),
     ...init,
     headers: { Authorization: `OAuth ${token}`, "Content-Type": "application/json", ...(init?.headers ?? {}) },
   });
@@ -90,7 +91,7 @@ export async function metricaVisitors(token: string, counterId: number, from: st
   const base = (process.env.METRIKA_STAT_URL || "https://api-metrika.yandex.net/stat/v1").replace(/\/$/, "");
   try {
     const q = new URLSearchParams({ ids: String(counterId), metrics: "ym:s:users", date1: from, date2: to, accuracy: "full" });
-    const res = await fetch(`${base}/data?${q}`, { headers: { Authorization: `OAuth ${token}` } });
+    const res = await fetch(`${base}/data?${q}`, { headers: { Authorization: `OAuth ${token}` }, signal: AbortSignal.timeout(20_000) });
     if (!res.ok) return null;
     const j = await res.json();
     const n = Number(j?.totals?.[0]);
@@ -144,7 +145,7 @@ async function statRows(token: string, params: Record<string, string>): Promise<
     const q = new URLSearchParams({ ...params, limit: String(PAGE), offset: String(offset), accuracy: "full" });
     let res: Response;
     try {
-      res = await fetch(`${STAT_URL()}/data?${q}`, { headers: { Authorization: `OAuth ${token}` } });
+      res = await fetch(`${STAT_URL()}/data?${q}`, { headers: { Authorization: `OAuth ${token}` }, signal: AbortSignal.timeout(20_000) });
     } catch (e) {
       throw new MetricaError("api", `Метрика не ответила: ${(e as Error).message}`);
     }
@@ -270,7 +271,7 @@ export async function uploadOffline(token: string, counterId: number, target: st
   const send = async (csv: string) => {
     const fd = new FormData();
     fd.append("file", new Blob([csv], { type: "text/csv" }), "offline.csv");
-    const res = await fetch(`${API_URL()}/counter/${counterId}/offline_conversions/upload`, { method: "POST", headers: { Authorization: `OAuth ${token}` }, body: fd });
+    const res = await fetch(`${API_URL()}/counter/${counterId}/offline_conversions/upload`, { method: "POST", headers: { Authorization: `OAuth ${token}` }, body: fd, signal: AbortSignal.timeout(20_000) });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`Метрика: ${j?.message || j?.errors?.[0]?.message || `HTTP ${res.status}`}`);
     if (j?.uploading?.id) ids.push(Number(j.uploading.id));

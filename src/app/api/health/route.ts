@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
  * Проверка живости для мониторинга (UptimeRobot, healthchecks): без входа, поэтому только булевы флаги,
  * время и числа — ни значений переменных, ни данных бизнесов. 200 — база отвечает и секрет настроен, иначе 503.
  */
-export async function GET() {
+export async function GET(req: Request) {
   const t0 = Date.now();
   let db: { ok: boolean; ms: number; sizeMb: number | null; error?: string } = { ok: false, ms: 0, sizeMb: null };
   let cron: unknown = null;
@@ -58,5 +58,9 @@ export async function GET() {
     },
     cron,
   };
+  // Подробности (какие интеграции включены, размер базы, крон) — только с CRON_SECRET; без него — лишь «живы/нет»
+  const secret = process.env.CRON_SECRET;
+  const auth = req.headers.get("authorization") === `Bearer ${secret}` || new URL(req.url).searchParams.get("key") === secret;
+  if (!secret || !auth) return NextResponse.json({ ok: body.ok, at: body.at }, { status: body.ok ? 200 : 503, headers: { "cache-control": "no-store" } });
   return NextResponse.json(body, { status: body.ok ? 200 : 503, headers: { "cache-control": "no-store" } });
 }

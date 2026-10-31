@@ -29,6 +29,12 @@ export const PRIORITY: Channel[] = ["search", "network", "vk", "retarget_yandex"
 
 export type Allocation = { channel: Channel; weekly: number; share: number }[];
 
+/**
+ * Сколько в неделю нужно каналу, чтобы автостратегия набрала данных и обучилась (а не просто «минимум площадки»).
+ * При маленьком бюджете лучше один поиск, чем поиск + РСЯ + VK по 300 ₽: каналы не обучатся, а деньги размажутся.
+ */
+const USEFUL_WEEKLY: Record<Channel, number> = { search: MIN_WEEKLY.search, network: 1500, vk: 1500, retarget_yandex: 700, retarget_vk: 700 };
+
 export function allocate(monthly: number, available: Channel[]): { allocation: Allocation; dropped: Channel[] } {
   let channels = PRIORITY.filter((c) => available.includes(c));
   const dropped: Channel[] = [];
@@ -36,7 +42,8 @@ export function allocate(monthly: number, available: Channel[]): { allocation: A
   for (;;) {
     const wsum = channels.reduce((s, c) => s + WEIGHTS[c], 0);
     const alloc = channels.map((c) => ({ channel: c, weekly: Math.floor((weekly * WEIGHTS[c]) / wsum), share: WEIGHTS[c] / wsum }));
-    const short = alloc.filter((a) => a.weekly < MIN_WEEKLY[a.channel]);
+    // Главный канал держим при любом допустимом бюджете; остальные — только если им хватает на обучение
+    const short = alloc.filter((a) => a.weekly < (a.channel === channels[0] ? MIN_WEEKLY[a.channel] : Math.max(MIN_WEEKLY[a.channel], USEFUL_WEEKLY[a.channel])));
     if (!short.length || channels.length === 1) {
       // Один канал ниже минимума площадки — бюджет меньше minMonthlyFor; сервер такой бюджет не принимает
       return { allocation: alloc, dropped };

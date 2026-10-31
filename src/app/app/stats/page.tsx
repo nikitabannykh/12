@@ -31,7 +31,7 @@ function channelVerdict(ch: string, t: T, m?: { visits: number; bounces: number;
   // Разбор причины, как у директолога: сайт лежал, клики теряются, боты, страница не та
   const d = trafficDiagnosis({ channel: ch, impressions: t.impressions, clicks: t.clicks, visits: m?.visits ?? 0, bounces: m?.bounces ?? 0, durationSum: m?.durationSum ?? 0, siteDown: t.clicks ? siteDown : null });
   if (d.cause) return { label: d.cause === "site" ? "Сайт не работал" : d.cause === "bots" ? "Мусорные клики" : d.cause === "lost" ? "Клики теряются" : "Страница не цепляет", tone: "bad", text: d.text };
-  if (t.clicks >= 30 && t.leads === 0) return { label: "Плохо", tone: "bad", text: `${num(t.clicks)} кликов и ни одного обращения. Проверьте, стоит ли код Самохода на сайте и есть ли на странице кнопки записи.` };
+  if (t.clicks >= 30 && t.leads === 0) return { label: "Плохо", tone: "bad", text: `${pl(t.clicks, "клик", "клика", "кликов")} и ни одного обращения. Проверьте, стоит ли код Самохода на сайте и есть ли на странице кнопки записи.` };
   if (t.clicks < 20) return { label: "Мало данных", tone: "muted", text: t.impressions ? "Оценим, когда наберётся хотя бы 20 кликов." : "" };
   const conv = t.leads / t.clicks;
   const ctr = t.impressions ? t.clicks / t.impressions : 0;

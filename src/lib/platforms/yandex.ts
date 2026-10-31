@@ -263,9 +263,13 @@ export class YandexDirect implements PlatformClient, WordstatReports {
 
   private async callOnce<T = any>(service: string, method: string, params: unknown): Promise<T> {
     const res = await fetch(`${API()}/${service}`, {
+      signal: AbortSignal.timeout(25_000),
       method: "POST",
       headers: this.headers(),
       body: bigStringify({ method, params }),
+    }).catch((e: Error) => {
+      if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new PlatformError("yandex", "Директ не ответил за 25 секунд — попробуем позже", { timeout: true });
+      throw e;
     });
     const text = await res.text();
     let json: any;
@@ -296,7 +300,10 @@ export class YandexDirect implements PlatformClient, WordstatReports {
 
   private strategy(channel: Channel, weeklyBudget: number, strategy: Strategy, goalId?: number | null, bidCeiling?: number | null, placements?: Record<string, "YES" | "NO"> | null) {
     // Потолок ставки ограничивает, сколько автостратегия готова платить за клик, — а значит, и место в выдаче
-    const ceiling = bidCeiling && channel === "search" ? { BidCeiling: micros(bidCeiling) } : {};
+    // РСЯ: без потолка автостратегия покупает дорогие клики из игр и приложений, пока не выберет недельный бюджет.
+    // Потолок — так, чтобы на неделю вышло не меньше ~20 кликов, но не выше 60 ₽ и не ниже 25 ₽ (иначе показов почти нет)
+    const netCap = channel === "network" ? Math.round(Math.min(60, Math.max(25, netOfVat(weeklyBudget) / 20))) : null;
+    const ceiling = bidCeiling && channel === "search" ? { BidCeiling: micros(bidCeiling) } : netCap ? { BidCeiling: micros(netCap) } : {};
     const active =
       strategy === "conversions" && goalId
         ? { BiddingStrategyType: "WB_MAXIMUM_CONVERSION_RATE", WbMaximumConversionRate: { WeeklySpendLimit: micros(netOfVat(weeklyBudget)), GoalId: goalId, ...ceiling } }
@@ -1189,6 +1196,7 @@ export class YandexDirect implements PlatformClient, WordstatReports {
     const deadline = Date.now() + 40_000;
     for (;;) {
       const res = await fetch(REPORTS(), {
+        signal: AbortSignal.timeout(25_000),
         method: "POST",
         headers: this.headers({ processingMode: "auto", returnMoneyInMicros: "false", skipReportHeader: "true", skipReportSummary: "true" }),
         body,
@@ -1410,6 +1418,7 @@ function yaOauthError(j: { error?: string; error_description?: string }, fallbac
 
 export async function yandexExchange(code: string) {
   const res = await fetch("https://oauth.yandex.ru/token", {
+    signal: AbortSignal.timeout(20_000),
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -1426,6 +1435,7 @@ export async function yandexExchange(code: string) {
 
 export async function yandexRefresh(refreshToken: string) {
   const res = await fetch("https://oauth.yandex.ru/token", {
+    signal: AbortSignal.timeout(20_000),
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -1441,7 +1451,7 @@ export async function yandexRefresh(refreshToken: string) {
 }
 
 export async function yandexLogin(token: string): Promise<{ login: string; id: string }> {
-  const res = await fetch("https://login.yandex.ru/info?format=json", { headers: { Authorization: `OAuth ${token}` } });
+  const res = await fetch("https://login.yandex.ru/info?format=json", { headers: { Authorization: `OAuth ${token}` }, signal: AbortSignal.timeout(20_000) });
   const j = await res.json();
   return { login: j.login || j.default_email || "яндекс", id: String(j.id || "") };
 }

@@ -71,6 +71,16 @@ export function isPrivateIp(ip: string): boolean {
       }
       return true;
     }
+    // Развёрнутая запись (0:0:0:0:0:ffff:7f00:1) и IPv4-совместимые ::/96 (::127.0.0.1, ::7f00:1): первые 80 бит — нули.
+    // Публичных адресов там нет, а ядро может отправить такой запрос во внутреннюю сеть — блокируем целиком
+    {
+      const v4tail = s.match(/(\d+\.\d+\.\d+\.\d+)$/);
+      const body = v4tail ? s.slice(0, -v4tail[1].length) + "0:0" : s;
+      const [head, tail = ""] = body.split("::");
+      const hg = head ? head.split(":") : [], tg = body.includes("::") ? (tail ? tail.split(":") : []) : [];
+      const groups = body.includes("::") ? [...hg, ...Array(Math.max(0, 8 - hg.length - tg.length)).fill("0"), ...tg] : hg;
+      if (groups.length === 8 && groups.slice(0, 5).every((x) => parseInt(x || "0", 16) === 0)) return true;
+    }
     if (/^(fc|fd)/.test(s)) return true; // unique local
     if (/^fe[89ab]/.test(s)) return true; // link-local
     if (/^ff/.test(s)) return true; // multicast

@@ -595,7 +595,7 @@ export function LaunchWizard(p: Props) {
                 </div>
               ))}
               {alloc.dropped.map((d) => (
-                <div key={d} className="text-sm text-warn">«{CH[d].name}» — {isRetarget(d) ? "на минимум площадки не хватает бюджета, ретаргетинг добавится при бюджете побольше." : "не хватает бюджета, начнём без этого канала."}</div>
+                <div key={d} className="text-sm text-warn">«{CH[d].name}» — {isRetarget(d) ? "на минимум площадки не хватает бюджета, ретаргетинг добавится при бюджете побольше." : "при таком бюджете на нём не набрать данных для обучения — деньги разойдутся впустую. Начнём без него, добавим, когда бюджет вырастет."}</div>
               ))}
             </div>
           </div>
@@ -661,7 +661,7 @@ export function LaunchWizard(p: Props) {
 
       <Section id="landing" title="Куда ведёт реклама" done={false} active={hasAccounts} note={hasAccounts ? "Можно оставить как есть" : "После кабинета"}>
         {p.landing.siteUrl && (p.landing.initial as { siteBad?: string }).siteBad === p.landing.siteUrl ? (
-          <p className="mb-3 rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2"><TriangleAlert size={16} className="shrink-0 mt-0.5" /><span>Сайт {p.landing.siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")} не открылся, когда мы его проверяли, — поэтому реклама ведёт на страницу записи. Проверьте адрес в <a href="/app/start" className="underline">«Данных о бизнесе»</a>.</span></p>
+          <p className="mb-3 rounded-xl bg-warn-soft text-warn p-3 text-sm flex gap-2"><TriangleAlert size={16} className="shrink-0 mt-0.5" /><span>Сайт {p.landing.siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")} не открылся, когда мы его проверяли, — поэтому реклама ведёт на страницу записи. Проверьте адрес в разделе <a href="/app/start" className="underline">«О бизнесе»</a>.</span></p>
         ) : null}
         <LandingEditor initial={p.landing.initial} siteUrl={p.landing.siteUrl} pageUrl={p.landing.pageUrl} channels={channels} live={false} hasYandex={usable.some((a) => a.platform === "yandex")} />
       </Section>

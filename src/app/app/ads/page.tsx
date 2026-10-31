@@ -280,7 +280,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                           </a>
                         </td>
                         <td className="l w-[13rem]"><ItemStatus it={it} /></td>
-                        <td>{r ? <><span className="num">{rub(r.s.cost)}</span>{r.s.clicks ? <span className="sub">{num(r.s.clicks)} кликов</span> : null}</> : "—"}</td>
+                        <td>{r ? <><span className="num">{rub(r.s.cost)}</span>{r.s.clicks ? <span className="sub">{pl(r.s.clicks, "клик", "клика", "кликов")}</span> : null}</> : "—"}</td>
                         <td>{r ? <><span className="num">{num(r.s.conversions)}</span>{r.cpl != null ? <span className="sub">по {rub(r.cpl)}</span> : null}</> : "—"}</td>
                         <td>{r?.cac != null ? <span className="num">{`${r.estimated ? "≈ " : ""}${rub(r.cac)}`}</span> : "—"}</td>
                       </tr>

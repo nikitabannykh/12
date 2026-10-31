@@ -101,7 +101,7 @@ export class VkAds implements PlatformClient {
       headers["Content-Type"] = "application/json";
       body = JSON.stringify(opts.body);
     }
-    const res = await fetch(url, { method, headers, body });
+    const res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(20_000) });
     if (res.status === 401 && attempt === 0) {
       await this.refresh();
       return this.req(method, path, opts, 1);
@@ -1002,6 +1002,7 @@ export function vkAuthUrl(state: string, redirectUri: string) {
 
 export async function vkToken(params: Record<string, string>, creds?: VkCreds | null) {
   const res = await fetch(`${BASE()}/v2/oauth2/token.json`, {
+    signal: AbortSignal.timeout(20_000),
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({

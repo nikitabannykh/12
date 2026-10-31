@@ -92,7 +92,7 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
           options={[{ v: "auto", label: "Как советует робот" }, { v: "city", label: "Весь город" }, { v: "radius", label: "Рядом с адресом", disabled: !hasGeo, title: hasGeo ? undefined : "Не определили координаты адреса" }]} />
         <p className="text-sm text-muted leading-relaxed max-w-2xl">
           {!hasGeo && s.geoMode !== "city"
-            ? <>И в Яндексе, и во ВКонтакте — весь город ({city}): координаты {address ? `адреса «${address}»` : "адреса"} не определили, поэтому показ «рядом с адресом» недоступен. Уточните адрес в «Данных о бизнесе».</>
+            ? <>И в Яндексе, и во ВКонтакте — весь город ({city}): координаты {address ? `адреса «${address}»` : "адреса"} не определили, поэтому показ «рядом с адресом» недоступен. Уточните адрес в разделе «О бизнесе».</>
             : (s.geoMode ?? "auto") === "auto"
             ? <>Яндекс — весь город ({city}). ВКонтакте — люди, которые живут или работают в {String(autoRadiusKm).replace(".", ",")} км от {address || "вашего адреса"}.</>
             : s.geoMode === "city" ? <>И в Яндексе, и во ВКонтакте — весь город ({city}).</>
@@ -183,7 +183,7 @@ export function ShowSettingsEditor({ initial, city, address, autoTime, live, aut
         <p className="text-sm text-muted leading-relaxed max-w-2xl">
           {s.scheduleMode === "always" ? "Реклама идёт круглые сутки. Ночные обращения дешевле, но на звонок никто не ответит — запись только через форму."
             : s.scheduleMode === "custom" ? (sum.warning ? <span className="text-warn">{sum.warning}</span> : "Директ требует не меньше 40 часов показа в будни — если выбрать меньше, в Директе часы в будни расширим, а ВКонтакте покажет как выбрано.")
-            : autoTime ?? "Часы работы не указаны — реклама идёт круглосуточно. Укажите часы в «Данных о бизнесе» или задайте своё расписание."}
+            : autoTime ?? "Часы работы не указаны — реклама идёт круглосуточно. Укажите часы в разделе «О бизнесе» или задайте своё расписание."}
         </p>
       </div>
 

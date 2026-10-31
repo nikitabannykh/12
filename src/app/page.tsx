@@ -85,7 +85,7 @@ function DarkShot() {
             <span className="rounded-full bg-[#3ddc97]/10 text-[#3ddc97] ring-1 ring-[#3ddc97]/20 px-3 py-1 text-[12px] font-semibold">Здоровье рекламы 86</span>
           </div>
           <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] lg:grid-cols-[repeat(4,minmax(0,1fr))] gap-px rounded-2xl overflow-hidden bg-white/[0.06]">
-            {[["Потрачено", "13 660 ₽", "из 18 000 ₽ лимита"], ["Обращения", "33", "+50% к прошлой неделе"], ["Цена обращения", "414 ₽", "−28% со старта"], ["Сэкономлено", "3 140 ₽", "на мусорных кликах"]].map(([k, v, s], i) => (
+            {[["Потрачено", "13 660 ₽", "из 15 000 ₽ лимита"], ["Обращения", "33", "+50% к прошлой неделе"], ["Цена обращения", "414 ₽", "−28% со старта"], ["Сэкономлено", "3 140 ₽", "на мусорных кликах"]].map(([k, v, s], i) => (
               <div key={k} className="bg-[#0d0f26] p-4 min-w-0">
                 <div className="text-[12px] text-white/40">{k}</div>
                 <div className={`mt-1 text-xl sm:text-2xl font-semibold tracking-tight tabular-nums ${i === 3 ? "text-mark" : ""}`}>{v}</div>

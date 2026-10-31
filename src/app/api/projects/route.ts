@@ -36,6 +36,10 @@ export const DELETE = route(async ({ user, req }) => {
   const p = (await listProjects(user.id)).find((x) => x.id === parsed.data.id);
   if (!p) return fail("Такого проекта нет", 404);
   if (parsed.data.confirm.toLowerCase() !== p.name.trim().toLowerCase()) return fail("Название не совпадает — введите его точно, как в проекте");
-  const r = await deleteProject(user.id, p.id);
-  return json({ ok: true, ...r });
+  try {
+    const r = await deleteProject(user.id, p.id);
+    return json({ ok: true, ...r });
+  } catch (e) {
+    return fail((e as Error).message, 409);
+  }
 });

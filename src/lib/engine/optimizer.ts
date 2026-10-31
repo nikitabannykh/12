@@ -933,11 +933,16 @@ async function optimizeAds(cx: Ctx) {
     const min = MIN_IMPR[ch];
     const live = cx.ads.filter((a) => a.adGroupId === g.id && a.status === "active");
     const running = cx.experiments.some((e) => e.status === "running" && live.some((a) => a.id === e.controlId || a.id === e.variantId));
-    const rows = live.map((a) => ({ a, s: sumAd(cx, a.id, since) })).filter((r) => r.s.impressions >= min);
+    const rows = live.map((a) => ({ a, s: sumAd(cx, a.id, since), q: qAd(cx, a.id, since) })).filter((r) => r.s.impressions >= min);
     if (rows.length < 2) continue;
 
+    // В сетях (РСЯ, VK) высокий CTR часто дают случайные клики в играх и приложениях: там лучшим считаем объявление,
+    // после которого люди остаются на сайте (CTR × доля визитов без отказа по Метрике). На поиске — по CTR, как раньше
+    const net = ch !== "search";
+    const qRate = (r: (typeof rows)[number]) => (net && r.q.visits >= SITE_RULE.minVisits ? qualityOf(r.q) / r.q.visits : null);
+    const score = (r: (typeof rows)[number]) => ctr(r.s) * (qRate(r) ?? 1);
     const groupS = rows.reduce((acc, r) => add(acc, r.s), zero());
-    const best = [...rows].sort((x, y) => ctr(y.s) - ctr(x.s))[0];
+    const best = [...rows].sort((x, y) => score(y) - score(x))[0];
     const cpa = groupS.conversions ? groupS.cost / groupS.conversions : null;
 
     for (const r of rows) {
@@ -950,7 +955,9 @@ async function optimizeAds(cx: Ctx) {
 
       // Явно хуже: отключаем и пишем замену, чтобы в группе продолжали соревноваться минимум два варианта
       const drain = cpa && r.s.conversions === 0 && r.s.cost >= Math.max(2 * cpa, 600);
-      if ((pWorse >= 0.95 && ratio >= 1.4) || drain) {
+      // Кликов меньше, но люди после него остаются на сайте лучше, чем после лидера, — не отключаем по одному CTR
+      const keepsVisitors = (qRate(r) ?? -1) > (qRate(best) ?? 2);
+      if ((pWorse >= 0.95 && ratio >= 1.4 && !keepsVisitors) || drain) {
         const reason = drain
           ? `${adLabel(r.a)} потратило ${rub(r.s.cost)} за ${pl(WINDOW_DAYS, "день", "дня", "дней")} и не принесло ни одного обращения. В среднем по группе обращение стоит ${rub(cpa!)}.`
           : `${adLabel(r.a)} показали ${pl(r.s.impressions, "раз", "раза", "раз")}, кликнули ${pl(r.s.clicks, "раз", "раза", "раз")} (${pct(ctr(r.s))}). Лучшее объявление в этой группе получает ${pct(ctr(best.s))} — в ${times(ratio)} раза больше. Разница не случайна (уверенность ${Math.round(pWorse * 100)}%).`;
@@ -1474,13 +1481,22 @@ async function rebalance(cx: Ctx) {
   const active = skipLearning(cx, cx.campaigns.filter((c) => c.status === "active" && !cx.protected.has(c.id) && !isRetarget(c.channel)), "бюджет");
   if (active.length < 2) return;
   const rows = active.map((c) => {
-    const s = cx.ads.filter((a) => a.campaignId === c.id).reduce((acc, a) => add(acc, sumAd(cx, a.id, since)), zero());
-    return { c, s };
+    const mine = cx.ads.filter((a) => a.campaignId === c.id);
+    const s = mine.reduce((acc, a) => add(acc, sumAd(cx, a.id, since)), zero());
+    const q = mine.reduce((acc, a) => addQ(acc, qAd(cx, a.id, since)), zeroQ());
+    return { c, s, q };
   });
   if (rows.some((r) => r.s.cost < r.c.weeklyBudget * 0.5)) return; // мало данных — ждём
   const totalConv = rows.reduce((x, r) => x + r.s.conversions, 0);
   const byConv = totalConv >= 6;
-  const eff = (r: (typeof rows)[number]) => (byConv ? r.s.conversions : r.s.clicks) / Math.max(r.s.cost, 1);
+  // Без обращений сравниваем не клики (дешёвые клики РСЯ — часто случайные), а визиты без отказа по Метрике.
+  // Нет ни обращений, ни Метрики хотя бы по 20 визитов на канал — бюджет не трогаем: сравнивать нечем
+  const byQuality = !byConv && rows.every((r) => r.q.visits >= 20);
+  if (!byConv && !byQuality) {
+    await markJob(cx, "rebalance", "мало данных");
+    return;
+  }
+  const eff = (r: (typeof rows)[number]) => (byConv ? r.s.conversions : qualityOf(r.q)) / Math.max(r.s.cost, 1);
   const sorted = [...rows].sort((a, b) => eff(b) - eff(a));
   const best = sorted[0], worst = sorted[sorted.length - 1];
   if (eff(best) < eff(worst) * 1.3) {
@@ -1494,8 +1510,8 @@ async function rebalance(cx: Ctx) {
     await markJob(cx, "rebalance", "минимум");
     return;
   }
-  const unit = byConv ? "обращение" : "переход";
-  const cost = (r: (typeof rows)[number]) => r.s.cost / Math.max(byConv ? r.s.conversions : r.s.clicks, 1);
+  const unit = byConv ? "обращение" : "визит без отказа (человек остался на сайте)";
+  const cost = (r: (typeof rows)[number]) => r.s.cost / Math.max(byConv ? r.s.conversions : qualityOf(r.q), 1);
   await act(
     { businessId: cx.b.id, actor: "robot", kind: "budget", title: `Перенесли ${rub(move)} в неделю: ${CHANNEL_NAME[worst.c.channel]} → ${CHANNEL_NAME[best.c.channel]}`, reason: `За 2 недели ${unit} в канале «${CHANNEL_NAME[best.c.channel]}» стоит ${rub(cost(best))}, а в «${CHANNEL_NAME[worst.c.channel]}» — ${rub(cost(worst))}. Переносим четверть бюджета туда, где клиенты дешевле. Общий бюджет не меняется. ${LEARNED_NOTE}`, details: { from: worst.c.id, to: best.c.id, move } },
     [

@@ -82,6 +82,7 @@ export async function gptJson<T>(system: string, user: string, opts: { temperatu
 /** YandexART: асинхронная генерация, опрашиваем операцию до готовности. Возвращает JPEG. */
 export async function art(prompt: string, aspect: { w: number; h: number }, seed?: number): Promise<Buffer> {
   const res = await fetch(`${LLM}/imageGenerationAsync`, {
+    signal: AbortSignal.timeout(20_000),
     method: "POST",
     headers: headers(),
     body: JSON.stringify({
@@ -99,7 +100,7 @@ export async function art(prompt: string, aspect: { w: number; h: number }, seed
   const deadline = Date.now() + 55_000;
   while (Date.now() < deadline) {
     await sleep(3000);
-    const r = await fetch(`${OPS}/${op.id}`, { headers: headers() });
+    const r = await fetch(`${OPS}/${op.id}`, { headers: headers(), signal: AbortSignal.timeout(20_000) });
     const j = await r.json().catch(() => ({}));
     if (j.done) {
       if (j.error) throw new Error(`YandexART: ${j.error.message}`);

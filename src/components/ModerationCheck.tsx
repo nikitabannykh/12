@@ -12,9 +12,11 @@ export function ModerationCheck() {
   useEffect(() => {
     let off = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // Частые проверки — первые 15 минут без изменений, дальше раз в 2 минуты (вкладку могли просто забыть открытой)
+    let quietSince = Date.now();
     const schedule = (fast: boolean) => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(check, fast ? 30_000 : 300_000);
+      timer = setTimeout(check, fast ? (Date.now() - quietSince < 15 * 60_000 ? 30_000 : 120_000) : 300_000);
     };
     async function check() {
       if (off) return;
@@ -23,14 +25,14 @@ export function ModerationCheck() {
         const r = await fetch("/api/moderation/check", { method: "POST" });
         const d = r.ok ? await r.json() : null;
         if (off) return;
-        if (d?.changed) { router.refresh(); window.dispatchEvent(new Event("pz:status")); }
+        if (d?.changed) { quietSince = Date.now(); router.refresh(); window.dispatchEvent(new Event("pz:status")); }
         schedule(Boolean(d?.fast || d?.notServing || d?.blocked || d?.moderation));
       } catch {
         schedule(false);
       }
     }
     check();
-    const onVis = () => { if (document.visibilityState === "visible") check(); };
+    const onVis = () => { if (document.visibilityState === "visible") { quietSince = Date.now(); check(); } };
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("focus", onVis);
     return () => { off = true; if (timer) clearTimeout(timer); document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); };

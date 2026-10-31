@@ -15,7 +15,7 @@ export function MedicalLicenseGuide({ service, legalInfo, address }: { service?:
           <ul className="list-disc pl-5 mt-1 grid gap-0.5">
             <li>адрес, где идёт приём{address ? <> — тот же, что в рекламе: <b>{address}</b></> : ""};</li>
             <li>в перечне работ (услуг) — ваша услуга{service ? <> (для «{service}» — например, «остеопатия» или «мануальная терапия»)</> : ""};</li>
-            <li>то же юрлицо, что указано на сайте или странице записи{legalInfo ? <> (<b>{legalInfo}</b>)</> : <> — укажите его в <a href="/app/start#legal" className="underline">«Данных о бизнесе» → «Юр. данные»</a></>}.</li>
+            <li>то же юрлицо, что указано на сайте или странице записи{legalInfo ? <> (<b>{legalInfo}</b>)</> : <> — укажите его в разделе <a href="/app/start#legal" className="underline">«О бизнесе» → «Юр. данные»</a></>}.</li>
           </ul>
         </li>
         <li>
