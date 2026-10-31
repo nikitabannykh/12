@@ -573,7 +573,8 @@ export function BusinessOnboarding({
           <Val.Provider value={val}>
             <AboutSection f={f} set={set} niches={niches} nicheLock={nicheLock} initialNiche={initial.niche} draft={draft} sources={sources} need={secMissing(["name", "niche", "city"])} />
             <ServicesSection f={f} set={set} niches={niches} sources={sources} need={secMissing(["services"])} />
-            <PhotosSection draft={draft} photos={photos} setPhotos={setPhotos} room={photoRoom} saved={savedPhotos} photoMax={photoMax} sources={sources} onLinks={() => { setLinkOpen(true); scrollTop(); }} editing={editing} />
+            {/* Фото с сайта и карточек не показываем — блок путал. Найденные фото сохраняются сами (до photoRoom)
+                и уходят в объявления; поменять их можно в разделе «Реклама» */}
             <ContactsSection f={f} set={set} sources={sources} need={secMissing(["contact"])} />
           </Val.Provider>
 

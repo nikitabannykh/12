@@ -201,15 +201,20 @@ export const POST = route(async ({ user, business, req }) => {
     if (nicheChanged && (business.status !== "draft" || plan?.launch)) {
       return fail("Сферу нельзя сменить, пока реклама запущена: запросы, аудитории и объявления подобраны под неё. Если вы сменили направление — напишите в поддержку, поможем перезапустить рекламу. Остальное в описании можно менять.", 409);
     }
-    // До запуска: план объявлений был под старую сферу — подготовим его заново
-    const reset = nicheChanged && plan ? { launchPlan: null } : {};
+    // До запуска: план объявлений был под другой бизнес (сфера, город, название или набор услуг поменялись —
+    // например, владелец вставил ссылку на другой сайт) — подготовим объявления и запросы заново
+    const key = (x: string | null | undefined) => (x ?? "").toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]/g, "");
+    const names = (list: { name: string }[] | null | undefined) => [...new Set((list ?? []).map((s) => key(s.name)).filter(Boolean))].sort().join("|");
+    const contentChanged = nicheChanged || key(values.city) !== key(business.city) || key(values.name) !== key(business.name) || names(values.services) !== names(business.services);
+    const replan = Boolean(contentChanged && plan && !plan.launch && !isLaunched(business.status));
+    const reset = replan ? { launchPlan: null } : {};
     // Месячный бюджет у запущенной рекламы меняется отдельно (/api/budget) — с пересчётом кампаний
     const { monthlyBudget, ...rest } = values;
     await db.update(schema.businesses).set(isLaunched(business.status) ? rest : { ...rest, ...reset, monthlyBudget: monthlyBudget ?? business.monthlyBudget }).where(eq(schema.businesses.id, business.id));
     if (isLaunched(business.status)) {
       await logChange({ businessId: business.id, actor: "owner", kind: "profile", title: "Обновлено описание бизнеса", reason: "Новые объявления робот будет писать с учётом изменений. Уже работающие объявления не трогаем — их можно поправить в разделе «Объявления»." });
     }
-    return json({ id: business.id, planReset: Boolean(nicheChanged && plan), ...(warning ? { warning } : {}) });
+    return json({ id: business.id, planReset: replan, ...(warning ? { warning } : {}) });
   }
   // Новый проект: не больше лимита, и сразу делаем его текущим
   const count = (await listProjects(user.id)).length;
