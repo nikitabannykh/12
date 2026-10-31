@@ -80,13 +80,6 @@ const norm = (s: string) => s.toLowerCase().replace(/ё/g, "е").replace(/[^a-z�
  * Черновик → анкета. Только дописываем пустое: правки владельца не трогаем. Что отличается — возвращаем
  * списком («оставили ваше, на сайте: …»), чтобы можно было заменить одной кнопкой.
  */
-const hostOf = (u: string | null | undefined) => {
-  try {
-    return u ? new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`).hostname.replace(/^www\./, "").toLowerCase() : "";
-  } catch {
-    return "";
-  }
-};
 
 /**
  * По ссылке нашёлся другой бизнес (другое название или другой сайт) — значит, владелец вставил новую ссылку
@@ -97,7 +90,7 @@ function isOtherBusiness(f: BusinessInput, d: Draft): boolean {
   if (!hadData) return false;
   const a = norm(f.name), b = norm(d.name ?? "");
   if (a && b && !a.includes(b) && !b.includes(a)) return true;
-  const h1 = hostOf(f.siteUrl), h2 = hostOf(d.siteUrl);
+  const h1 = f.siteUrl ? hostOf(f.siteUrl).toLowerCase() : "", h2 = d.siteUrl ? hostOf(d.siteUrl).toLowerCase() : "";
   return Boolean(h1 && h2 && h1 !== h2);
 }
 
