@@ -105,7 +105,24 @@ const lookup = (results: Record<string, WordstatPhrase>, p: string) => results[p
  * у независимых семян вычитаем общий хвост: самый частый запрос из SearchedWith одного, где есть все слова другого
  * («маникюр и педикюр»). Это нижняя оценка пересечения, поэтому итог лежит между настоящим объединением и суммой.
  */
-export function summarizeDemand(seedGroups: DemandSeedGroup[], results: Record<string, WordstatPhrase>, negatives: string[]): DemandSummary {
+/**
+ * Спрос под охват: фраза вне охвата («массаж» при «Точно») считается не целиком, а только хвостами, которые в охват
+ * попадают («массаж екатеринбург», «массаж цена»). Вложенные хвосты не складываем дважды.
+ */
+function withinReach(r: WordstatPhrase, inReach?: (p: string) => boolean): WordstatPhrase {
+  if (!inReach || inReach(r.phrase)) return r;
+  const self = phraseKey(r.phrase);
+  const tails = r.searchedWith.filter((t) => phraseKey(t.phrase) !== self && t.shows > 0 && inReach(t.phrase)).sort((a, b) => b.shows - a.shows);
+  const kept: { t: (typeof tails)[number]; w: string[] }[] = [];
+  for (const t of tails) {
+    const w = sig(t.phrase);
+    if (!kept.some((k) => within(k.w, w))) kept.push({ t, w });
+  }
+  return { ...r, shows: kept.reduce((s, k) => s + k.t.shows, 0), searchedWith: kept.map((k) => k.t) };
+}
+
+export function summarizeDemand(seedGroups: DemandSeedGroup[], rawResults: Record<string, WordstatPhrase>, negatives: string[], opts: { inReach?: (phrase: string) => boolean } = {}): DemandSummary {
+  const results = opts.inReach ? Object.fromEntries(Object.entries(rawResults).map(([k, r]) => [k, withinReach(r, opts.inReach)])) : rawResults;
   const groups = seedGroups.map((g) => {
     const vals = g.seeds.map((s) => lookup(results, s)).filter((r): r is WordstatPhrase => !!r).map((r) => targetedShows(r, negatives));
     // Самые частые целевые запросы группы (с самой фразой-семенем) — показать владельцу, что именно ищут
@@ -114,7 +131,7 @@ export function summarizeDemand(seedGroups: DemandSeedGroup[], results: Record<s
       .map((s) => lookup(results, s))
       .filter((r): r is WordstatPhrase => !!r)
       .flatMap((r) => r.searchedWith)
-      .filter((t) => t.shows > 0 && !offTarget(t.phrase, negatives))
+      .filter((t) => t.shows > 0 && !offTarget(t.phrase, negatives) && (!opts.inReach || opts.inReach(t.phrase)))
       .sort((a, b) => b.shows - a.shows)
       .filter((t) => (seen.has(phraseKey(t.phrase)) ? false : (seen.add(phraseKey(t.phrase)), true)))
       .slice(0, 3)

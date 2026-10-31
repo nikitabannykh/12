@@ -89,7 +89,7 @@ export type SemanticCore = {
   medical?: boolean;
 };
 
-type B = Pick<Business, "niche" | "city" | "address" | "services" | "name"> & Partial<Pick<Business, "description" | "hours">>;
+type B = Pick<Business, "niche" | "city" | "address" | "services" | "name"> & Partial<Pick<Business, "description" | "hours" | "searchTopics">>;
 
 // ─── Слова ────────────────────────────────────────────────────────────
 
@@ -583,8 +583,47 @@ export function buildSemanticCore(b: B, opts: { maxGroups?: number; perGroup?: n
     };
   });
 
+  // Общая группа: как ищут сам бизнес («доставка суши», «детский остеопат») — услуги с сайта читаются не всегда полностью,
+  // а реклама только по позициям прайса теряет основной спрос. Фразы — из анкеты (searchTopics: YandexGPT по описанию,
+  // названию и услугам). Фразы, которые уже взяли группы услуг, сюда не попадают
+  // Только фразы из анкеты: базовые запросы ниши сюда не берём — в них бывают услуги, которых у владельца нет
+  const topics = uniq((b.searchTopics ?? []).map(lower)).filter((t) => toDirect(t) && sigCount(t) <= 4);
+  let general = 0;
+  if (topics.length) {
+    const tiers: string[][] = [
+      topics,
+      topics.slice(0, 6).flatMap((t) => geo.city.map((c) => `${t} ${c}`)),
+      topics.slice(0, 3).flatMap((t) => [...COMMERCIAL.suffix.map((m) => `${t} ${m}`), ...COMMERCIAL.prefix.map((m) => `${m} ${t}`)]),
+      topics.slice(0, 3).flatMap((t) => geo.local.map((l) => `${t} ${l}`)),
+      topics.slice(0, 4).flatMap((t) => ["рядом", "отзывы", "цена"].map((m) => `${t} ${m}`)),
+    ];
+    const kws: string[] = [];
+    for (const t of tiers) for (const raw of t) {
+      if (kws.length >= perGroup) break;
+      const d = toDirect(raw);
+      const k = phraseKey(raw);
+      if (!d || !k || seen.has(k)) continue;
+      seen.add(k);
+      kws.push(d);
+    }
+    if (kws.length >= SEM.minGroup) {
+      groups.unshift({
+        name: cap(topics[0]),
+        service: services[0]?.name ?? (niche.id === "other" ? b.name : niche.generic),
+        services: services.slice(0, 5).map((x) => x.name),
+        category: "",
+        concepts: [],
+        keywords: kws,
+        negatives: [],
+        core: topics.slice(0, 30),
+        layer: "service" as const,
+      });
+      general = 1;
+    }
+  }
+
   // Слои: проблемы клиентов, смежные запросы, аудитории — только для услуг, которые есть у владельца
-  if (services.length && opts.layers !== false) groups.push(...layerGroups(b, niche.id, services, geo, groups));
+  if (services.length && opts.layers !== false) groups.push(...layerGroups(b, niche.id, services, geo, groups.slice(general)));
 
   const all = groups.flatMap((g) => g.keywords);
   const negatives = uniq(niche.negatives.map((n) => n.trim()).filter(Boolean)).filter((n) => !all.some((k) => conflicts(n, k)));
@@ -937,6 +976,17 @@ const INFO_KW_RE = /(^|\s)(фото\S*|картинк\S*|иде[яи]\S*|вид�
  *  - wide: как есть.
  * Не меньше `min` фраз в группе: если фильтр выкинул всё, оставляем самые конкретные (длинные).
  */
+/** Попадает ли фраза в охват (те же правила, что reachKeywords): для подсчёта спроса под выбранный охват */
+export function phraseInReach(phrase: string, reach: "precise" | "balanced" | "wide" | undefined, geo: { city: string[]; local: string[] }): boolean {
+  if (!reach || reach === "wide") return true;
+  const plain = displayKeyword(phrase);
+  const n = sigWords(plain).length;
+  if (INFO_KW_RE.test(plain) || n < 2) return false;
+  if (reach === "balanced") return true;
+  const geoRe = new RegExp(`(^|\\s)(${[...geo.city, ...geo.local].map((g) => g.split(/\s+/).map((w) => stem(w).replace(/[.*+?^${}()|[\]\\]/g, "")).join("\\S*\\s+")).filter(Boolean).join("|") || "$^"})`, "i");
+  return n >= 3 || INTENT_RE.test(plain) || geoRe.test(plain);
+}
+
 export function reachKeywords(keywords: string[], reach: "precise" | "balanced" | "wide" | undefined, geo: { city: string[]; local: string[] }, min = 3): string[] {
   if (!reach || reach === "wide") return keywords;
   const geoRe = new RegExp(`(^|\\s)(${[...geo.city, ...geo.local].map((g) => g.split(/\s+/).map((w) => stem(w).replace(/[.*+?^${}()|[\]\\]/g, "")).join("\\S*\\s+")).filter(Boolean).join("|") || "$^"})`, "i");

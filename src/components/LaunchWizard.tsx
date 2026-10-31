@@ -16,7 +16,7 @@ import { ShowSettingsEditor } from "./ShowSettingsEditor";
 import { MedicalLicenseGuide } from "./MedicalLicenseGuide";
 import { LandingEditor } from "./LandingEditor";
 import { landingFor, type LandingSettings } from "@/lib/engine/landing";
-import type { ShowSettings } from "@/lib/engine/show";
+import { REACH_INFO, recommendedReach, type ShowSettings } from "@/lib/engine/show";
 import type { ExtrasBiz } from "@/lib/engine/extras";
 import { allocate, forecastWithDemand, MAX_MONTHLY, minMonthlyFor, recommendedBudget, type Range } from "@/lib/engine/budget";
 import { LAYER_ITEM } from "@/lib/niches";
@@ -251,6 +251,8 @@ export function LaunchWizard(p: Props) {
 
   // Сбор спроса: каждый POST продвигает его (до ~40 с), пока не готово. Не блокирует страницу; кабинет поменялся — заново
   const accKey = usable.map((a) => `${a.id}:${a.status}`).join(",");
+  // Охват поиска меняет итог спроса: сохранили другой охват (или бюджет сменил советуемый) — пересчитываем
+  const reachKey = p.show.initial.reach ?? recommendedReach(savedBudget);
   useEffect(() => {
     if (!accKey) return;
     let off = false;
@@ -273,7 +275,7 @@ export function LaunchWizard(p: Props) {
       if (!off && last?.status === "running") setDemand({ ...last, status: "unavailable", note: "Wordstat отвечает долго — спрос досчитаем при следующем открытии страницы." });
     })();
     return () => { off = true; };
-  }, [accKey]);
+  }, [accKey, reachKey]);
 
   async function saveBudget(raw: number) {
     // Поле и ползунок: не меньше минимума площадки и не больше потолка (сервер больше не примет)
@@ -523,11 +525,12 @@ export function LaunchWizard(p: Props) {
         ) : demand.status === "done" && demand.summary ? (
           <div className="grid gap-4" aria-live="polite">
             <div>
-              <div className="text-sm text-ink-2">Спрос {demand.cityIn}</div>
+              <div className="text-sm text-ink-2">Спрос {demand.cityIn}{demand.reach ? <> · охват поиска «{REACH_INFO[demand.reach].label}»</> : null}</div>
               <div className="mt-0.5"><span className="text-3xl font-extrabold">~{approx(demand.summary.total)}</span> <span className="font-semibold">{plural(round2(demand.summary.total), "запрос", "запроса", "запросов")} в месяц</span></div>
               <p className="text-xs text-ink-2 mt-1 leading-relaxed max-w-2xl">
                 {demand.source === "demo" ? <><b className="font-semibold">Демо-данные</b> — с кабинетом Директа здесь будет Wordstat.</> : <><b className="font-semibold text-good">Данные Wordstat</b> за прошлый месяц.</>}{" "}
                 В итоге — только запросы об услугах и вашем специалисте, без «фото», «обучения» и других нецелевых; запросы о проблемах и похожих услугах показаны отдельно и в итог не входят.
+                {demand.reach && demand.reach !== "wide" ? ` Посчитано под охват «${REACH_INFO[demand.reach].label}»: слишком общие запросы входят только уточнениями (с ценой, городом, записью) — поменяете охват в «Где, кому и когда показывать», итог пересчитается.` : ""}
                 {countedSum > demand.summary.total * 1.05 ? " Итог — без пересечений: общий запрос уже включает свои уточнения, поэтому итог меньше суммы групп." : ""}
               </p>
               {demand.note ? <p className="text-xs text-muted mt-1">{demand.note}</p> : null}

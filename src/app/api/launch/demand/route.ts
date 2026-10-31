@@ -1,4 +1,6 @@
 import { route, json, needBusiness } from "@/lib/api";
+import { isDemoEmail } from "@/lib/auth";
+import { ensureTopics } from "@/lib/engine/topics";
 import { accountsFor } from "@/lib/engine/launch";
 import { demandState } from "@/lib/engine/demand";
 
@@ -18,5 +20,7 @@ export const GET = route(async ({ user, business }) => {
 export const POST = route(async ({ user, business }) => {
   const started = Date.now();
   needBusiness(business);
-  return json(await demandState(business, await accountsFor(user.id), { advance: true, deadline: started + 40_000, user }));
+  // Проекты до появления общих запросов: досчитываем их один раз (тогда и спрос соберётся с общей группой)
+  const b = isDemoEmail(user.email) ? business : await ensureTopics(business);
+  return json(await demandState(b, await accountsFor(user.id), { advance: true, deadline: started + 40_000, user }));
 });

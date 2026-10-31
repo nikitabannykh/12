@@ -9,7 +9,8 @@ import { clientFor } from "../platforms";
 import { YandexDirect } from "../platforms/yandex";
 import { DemoPlatform } from "../platforms/demo";
 import { cloudWordstat, cloudWordstatConfigured, CloudWordstatError } from "../platforms/wordstat-cloud";
-import { buildSemanticCore, phraseKey, type SemanticCore } from "./semantics";
+import { buildSemanticCore, geoTerms, phraseInReach, phraseKey, type SemanticCore } from "./semantics";
+import { recommendedReach, showOf, type Reach } from "./show";
 import { cityIn, demandSeeds, summarizeDemand, type DemandSeedGroup, type DemandSummary } from "./wordstat";
 import { regionIdsFor, yandexRegionIds } from "./regions";
 import { isMedical } from "../niches";
@@ -79,6 +80,8 @@ export type DemandView = {
   medical: boolean;
   progress: { done: number; total: number };
   summary: DemandSummary | null;
+  /** Охват поиска, под который посчитан итог */
+  reach?: Reach;
   note: string | null;
   /** Диагностика для владельца бизнеса (его собственная задача): последняя ошибка и сырые ответы API */
   debug?: { lastError: DemandError | null; raw: Record<string, string>; sources: Source[]; failed: string[]; reports: { id: number; at: string; phrases: number }[]; retryAt: string | null; startedAt: string; updatedAt: string };
@@ -266,6 +269,8 @@ async function newJob(b: Business, ctx: Ctx): Promise<DemandJob> {
   return base;
 }
 
+const reachOf = (b: Business): Reach => showOf(b).reach ?? recommendedReach(b.monthlyBudget);
+
 function view(job: DemandJob | null, b: Business, fallbackNote?: string | null): DemandView {
   const medical = isMedical(b);
   if (!job) return { status: "unavailable", source: null, city: b.city, cityIn: cityIn(b.city), regionIds: [], medical, progress: { done: 0, total: 0 }, summary: null, note: fallbackNote ?? null };
@@ -279,7 +284,9 @@ function view(job: DemandJob | null, b: Business, fallbackNote?: string | null):
     medical,
     progress: { done: Object.keys(job.results).length + job.failed.length, total: job.total },
     // Пока идёт сбор, итог не показываем: частичная сумма занижала бы спрос
-    summary: has && job.status !== "running" ? summarizeDemand(job.groups, job.results, job.negatives) : null,
+    // Итог — под выбранный охват поиска: при «Точно» общие запросы вроде «массаж» считаются только хвостами с ценой, городом, записью
+    summary: has && job.status !== "running" ? summarizeDemand(job.groups, job.results, job.negatives, { inReach: (p) => phraseInReach(p, reachOf(b), geoTerms(b)) }) : null,
+    reach: reachOf(b),
     note: job.note,
     // Диагностика — только при DEMAND_DEBUG=1 (по умолчанию выключена) и без токенов
     ...(process.env.DEMAND_DEBUG === "1" ? { debug: debugOf(job) } : {}),

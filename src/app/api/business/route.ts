@@ -1,4 +1,6 @@
 import { isLaunched } from "@/lib/util";
+import { businessTopics } from "@/lib/ai/topics";
+import { isDemoEmail } from "@/lib/auth";
 import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { route, json, fail } from "@/lib/api";
@@ -208,6 +210,9 @@ export const POST = route(async ({ user, business, req }) => {
     const contentChanged = nicheChanged || key(values.city) !== key(business.city) || key(values.name) !== key(business.name) || names(values.services) !== names(business.services);
     const replan = Boolean(contentChanged && plan && !plan.launch && !isLaunched(business.status));
     const reset = replan ? { launchPlan: null } : {};
+    // Общие запросы бизнеса («доставка суши», «детский остеопат») — заново, если поменялось, о чём бизнес
+    const topicsStale = contentChanged || key(values.description) !== key(business.description) || !(business.searchTopics ?? []).length;
+    if (topicsStale && !isDemoEmail(user.email)) Object.assign(reset, { searchTopics: await businessTopics({ ...business, ...values }) });
     // Месячный бюджет у запущенной рекламы меняется отдельно (/api/budget) — с пересчётом кампаний
     const { monthlyBudget, ...rest } = values;
     await db.update(schema.businesses).set(isLaunched(business.status) ? rest : { ...rest, ...reset, monthlyBudget: monthlyBudget ?? business.monthlyBudget }).where(eq(schema.businesses.id, business.id));
@@ -220,7 +225,8 @@ export const POST = route(async ({ user, business, req }) => {
   const count = (await listProjects(user.id)).length;
   if (count >= projectLimit(user.email)) return fail(`Можно вести до ${projectLimit(user.email)} проектов в одном аккаунте`);
   const id = uid("b_");
-  await db.insert(schema.businesses).values({ id, userId: user.id, publicKey: uid().replace(/[-_]/g, "").slice(0, 10).toLowerCase(), ...values });
+  const searchTopics = isDemoEmail(user.email) ? [] : await businessTopics({ ...values, services: values.services, advantages: values.advantages } as Parameters<typeof businessTopics>[0]);
+  await db.insert(schema.businesses).values({ id, userId: user.id, publicKey: uid().replace(/[-_]/g, "").slice(0, 10).toLowerCase(), ...values, searchTopics });
   await setCurrentProject(user.id, id);
   return json({ id, created: true, ...(warning ? { warning } : {}) });
 });

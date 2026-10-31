@@ -295,4 +295,5 @@ CREATE TABLE IF NOT EXISTS metrica_slices (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS metrica_slices_unique ON metrica_slices(campaign_id, kind, key);
 CREATE INDEX IF NOT EXISTS metrica_slices_business ON metrica_slices(business_id);
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS search_topics jsonb NOT NULL DEFAULT '[]';
 `;

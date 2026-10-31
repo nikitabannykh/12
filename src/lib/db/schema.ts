@@ -53,6 +53,8 @@ export const businesses = pgTable("businesses", {
   description: text("description").notNull().default(""),
   services: jsonb("services").$type<Service[]>().notNull().default([]),
   advantages: jsonb("advantages").$type<string[]>().notNull().default([]),
+  /** Как клиенты ищут такой бизнес в целом («доставка суши», «детский остеопат») — общая группа поиска помимо услуг */
+  searchTopics: jsonb("search_topics").$type<string[]>().notNull().default([]),
   audience: text("audience"),
   offer: text("offer"), // акция / оффер для новых клиентов
   review: text("review"), // реальный отзыв клиента для креативов
