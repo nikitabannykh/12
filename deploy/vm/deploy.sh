@@ -49,6 +49,6 @@ done
 echo "$NEW" > $ROOT/deployed
 echo "deployed $NEW (health $code)"
 # Диск 20 ГБ: держим только 3 последние сборки (для отката), остальные образы и кэш сборки удаляем
-docker images polny-zal --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' | sort -r | tail -n +4 | cut -f2 | grep -v ":$NEW\$" | xargs -r docker rmi >/dev/null 2>&1 || true
+docker images polny-zal --format '{{.Repository}}:{{.Tag}}' | tail -n +4 | grep -v ":$NEW\$" | xargs -r docker rmi >/dev/null 2>&1 || true  # docker images — новые первыми
 docker image prune -f >/dev/null 2>&1 || true
 docker builder prune -af --filter "until=24h" >/dev/null 2>&1 || true
