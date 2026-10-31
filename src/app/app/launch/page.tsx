@@ -93,6 +93,6 @@ export default async function Launch() {
 }
 
 function pickBiz(b: Business): ExtrasBiz {
-  const { name, niche, city, address, phone, whatsapp, telegram, hours, services, advantages, offer, review, description, orgId, showSettings } = b;
-  return { name, niche, city, address, phone, whatsapp, telegram, hours, services, advantages, offer, review, description, orgId, showSettings };
+  const { name, niche, city, address, phone, whatsapp, telegram, hours, services, advantages, offer, review, description, orgId, showSettings, searchTopics } = b;
+  return { name, niche, city, address, phone, whatsapp, telegram, hours, services, advantages, offer, review, description, orgId, showSettings, searchTopics };
 }

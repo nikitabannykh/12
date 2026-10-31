@@ -11,6 +11,8 @@ import { isMedical, KIDS_RE, nicheById } from "../niches";
 export type ExtrasBiz = { showSettings?: unknown } & Pick<Business, "name" | "niche" | "city" | "address" | "phone" | "whatsapp" | "telegram" | "hours" | "services" | "advantages" | "offer" | "review" | "description"> & {
   /** ID организации в Яндекс Бизнесе (permalink): адрес, телефон, часы и рейтинг Директ берёт из профиля */
   orgId?: string | null;
+  /** Общие запросы бизнеса — чтобы понять, заказ это или запись */
+  searchTopics?: string[] | null;
 };
 
 /**
@@ -227,8 +229,21 @@ function withAnchor(href: string, anchor: string) {
   return `${i >= 0 ? href.slice(0, i) : href}#${anchor}`;
 }
 
-export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; service?: string | null; text?: string }): AdExtras {
-  const services = b.services ?? [];
+/** Заказ, а не запись: доставка еды, кафе, кондитерская — кнопки и подписи «Заказать», «Меню» вместо «Записаться», «Услуги» */
+export function isOrderBusiness(b: Pick<ExtrasBiz, "name" | "description"> & { searchTopics?: string[] | null; services?: { name: string }[] | null }): boolean {
+  const t = [b.name, b.description ?? "", ...(b.searchTopics ?? []), ...(b.services ?? []).slice(0, 15).map((s) => s.name)].join(" ").toLowerCase().replace(/ё/g, "е");
+  return /доставк\S* (еды|пицц|суши|ролл|обед)|пиццер|суши|ролл|кафе|ресторан|бургер|шаурм|кондитер|пекарн|торт[ыа]? на заказ|еда на дом|готов\S* еда|бизнес.?ланч/.test(t);
+}
+
+/** Слова для сравнения услуг с запросами группы: основа слова (первые 5 букв) у слов от 4 букв */
+const roots = (x: string) => new Set(x.toLowerCase().replace(/ё/g, "е").split(/[^а-яa-z0-9]+/).filter((w) => w.length >= 4).map((w) => w.slice(0, 5)));
+
+export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; service?: string | null; text?: string; keywords?: string[] }): AdExtras {
+  // Услуги — по близости к объявлению: сначала те, что про запросы группы и текст («доставка пиццы» → пиццы), а не первые по прайсу
+  const topic = roots([o.service ?? "", o.text ?? "", ...(o.keywords ?? []).slice(0, 15)].join(" "));
+  const score = (name: string) => [...roots(name)].filter((r) => topic.has(r)).length;
+  const services = topic.size ? [...(b.services ?? [])].map((s, i) => ({ s, i, k: score(s.name) })).sort((a, z) => z.k - a.k || a.i - z.i).map((x) => x.s) : b.services ?? [];
+  const order = isOrderBusiness(b);
   const svc = (o.service && services.find((s) => s.name === o.service)) || null;
   const priced = services.map((s) => ({ s, p: parsePrice(s.price) })).filter((x) => x.p);
   const price = svc ? parsePrice(svc.price) : priced.sort((a, c) => a.p!.price - c.p!.price)[0]?.p ?? null;
@@ -252,11 +267,13 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
   // Только ссылки, за которыми есть содержимое: без цен нет «Цен», без адреса — «Как добраться»
   const cand: (Sitelink | null)[] = [
     hasPrices
-      ? { title: "Цены на услуги", href: withAnchor(o.href, "services"), description: priceList ? cap(priceList) : undefined }
+      ? { title: order ? "Меню и цены" : "Цены на услуги", href: withAnchor(o.href, "services"), description: priceList ? cap(priceList) : undefined }
       : named.length
-        ? { title: "Услуги", href: withAnchor(o.href, "services"), description: cap(named.map((s) => clean(s.name).toLowerCase()).join(", ")) }
+        ? { title: order ? "Меню" : "Услуги", href: withAnchor(o.href, "services"), description: cap(named.map((s) => clean(s.name).toLowerCase()).join(", ")) }
         : null,
-    { title: "Записаться онлайн", href: withAnchor(o.href, "form"), description: "Выберите удобное время в форме записи" },
+    order
+      ? { title: "Заказать онлайн", href: withAnchor(o.href, "form"), description: "Оставьте заявку — перезвоним и примем заказ" }
+      : { title: "Записаться онлайн", href: withAnchor(o.href, "form"), description: "Выберите удобное время в форме записи" },
     review ? { title: "Отзыв клиента", href: withAnchor(o.href, "reviews"), description: review.length <= 58 ? `«${review}»` : `«${cut(review, 54)}...»` } : null,
     adv.length || withoutSuperlatives(b.description)
       ? { title: "Почему мы", href: withAnchor(o.href, "about"), description: adv.join(". ") || withoutSuperlatives(b.description) }
@@ -265,9 +282,13 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
     !b.address && b.hours ? { title: "Часы работы", href: withAnchor(o.href, "contacts"), description: hours.text } : null,
   ];
   // Директ принимает до 8 быстрых ссылок: добавляем другие услуги — каждая ведёт к своей строке прайса
-  services.forEach((sv, i) => {
+  // Якорь — по месту услуги в прайсе (порядок здесь — по близости к объявлению)
+  // Есть услуги про этот запрос — быстрые ссылки только на них (пицца к «доставке пиццы», без десертов)
+  const relevant = topic.size ? services.filter((sv) => score(sv.name) > 0) : [];
+  (relevant.length ? relevant : services).forEach((sv) => {
     if (sv.name === o.service) return;
-    cand.push({ title: sv.name, href: withAnchor(o.href, `s${i + 1}`), description: [sv.price, sv.note, "запись онлайн"].filter(Boolean).join(", ") });
+    const i = (b.services ?? []).indexOf(sv);
+    cand.push({ title: sv.name, href: withAnchor(o.href, `s${i + 1}`), description: [sv.price, sv.note, order ? "заказ онлайн" : "запись онлайн"].filter(Boolean).join(", ") });
   });
   const sitelinks = fitSitelinks(cand.filter((x): x is Sitelink => !!x));
 
@@ -289,7 +310,7 @@ export function adExtras(b: ExtrasBiz, o: { channel: string; href: string; servi
     ...adv.slice(0, 3),
     b.offer ? `${cap(withoutSuperlatives(b.offer))}.` : null,
     b.address ? `Ждём вас: ${b.city}, ${addressWithoutCity(b.address, b.city)}.` : null,
-    "Запишитесь онлайн — это займёт минуту.",
+    order ? "Закажите онлайн — это займёт минуту." : "Запишитесь онлайн — это займёт минуту.",
   ];
   // Длинный текст VK: без повторов — каждое предложение один раз
   const seen = new Set<string>();

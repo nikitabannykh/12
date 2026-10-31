@@ -788,7 +788,7 @@ async function buildChannel(b: Business, plan: LaunchPlan, ch: PlanChannel, acco
         images,
         href: withUtm(href, account.platform),
         image,
-        extras: withPlanCallouts(adExtras(b, { channel: formatOf(ch.channel), href, service: ch.channel === "search" ? g.service ?? g.name : null, text: ad.text }), plan.callouts),
+        extras: withPlanCallouts(adExtras(b, { channel: formatOf(ch.channel), href, service: ch.channel === "search" ? g.service ?? g.name : null, text: ad.text, keywords: g.keywords }), plan.callouts),
         logo: vkFormat && logo ? { imageId: logo.id, data: logo.data, mime: logo.mime, width: logo.width, height: logo.height, cachedRef: logo.platformRefs?.[account.platform] } : null,
         marking: `${n.label}: ${b.name}`,
       });

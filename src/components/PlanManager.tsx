@@ -289,7 +289,7 @@ export function PlanManager(p: {
                             {ads.map((ad) => (
                               <div key={ad.id} className={`min-w-0 ${ad.enabled ? "" : "opacity-45"}`}>
                                 {ch.channel === "search" ? (
-                                  <SearchAdPreview title={ad.title} title2={ad.title2} text={ad.text} host={p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={withPlanCallouts(adExtras(p.biz, { channel: "search", href: p.href, service: g.service ?? g.name, text: ad.text }), plan.callouts)} />
+                                  <SearchAdPreview title={ad.title} title2={ad.title2} text={ad.text} host={p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={withPlanCallouts(adExtras(p.biz, { channel: "search", href: p.href, service: g.service ?? g.name, text: ad.text, keywords: g.keywords }), plan.callouts)} />
                                 ) : (
                                   <ImageAdPreview channel={formatOf(ch.channel) === "vk" ? "vk" : "network"} title={ad.title} text={ad.text} host={formatOf(ch.channel) === "vk" ? p.businessName : p.host} image={ad.imageId ? `/api/images/${ad.imageId}` : null} extras={adExtras(p.biz, { channel: formatOf(ch.channel), href: p.href, text: ad.text })} logo={p.logo} />
                                 )}
@@ -342,7 +342,7 @@ function GroupExtras({ g, ch, biz, host, href, logo, businessName, planCallouts,
   const search = ch === "search";
   const vk = fmt === "vk";
   const ad = g.ads.find((a) => a.enabled) ?? g.ads[0];
-  const ex: AdExtras = withPlanCallouts(adExtras(biz, { channel: fmt, href, service: search ? g.service ?? g.name : null, text: ad?.text }), planCallouts);
+  const ex: AdExtras = withPlanCallouts(adExtras(biz, { channel: fmt, href, service: search ? g.service ?? g.name : null, text: ad?.text, keywords: g.keywords }), planCallouts);
   if (!ad) return null;
   const image = g.ads.find((a) => a.enabled && a.imageId)?.imageId ?? null;
   const noAdv = !(biz.advantages ?? []).some((x) => x.trim());
