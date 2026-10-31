@@ -120,7 +120,7 @@ async function creativeConcepts(b: Business, ideas: string[], count: number): Pr
 }
 
 /** Сюжет картинки под конкретную услугу: человеческий заголовок, выгода именно этой услуги и кадр для YandexART */
-export type ServiceArt = { service: string; headline: string; benefit: string; scene: string; photoId?: string | null };
+export type ServiceArt = { service: string; headline: string; benefit: string; scene: string; photoId?: string | null; /** не сгенерировалось и после повтора — больше не пробуем */ failed?: boolean };
 
 /** Строка для картинки: без кавычек и лишних пробелов, не длиннее max, без хвостовой пунктуации */
 const cleanLine = (s: unknown, max: number) => String(s ?? "").replace(/[«»"]/g, "").replace(/\s+/g, " ").trim().slice(0, max).replace(/[\s,.;:–—-]+$/, "");
@@ -151,7 +151,7 @@ export async function serviceArt(b: Business, ideas: string[], count: number, op
         (isMedical(b) ? "Это медицинские услуги: в headline и benefit не обещай излечение, результат и безопасность, не пиши «без боли», «эффективно», «поможем», не предполагай болезнь у читателя. Можно — для кого приём и что в него входит.\n" : "") +
         'Ответ — JSON {"items": [{"service": номер, "headline": "...", "benefit": "...", "scene": "..."}]}.',
       `Бизнес: ${b.name}, ${n.label}, город ${b.city}.\n${b.description ? `Описание: ${b.description.slice(0, 500)}\n` : ""}${(b.advantages ?? []).length ? `Преимущества: ${(b.advantages ?? []).join("; ")}\n` : ""}${ideas.length ? `Идеи для картинок: ${ideas.join("; ")}\n` : ""}Услуги:\n${list.map((x, i) => `${i + 1}. ${x}`).join("\n")}`,
-      { temperature: 0.8, maxTokens: 1600, timeoutMs: 20_000, until: opts.until },
+      { temperature: 0.8, maxTokens: Math.min(6000, 600 + list.length * 220), timeoutMs: 30_000, until: opts.until },
     );
     const base = fallback();
     const out = base.map((f, i) => {
@@ -168,32 +168,43 @@ export async function serviceArt(b: Business, ideas: string[], count: number, op
 }
 
 /** Фото YandexART под каждую услугу (кадр из serviceArt). Каждое сохраняем сразу — оплаченные кадры не пропадут при обрыве */
-export async function generateServicePhotos(b: Business, items: ServiceArt[]): Promise<{ items: ServiceArt[]; errors: string[] }> {
+export async function generateServicePhotos(b: Business, items: ServiceArt[], opts: { until?: number } = {}): Promise<{ items: ServiceArt[]; errors: string[] }> {
   if (!aiConfigured() || !items.length) return { items, errors: [] };
   const style = "Рекламная фотосъёмка, фотореализм, как снял живой фотограф: естественный свет, настоящие материалы, лёгкая плёночная зернистость, неидеальные детали. Без текста, без надписей, без логотипов, без водяных знаков";
   const seed = Math.floor(Math.random() * 1e6);
   const errors: string[] = [];
-  // По 2 одновременно и с повтором: на 6 параллельных YandexART отвечал «failed to execute calls to all endpoints»
+  // Запасной кадр, если генератор отказался рисовать сюжет (дети, тело, медицина): нейтральный кадр ниши без людей
+  const safe = photoPrompts(b, []);
   const out = [...items];
   let next = 0;
   const one = async (i: number) => {
     const it = out[i];
-    if (it.photoId) return;
+    if (it.photoId || it.failed) return;
     let last: unknown = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    let scene = it.scene;
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const img = await art(`${style}. ${it.scene}`, { w: 1, h: 1 }, seed + i + attempt * 1000);
+        const img = await art(`${style}. ${scene}`, { w: 1, h: 1 }, seed + i + attempt * 1000);
         out[i] = { ...it, photoId: (await saveImage(b.id, "generated", img, { prompt: `${it.service} :: ${it.scene}` })).id };
         return;
       } catch (e) {
         last = e;
-        if (!/endpoint|unavailable|internal|timeout|429|resource/i.test(String((e as Error)?.message ?? e))) break;
+        const msg = String((e as Error)?.message ?? e);
+        if (/не могу|cannot|can't|policy|запрещ|другую тему/i.test(msg) && scene === it.scene && safe.length) {
+          scene = `${safe[i % safe.length]}. Без людей в кадре`;
+          continue;
+        }
+        if (!/endpoint|unavailable|internal|timeout|429|resource/i.test(msg)) break;
         await new Promise((r) => setTimeout(r, 2000));
       }
     }
+    out[i] = { ...out[i], failed: true };
     errors.push(String((last as Error)?.message ?? last));
   };
-  await Promise.all(Array.from({ length: 3 }, async () => { while (next < out.length) await one(next++); }));
+  // По 3 одновременно; после until новые кадры не начинаем — продолжим следующим шагом
+  await Promise.all(Array.from({ length: 3 }, async () => {
+    while (next < out.length && (!opts.until || Date.now() < opts.until)) await one(next++);
+  }));
   return { items: out, errors };
 }
 
