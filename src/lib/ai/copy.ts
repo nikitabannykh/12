@@ -2,6 +2,7 @@ import "server-only";
 import type { Business, Service } from "../db/schema";
 import { groupServices, hasCategories } from "../services";
 import { ANGLES, isMedical, KIDS_RE, LAYER_LABEL, nicheById, type Layer } from "../niches";
+import { CATALOG } from "../engine/catalog";
 import { addressWithoutCity, adExtras, isOrderBusiness, badChars, claimProblems, cleanText, factCallouts, hasClaims, hasSuperlative, parsePrice, parseWeekHours, SUPERLATIVE as SUPERLATIVE_ONE, withoutSuperlatives } from "../engine/extras";
 import { pl, plural } from "../util";
 import { addPhrases, buildSemanticCore, displayKeyword, finalizeCore, networkInterests, conflicts, type SemanticCore, type SemanticGroup } from "../engine/semantics";
@@ -1079,6 +1080,45 @@ function templateAds(b: Business, ch: keyof typeof LIMITS, serviceName?: string,
   return isOrderBusiness(b) ? ads.map(toOrderWording) : ads;
 }
 
+/**
+ * Шаблонные объявления для доставки и кафе: раздел меню с ценами его позиций («Пицца Пепперони — 599 ₽»),
+ * «от N ₽» — по этому разделу, а не по всему прайсу (иначе «от 199 ₽» из-за чая), призыв — заказать.
+ */
+function orderAds(b: Business, ch: keyof typeof LIMITS, g: { name: string; service?: string; services?: string[] }): AdDraft[] {
+  const L = LIMITS[ch];
+  const city = b.city;
+  const name = cleanText(b.name);
+  const cat = CATALOG.find((c) => c.name === g.service) ?? null;
+  const items = (g.services ?? []).map((x) => b.services?.find((y) => y.name === x)).filter((x): x is Service => !!x && !!x.price);
+  const prices = items.map((x) => parsePrice(x.price)?.price).filter((x): x is number => !!x);
+  const from = prices.length ? `от ${new Intl.NumberFormat("ru-RU").format(Math.min(...prices)).replace(/[\u00a0\u202f]/g, " ")} ₽` : null;
+  const adv = (b.advantages ?? []).map(withoutSuperlatives).filter((x) => x && x.length <= 30);
+  const subj = cat ? cat.nom : low(cleanText(g.service ?? g.name), b.name);
+  const Subj = cap(subj);
+  const gen = cat ? cat.gen : subj;
+  const acc = cat ? cat.acc : subj;
+  const fitT = (list: (string | null | undefined)[], max: number) => list.find((x): x is string => !!x && x.length <= max) ?? "";
+  const itemList = items.slice(0, 2).map((x) => `${cap(cleanText(x.name))} — ${priceText(x.price)}`).join(", ");
+  const text = (parts: (string | null | undefined)[]) => {
+    let out = "";
+    for (const p of parts) {
+      if (!p) continue;
+      const next = out ? `${out} ${p}` : p;
+      if (next.length <= L.text) out = next;
+    }
+    return out;
+  };
+  const cta = "Закажите онлайн.";
+  return uniqueAds([
+    { angle: "price", title: fitT([cat ? `Доставка ${gen} — ${city}` : `${Subj} — ${city}`, `${Subj} с доставкой`], L.title), title2: fitT([from && `${Subj} ${from}`, from, adv[0]], 30) || null, text: text([itemList ? `${itemList}.` : null, adv[0] ? `${adv[0]}.` : null, cta]) },
+    cat
+      ? { angle: "convenience", title: fitT([`Заказать ${acc} с доставкой на дом`, `Заказать ${acc} — ${city}`, `Заказать ${acc}`], L.title), title2: fitT([adv[0], name], 30) || null, text: text([`${Subj} с доставкой на дом и в офис.`, adv[1] ? `${adv[1]}.` : null, from ? `Цены ${from}.` : null, cta]) }
+      // Общая группа («Доставка еды») — без «заказать доставка еды с доставкой»
+      : { angle: "convenience", title: fitT([`${Subj} на дом и в офис — ${city}`, `${Subj} на дом и в офис`, `${Subj} — ${name}`], L.title), title2: fitT([adv[0], name], 30) || null, text: text([`${Subj} от «${name}» на дом и в офис.`, adv[1] ? `${adv[1]}.` : null, cta]) },
+    { angle: "offer", title: fitT([`${Subj} в «${name}» — ${city}`, `${Subj} в «${name}»`, `${Subj} — ${name}`], L.title), title2: fitT([items[0] && cleanText(items[0].name), adv[1], from], 30) || null, text: text([items[0] ? `${cap(cleanText(items[0].name))} — ${priceText(items[0].price)}.` : null, items[1] ? `${cap(cleanText(items[1].name))} — ${priceText(items[1].price)}.` : null, adv[0] ? `${adv[0]}.` : null, cta]) },
+  ].filter((a) => a.title && a.text));
+}
+
 /** Доставка, кафе: «заказ», а не «запись» — в шаблонных объявлениях (длина та же или короче) */
 function toOrderWording(a: AdDraft): AdDraft {
   const fix = (x: string) => x
@@ -1223,7 +1263,7 @@ export function templatePlan(b: Business, core: SemanticCore = buildSemanticCore
       ...(typeof g.demand === "number" ? { demand: g.demand } : {}),
       // Тёплые запросы — только по фразам: автотаргетинг расширил бы их до совсем случайных («болит спина у собаки»)
       ...(layer === "service" ? {} : { autotargeting: false }),
-      ads: layer === "service" ? threeAds(b, "search", g.service, priceOf(g.service), i) : layerAds(b, g, i),
+      ads: isOrderBusiness(b) && layer === "service" ? orderAds(b, "search", g) : layer === "service" ? threeAds(b, "search", g.service, priceOf(g.service), i) : layerAds(b, g, i),
     };
   });
   if (!search.length) {
@@ -1234,7 +1274,7 @@ export function templatePlan(b: Business, core: SemanticCore = buildSemanticCore
   const interests = networkInterests(core, 3);
   const network: GroupDraft[] = [
     ...(interests.length > 1
-      ? interests.map((x, i) => ({ name: `Интересуются: ${low(cleanText(x.name), b.name)}`, service: x.service, audience: `Недавно искали «${x.keywords[0] ?? low(x.name)}» и похожее`, keywords: x.keywords, ads: threeAds(b, "network", x.service, priceOf(x.service), i), autotargeting: true }))
+      ? interests.map((x, i) => ({ name: `Интересуются: ${low(cleanText(x.name), b.name)}`, service: x.service, audience: `Недавно искали «${x.keywords[0] ?? low(x.name)}» и похожее`, keywords: x.keywords, ads: isOrderBusiness(b) ? orderAds(b, "network", { name: x.service, service: x.service, services: core.groups.find((g) => g.service === x.service)?.services }) : threeAds(b, "network", x.service, priceOf(x.service), i), autotargeting: true }))
       : [{ name: "Интересуются услугой", audience: "Недавно искали похожие услуги", keywords: interests[0]?.keywords.length ? interests[0].keywords : seeds.slice(0, 8), ads: templateAds(b, "network"), autotargeting: true }]),
     { name: "Похожие на клиентов", audience: "Интересы как у ваших клиентов — подбирает Яндекс", keywords: [], ads: templateAds(b, "network", undefined, undefined, 1), autotargeting: true },
   ];
