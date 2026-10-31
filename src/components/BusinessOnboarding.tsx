@@ -80,6 +80,47 @@ const norm = (s: string) => s.toLowerCase().replace(/ё/g, "е").replace(/[^a-z�
  * Черновик → анкета. Только дописываем пустое: правки владельца не трогаем. Что отличается — возвращаем
  * списком («оставили ваше, на сайте: …»), чтобы можно было заменить одной кнопкой.
  */
+const hostOf = (u: string | null | undefined) => {
+  try {
+    return u ? new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`).hostname.replace(/^www\./, "").toLowerCase() : "";
+  } catch {
+    return "";
+  }
+};
+
+/**
+ * По ссылке нашёлся другой бизнес (другое название или другой сайт) — значит, владелец вставил новую ссылку
+ * вместо старой. Тогда дописывать «пустое» нельзя: останутся адрес, сфера и услуги прежнего бизнеса.
+ */
+function isOtherBusiness(f: BusinessInput, d: Draft): boolean {
+  const hadData = Boolean(f.name.trim() || f.services.some((s) => s.name.trim()));
+  if (!hadData) return false;
+  const a = norm(f.name), b = norm(d.name ?? "");
+  if (a && b && !a.includes(b) && !b.includes(a)) return true;
+  const h1 = hostOf(f.siteUrl), h2 = hostOf(d.siteUrl);
+  return Boolean(h1 && h2 && h1 !== h2);
+}
+
+/** Другой бизнес: всё, что относилось к прежнему (адрес, сфера, услуги, преимущества, отзыв), заменяем найденным */
+function replaceDraft(f: BusinessInput, d: Draft, nicheLocked: boolean): { next: BusinessInput; changes: Change[]; summary: string[] } {
+  const next: BusinessInput = { ...f };
+  const changes: Change[] = [];
+  const scalars: ScalarKey[] = ["name", "city", "address", "hours", "phone", "whatsapp", "telegram", "siteUrl", "orgUrl", "description", "review", "legalInfo", "offer"];
+  for (const k of scalars) {
+    const v = ((d[k as keyof Draft] as string | null | undefined) ?? "").trim().slice(0, MAXLEN[k]);
+    next[k] = v;
+    if (v) changes.push({ field: k, label: LABEL[k], kind: "added", value: v });
+  }
+  if (!nicheLocked) next.niche = d.niche ?? "";
+  next.services = d.services.slice(0, MAX_SERVICES).map((s) => ({ name: s.name.slice(0, 80), price: (s.price ?? "").slice(0, 40), ...(s.category ? { category: s.category.slice(0, 40) } : {}), ...(s.note ? { note: s.note.slice(0, 120) } : {}) }));
+  next.advantages = d.advantages.slice(0, 5).map((a) => a.slice(0, 100));
+  const summary: string[] = [];
+  if (next.services.length) summary.push(`${next.services.length} ${plural(next.services.length, "услугу", "услуги", "услуг")}`);
+  if (next.advantages.length) summary.push(`${next.advantages.length} ${plural(next.advantages.length, "преимущество", "преимущества", "преимуществ")}`);
+  if (d.photos.length) summary.push(`${d.photos.length} фото`);
+  return { next, changes, summary };
+}
+
 function mergeDraft(f: BusinessInput, d: Draft, photosRoom: number): { next: BusinessInput; changes: Change[]; summary: string[] } {
   const next: BusinessInput = { ...f };
   const changes: Change[] = [];
@@ -407,15 +448,20 @@ export function BusinessOnboarding({
         return;
       }
       const hadData = Boolean(f.name.trim() || f.services.some((s) => s.name.trim()));
-      const m = mergeDraft(f, d, photoRoom);
+      const other = isOtherBusiness(f, d);
+      const m = other ? replaceDraft(f, d, nicheLock === "launched") : mergeDraft(f, d, photoRoom);
       setDraft(d);
-      setSources((s) => ({ ...d.sources, ...Object.fromEntries(Object.entries(s).filter(([k]) => m.changes.some((c) => c.field === k && c.kind === "kept"))) }));
-      setPhotos((cur) => (cur.length ? cur.filter((p) => d.photos.includes(p)) : d.photos.slice(0, photoRoom)));
+      setSources((s) => (other ? { ...d.sources } : { ...d.sources, ...Object.fromEntries(Object.entries(s).filter(([k]) => m.changes.some((c) => c.field === k && c.kind === "kept"))) }));
+      setPhotos((cur) => (other || !cur.length ? d.photos.slice(0, photoRoom) : cur.filter((p) => d.photos.includes(p))));
       setF(m.next);
       setRunning(false);
       setStarted(true);
+      if (other) {
+        toast(`По ссылке другой бизнес — «${d.name ?? "без названия"}». Заменили данные прежнего: адрес, сферу, услуги и фото.`);
+        if (!d.niche && nicheLock !== "launched") setTried(true);
+      }
       // Первое чтение без расхождений — сворачиваем ссылки и показываем, что заполнили; повторное — что изменилось
-      if (!hadData && !m.changes.some((c) => c.kind === "kept")) {
+      if ((other || !hadData) && !m.changes.some((c) => c.kind === "kept")) {
         setImported([...m.changes.filter((c) => c.kind === "added").map((c) => c.label), ...m.summary]);
         setLinkOpen(false);
         setRows([]);
