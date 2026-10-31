@@ -73,8 +73,8 @@ export default async function Dashboard() {
   const showing = (a: (typeof ads)[number]) => liveCamp.has(a.campaignId) && liveGroup.has(a.adGroupId);
   // «Модерацию прошло, но показов нет» (нужны документы, нет денег…) — площадка пишет причину, мы храним её с префиксом
   const isBlocked = (a: (typeof ads)[number]) => a.status === "active" && /^Не показывается/.test(a.statusNote ?? "");
-  // Остановленные роботом (сайт, бюджет) — тоже «хотим показывать»: их лицензия и деньги владелец должен видеть
-  const wantedCamp = new Set(camps.filter((x) => x.status === "active" || (x.status === "paused" && ((x.meta as { pausedBySite?: string; pausedByGuard?: string; pausedBy?: string } | null)?.pausedBySite || (x.meta as { pausedByGuard?: string } | null)?.pausedByGuard || (x.meta as { pausedBy?: string } | null)?.pausedBy === "robot"))).map((x) => x.id));
+  // И на паузе (ваша, робота) — лицензия и деньги всё равно помешают показам, когда рекламу включат: показываем всегда
+  const wantedCamp = new Set(camps.filter((x) => x.status === "active" || x.status === "paused").map((x) => x.id));
   const blockedAds = ads.filter((a) => isBlocked(a) && wantedCamp.has(a.campaignId));
   const blockedDocs = blockedAds.filter((a) => /документ|лиценз/i.test(a.statusNote ?? "")).length;
   const active = ads.filter((a) => a.status === "active" && !isBlocked(a) && showing(a)).length;
@@ -205,7 +205,8 @@ export default async function Dashboard() {
         const docs = pf === "yandex" ? blockedDocs : 0;
         const licenseUnknown = pf === "yandex" && !docs && isMedical(b) && camps.some((x) => x.platform === "yandex" && x.status === "active") && monthCost === 0 && !c.cost;
         const issues = servingIssues({ platform: pf, money, docs, licenseUnknown, other, site });
-        return issues.length ? <ServingIssues key={pf} heading={pf === "vk" ? "VK Реклама" : "Яндекс Директ"} issues={issues} /> : null;
+        const allPaused = !camps.some((x) => x.platform === pf && x.status === "active");
+        return issues.length ? <ServingIssues key={pf} heading={pf === "vk" ? "VK Реклама" : "Яндекс Директ"} issues={issues} paused={allPaused} /> : null;
       })}
       {blockedAds.length && !platformStopped.length && !blockedDocs ? (
         <StopBanner tone="warn" title="Часть объявлений не показывается" text={`Модерацию прошли, но ${pl(blockedAds.length, "объявление сейчас не показывается", "объявления сейчас не показываются", "объявлений сейчас не показываются")}. Причина — у каждого объявления в разделе «Реклама».`}>

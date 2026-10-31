@@ -80,7 +80,7 @@ export async function inboxFor(b: Business): Promise<{ items: InboxItem[]; unrea
   // Паузу владельца не считаем: он остановил сам
   type M = { delivery?: { ok?: boolean; note?: string }; pausedBy?: string | null; pausedBySite?: string | null; pausedByGuard?: string | null };
   const metaOf = (c: (typeof camps)[number]) => (c.meta ?? {}) as M;
-  const wanted = camps.filter((c) => c.status === "active" || (c.status === "paused" && (metaOf(c).pausedBySite || metaOf(c).pausedByGuard || metaOf(c).pausedBy === "robot")));
+  const wanted = camps.filter((c) => c.status === "active" || c.status === "paused");
   const live = new Set(wanted.map((c) => c.id));
   // Сайт не работает — главная причина: без него деньги и лицензия ничего не дадут
   const siteOff = wanted.filter((c) => metaOf(c).pausedBySite);

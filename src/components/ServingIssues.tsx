@@ -35,10 +35,11 @@ export function servingIssues(x: ServingInput): Issue[] {
   return out;
 }
 
-export function ServingIssues({ issues, heading, compact = false }: { issues: Issue[]; heading?: string; compact?: boolean }) {
+export function ServingIssues({ issues, heading, compact = false, paused = false }: { issues: Issue[]; heading?: string; compact?: boolean; paused?: boolean }) {
   if (!issues.length) return null;
   const bad = issues.some((x) => x.tone === "bad");
-  const title = bad ? `Реклама не показывается${issues.length > 1 ? ` — причин: ${issues.length}` : ""}` : "Проверьте лицензию";
+  // Реклама на паузе: те же проблемы помешают показам, когда её включат
+  const title = paused ? `Что помешает показам, когда включите рекламу${issues.length > 1 ? ` (${issues.length})` : ""}` : bad ? `Реклама не показывается${issues.length > 1 ? ` — причин: ${issues.length}` : ""}` : "Проверьте лицензию";
   const Icon = issues[0].title.startsWith("Нет денег") ? Wallet : PauseCircle;
   // Если реклама уже на паузе из-за сайта — заголовок «стоит», а не «не показывается»
   return (

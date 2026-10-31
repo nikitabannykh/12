@@ -514,7 +514,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
                 const platformOff = st?.stopped === "platform";
                 // Остановлена роботом из-за сайта: деньги — по последнему ответу площадки, сайт — отдельной причиной
                 const siteUrl = st?.stopped === "site" ? (camp.meta as { pausedBySite?: string } | null)?.pausedBySite ?? null : null;
-                const money = (platformOff && /средств|пополн/i.test(note)) || (!!siteUrl && /средств|пополн/i.test((camp.meta as { delivery?: { note?: string } } | null)?.delivery?.note ?? ""));
+                const money = (platformOff && /средств|пополн/i.test(note)) || (camp.status === "paused" && /средств|пополн/i.test((camp.meta as { delivery?: { note?: string } } | null)?.delivery?.note ?? ""));
                 const campAds = ads.filter((x) => x.campaignId === camp.id && x.status !== "archived");
                 const docs = campAds.filter((x) => x.status === "active" && /документ|лиценз/i.test(x.statusNote ?? "")).length;
                 const everShown = campAds.some((x) => (scores.get(x.id)?.s.impressions ?? 0) > 0) || row.s.cost > 0;
