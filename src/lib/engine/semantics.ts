@@ -30,7 +30,7 @@
  */
 import type { Business, Service } from "../db/schema";
 import { isOrderBusiness, parseWeekHours } from "./extras";
-import { catalogSections, sectionPhrases } from "./catalog";
+import { CATALOG, catalogSections, ORDER_NEGATIVES, sectionPhrases } from "./catalog";
 import { CITY_ALIASES, COMMERCIAL, isMedical, KIDS_RE, LAYER_JUNK, LAYER_LABEL, LAYERS, layersFor, NO_KIDS_NEG, nicheById, semanticsFor, sharedMods, type Concept, type Layer, type LayerEntry } from "../niches";
 
 export type { Layer } from "../niches";
@@ -660,7 +660,8 @@ function catalogCore(b: B, nicheNeg: string[], perGroup: number): SemanticCore {
     const names = items.map((x) => lower(cleanServiceName(x.name))).filter((x) => x && sigCount(x) <= 5);
     const kws = take([...sectionPhrases(cat, geo.city), ...names.slice(0, 8), ...names.slice(0, 4).map((x) => `${x} доставка`)], perGroup);
     if (kws.length < 5) continue;
-    groups.push({ name: cat.name, service: cat.name, services: items.map((x) => x.name), category: cat.name, concepts: [cat.id], keywords: kws, negatives: [], core: [cat.nom, ...names.slice(0, 10)], layer: "service" });
+    // Ядро (по нему считается спрос): запросы с намерением заказать, а не голое «горячее» или «сеты»
+    groups.push({ name: cat.name, service: cat.name, services: items.map((x) => x.name), category: cat.name, concepts: [cat.id], keywords: kws, negatives: [], core: [`доставка ${cat.gen}`, `заказать ${cat.acc}`, ...names.slice(0, 10)], layer: "service" });
   }
   // 2. Общая группа (после разделов: «доставка пиццы» достаётся разделу «Пицца») — как ищут сам бизнес («доставка еды», «заказать еду на дом»)
   const topics = uniq((b.searchTopics ?? []).map(lower)).filter((t) => toDirect(t) && sigCount(t) <= 4);
@@ -669,10 +670,10 @@ function catalogCore(b: B, nicheNeg: string[], perGroup: number): SemanticCore {
     if (kws.length >= 5) groups.unshift({ name: cap(topics[0]), service: cap(topics[0]), services: [cap(topics[0])], category: "", concepts: [], keywords: kws, negatives: [], core: topics.slice(0, 30), layer: "service" });
   }
   // Кросс-минусовка разделов: «пицца» не показывается по «роллам» и наоборот
-  const heads = groups.filter((g) => g.concepts.length).map((g) => ({ g, w: lower(g.core[0] ?? "") }));
+  const heads = groups.filter((g) => g.concepts.length).map((g) => ({ g, w: CATALOG.find((c) => c.id === g.concepts[0])?.nom.split(" ")[0] ?? "" }));
   for (const { g } of heads) g.negatives = heads.filter((x) => x.g !== g && x.w && !g.keywords.some((k) => conflicts(x.w, k))).map((x) => x.w).slice(0, 15);
   const all = groups.flatMap((g) => g.keywords);
-  const negatives = uniq([...nicheNeg, "рецепт", "рецепты", "как приготовить", "в домашних условиях", "калорийность", "калории", "вакансии", "курьер", "работа курьером"].map((n) => n.trim()).filter(Boolean)).filter((n) => !all.some((k) => conflicts(n, k)));
+  const negatives = uniq([...nicheNeg, ...ORDER_NEGATIVES].map((n) => n.trim()).filter(Boolean)).filter((n) => !all.some((k) => conflicts(n, k)));
   return { groups, negatives, geo, total: all.length, checks: {}, medical: false };
 }
 
