@@ -1,4 +1,5 @@
 import "server-only";
+import { catOf } from "./catalog";
 import { directDemographics, recommendedReach, showOf } from "./show";
 import { landingFor } from "./landing";
 import { and, asc, eq, inArray, notInArray, sql } from "drizzle-orm";
@@ -399,13 +400,17 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
     // Кадры, уже сгенерированные под ту же услугу (повторная подготовка), берём снова — не платим дважды
     const before = own.filter((p) => p.kind === "generated");
     // Своё фото с подписью позиции («Сет Свежесть» на сайте) — лучше любой генерации: берём его, а не рисуем
-    const captioned = own.filter((p) => p.kind === "photo" && p.prompt?.startsWith("caption:")).map((p) => ({ id: p.id, words: rootsOf(p.prompt!.slice(8)), key: normName(p.prompt!.slice(8)) }));
+    const captioned = own.filter((p) => p.kind === "photo" && p.prompt?.startsWith("caption:")).map((p) => ({ id: p.id, caption: p.prompt!.slice(8), words: rootsOf(p.prompt!.slice(8)), key: normName(p.prompt!.slice(8)) }));
     const ownFor = (name: string) => {
       const key = normName(name), words = rootsOf(name);
       const exact = captioned.find((c) => c.key === key);
       if (exact) return exact.id;
       const best = captioned.map((c) => ({ c, k: [...words].filter((w) => c.words.has(w)).length })).sort((a, z) => z.k - a.k)[0];
-      return best && best.k >= Math.max(2, Math.ceil(words.size * 0.6)) ? best.c.id : null;
+      if (best && best.k >= Math.max(2, Math.ceil(words.size * 0.6))) return best.c.id;
+      // Раздел меню («Пицца») — фото любой позиции этого раздела («Чёрная пицца с креветками»)
+      const cat = catOf({ name });
+      const inCat = cat ? captioned.find((c) => catOf({ name: c.caption })?.id === cat.id) : null;
+      return inCat?.id ?? null;
     };
     arts = arts.map((a) => ({ ...a, photoId: ownFor(a.service) ?? before.find((p) => p.prompt?.startsWith(`${a.service} :: `))?.id ?? null }));
     const g = await generateServicePhotos(b, arts);

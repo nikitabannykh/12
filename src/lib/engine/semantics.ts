@@ -29,7 +29,8 @@
  * Проверка частотности и дублей через API Директа — refineWithDirect (вызывает сервер, если подключён Директ).
  */
 import type { Business, Service } from "../db/schema";
-import { parseWeekHours } from "./extras";
+import { isOrderBusiness, parseWeekHours } from "./extras";
+import { catalogSections, sectionPhrases } from "./catalog";
 import { CITY_ALIASES, COMMERCIAL, isMedical, KIDS_RE, LAYER_JUNK, LAYER_LABEL, LAYERS, layersFor, NO_KIDS_NEG, nicheById, semanticsFor, sharedMods, type Concept, type Layer, type LayerEntry } from "../niches";
 
 export type { Layer } from "../niches";
@@ -430,6 +431,8 @@ export function buildSemanticCore(b: B, opts: { maxGroups?: number; perGroup?: n
   const list: Service[] = services.length ? services : [{ name: niche.id === "other" ? b.name : niche.generic }];
   const parsed = list.map((s) => parseService(s, niche.id)).filter((p) => p.base || p.mains.length);
   const medical = isMedical(b);
+  // Доставка еды, кафе, магазины — реклама по разделам меню, а не по каждой позиции (см. engine/catalog.ts)
+  if (isOrderBusiness(b as Parameters<typeof isOrderBusiness>[0]) && !medical) return catalogCore(b, niche.negatives, perGroup);
   if (!parsed.length) return { groups: [], negatives: [], geo: geoTerms(b), total: 0, checks: {}, medical };
   const units = clusterUnits(parsed, maxGroups);
   const geo = geoTerms(b);
@@ -629,6 +632,48 @@ export function buildSemanticCore(b: B, opts: { maxGroups?: number; perGroup?: n
   const all = groups.flatMap((g) => g.keywords);
   const negatives = uniq(niche.negatives.map((n) => n.trim()).filter(Boolean)).filter((n) => !all.some((k) => conflicts(n, k)));
   return { groups, negatives, geo, total: all.length, checks: {}, medical };
+}
+
+// ─── Каталог: доставка еды, кафе, магазины ────────────────────────────────
+
+const ORDER_SUFFIX = ["цена", "недорого", "на дом", "с доставкой", "рядом", "меню", "отзывы", "заказать онлайн"];
+
+function catalogCore(b: B, nicheNeg: string[], perGroup: number): SemanticCore {
+  const geo = geoTerms(b);
+  const services: Service[] = (b.services ?? []).filter((x) => x?.name?.trim());
+  const seen = new Set<string>();
+  const take = (list: string[], max: number) => {
+    const out: string[] = [];
+    for (const raw of list) {
+      if (out.length >= max) break;
+      const d = toDirect(raw);
+      const k = phraseKey(raw);
+      if (!d || !k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(d);
+    }
+    return out;
+  };
+  const groups: SemanticGroup[] = [];
+  // 1. Разделы меню: «пицца», «роллы», «сеты» — с позициями как длинным хвостом
+  for (const { cat, items } of catalogSections(services).slice(0, 10)) {
+    const names = items.map((x) => lower(cleanServiceName(x.name))).filter((x) => x && sigCount(x) <= 5);
+    const kws = take([...sectionPhrases(cat, geo.city), ...names.slice(0, 8), ...names.slice(0, 4).map((x) => `${x} доставка`)], perGroup);
+    if (kws.length < 5) continue;
+    groups.push({ name: cat.name, service: cat.name, services: items.map((x) => x.name), category: cat.name, concepts: [cat.id], keywords: kws, negatives: [], core: [cat.nom, ...names.slice(0, 10)], layer: "service" });
+  }
+  // 2. Общая группа (после разделов: «доставка пиццы» достаётся разделу «Пицца») — как ищут сам бизнес («доставка еды», «заказать еду на дом»)
+  const topics = uniq((b.searchTopics ?? []).map(lower)).filter((t) => toDirect(t) && sigCount(t) <= 4);
+  if (topics.length) {
+    const kws = take([...topics, ...topics.slice(0, 6).flatMap((t) => geo.city.slice(0, 2).map((c) => `${t} ${c}`)), ...topics.slice(0, 3).flatMap((t) => ORDER_SUFFIX.map((m) => `${t} ${m}`))], perGroup);
+    if (kws.length >= 5) groups.unshift({ name: cap(topics[0]), service: cap(topics[0]), services: [cap(topics[0])], category: "", concepts: [], keywords: kws, negatives: [], core: topics.slice(0, 30), layer: "service" });
+  }
+  // Кросс-минусовка разделов: «пицца» не показывается по «роллам» и наоборот
+  const heads = groups.filter((g) => g.concepts.length).map((g) => ({ g, w: lower(g.core[0] ?? "") }));
+  for (const { g } of heads) g.negatives = heads.filter((x) => x.g !== g && x.w && !g.keywords.some((k) => conflicts(x.w, k))).map((x) => x.w).slice(0, 15);
+  const all = groups.flatMap((g) => g.keywords);
+  const negatives = uniq([...nicheNeg, "рецепт", "рецепты", "как приготовить", "в домашних условиях", "калорийность", "калории", "вакансии", "курьер", "работа курьером"].map((n) => n.trim()).filter(Boolean)).filter((n) => !all.some((k) => conflicts(n, k)));
+  return { groups, negatives, geo, total: all.length, checks: {}, medical: false };
 }
 
 // ─── Слои: проблемы, смежные запросы, аудитории ────────────────────────────

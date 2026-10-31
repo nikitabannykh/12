@@ -1,0 +1,55 @@
+/**
+ * Режим «каталог» для доставки еды, кафе и магазинов: реклама идёт не по каждой позиции меню
+ * («Панна-котта Привидение» — 0 запросов в месяц), а по разделам, как работает директолог:
+ * общая группа («доставка еды»), затем «пицца», «роллы», «сеты» и т. д. Позиции раздела — длинный хвост
+ * и примеры в объявлениях. Напитки рекламой не продаём — у них нет спроса «с доставкой».
+ */
+import type { Service } from "../db/schema";
+
+export type CatalogCat = { id: string; re: RegExp; name: string; nom: string; gen: string; acc: string; ads?: boolean; extra?: string[] };
+
+export const CATALOG: CatalogCat[] = [
+  { id: "sets", re: /(^|\s)(сет|комбо|набор)/, name: "Сеты", nom: "сеты", gen: "сетов", acc: "сет", extra: ["суши сет", "сет роллов", "роллы сет"] },
+  { id: "pizza", re: /пицц/, name: "Пицца", nom: "пицца", gen: "пиццы", acc: "пиццу" },
+  { id: "rolls", re: /ролл|маки|филадельф|калифорни|темпур/, name: "Роллы", nom: "роллы", gen: "роллов", acc: "роллы" },
+  { id: "sushi", re: /суши|нигири|гункан|сашими/, name: "Суши", nom: "суши", gen: "суши", acc: "суши" },
+  { id: "wok", re: /(^|\s)вок|лапш|удон|фунчоз|тяхан|поке|(^|\s)рис /, name: "Вок и поке", nom: "вок", gen: "вока", acc: "вок", extra: ["лапша вок", "поке боул"] },
+  { id: "burger", re: /бургер/, name: "Бургеры", nom: "бургеры", gen: "бургеров", acc: "бургер" },
+  { id: "shawarma", re: /шаурм|шаверм|донер|ролл с курицей в лаваше/, name: "Шаурма", nom: "шаурма", gen: "шаурмы", acc: "шаурму" },
+  { id: "soup", re: /(^|\s)суп|борщ|солянк|том ям|рамен|уха/, name: "Супы", nom: "суп", gen: "супа", acc: "суп" },
+  { id: "salad", re: /салат|цезарь/, name: "Салаты", nom: "салаты", gen: "салатов", acc: "салат" },
+  { id: "pies", re: /пирог|осетинск|самс|выпечк|хачапури/, name: "Пироги", nom: "пироги", gen: "пирогов", acc: "пирог" },
+  { id: "hot", re: /курица|куриц|говядин|свинин|стейк|котлет|паста|спагетти|карбонар|плов|шашлык/, name: "Горячие блюда", nom: "горячее", gen: "горячих блюд", acc: "горячее", extra: ["обед с доставкой", "заказать обед"] },
+  { id: "snacks", re: /(^|\s)фри|наггет|крылышк|закуск|картофел|стрипс/, name: "Закуски", nom: "закуски", gen: "закусок", acc: "закуски" },
+  { id: "dessert", re: /десерт|торт|чизкейк|панна|пирожн|тирамису|(^|\s)шу(\s|$)|эклер|маффин|макарон|мороже/, name: "Десерты", nom: "десерты", gen: "десертов", acc: "десерт" },
+  { id: "drinks", re: /(^|\s)чай|кофе|лимонад|морс|(^|\s)сок|напит|коктейл|смузи|вода/, name: "Напитки", nom: "напитки", gen: "напитков", acc: "напиток", ads: false },
+];
+
+const norm = (s: string) => s.toLowerCase().replace(/ё/g, "е");
+
+/** Раздел позиции: по названию и разделу меню с сайта */
+export function catOf(s: Service): CatalogCat | null {
+  const t = ` ${norm(`${s.name} ${s.category ?? ""}`)} `;
+  return CATALOG.find((c) => c.re.test(t)) ?? null;
+}
+
+/** Разделы меню с позициями, по числу позиций (пустые и напитки не берём) */
+export function catalogSections(services: Service[]): { cat: CatalogCat; items: Service[] }[] {
+  const map = new Map<string, { cat: CatalogCat; items: Service[] }>();
+  for (const s of services) {
+    const c = catOf(s);
+    if (!c || c.ads === false) continue;
+    const e = map.get(c.id) ?? { cat: c, items: [] };
+    e.items.push(s);
+    map.set(c.id, e);
+  }
+  return [...map.values()].sort((a, b) => b.items.length - a.items.length);
+}
+
+/** Запросы раздела: как ищут «пиццу с доставкой», а не позицию по названию */
+export function sectionPhrases(c: CatalogCat, city: string[]): string[] {
+  const base = [`доставка ${c.gen}`, `заказать ${c.acc}`, `${c.nom} доставка`, `${c.nom} с доставкой`, `${c.nom} на дом`, ...(c.extra ?? [])];
+  const withCity = [`доставка ${c.gen}`, `заказать ${c.acc}`, c.nom].flatMap((p) => city.slice(0, 2).map((x) => `${p} ${x}`));
+  const tails = [`${c.nom} недорого`, `${c.nom} цена`, `${c.nom} меню`, `${c.nom} рядом`, `доставка ${c.gen} недорого`, `доставка ${c.gen} рядом`, `заказать ${c.acc} онлайн`, `${c.nom} заказать онлайн`];
+  return [...base, ...withCity, ...tails];
+}

@@ -301,6 +301,58 @@ const MEDICAL_RULES = `Это медицинские услуги. Дополн�
 /** Сколько групп отдаём модели: остальным — шаблонные объявления (ответ модели ограничен по длине) */
 const AI_GROUPS = 8;
 
+/** Основы слов (первые 4 буквы) без служебных — для проверки, что объявление про запросы группы */
+const ROOT_STOP = new Set(["дост", "зака", "цена", "цены", "недо", "рядо", "запи", "онла", "отзы", "екат", "москв", "купи", "стои", "меню", "дома"]);
+const rootsOf = (x: string) => new Set(x.toLowerCase().replace(/ё/g, "е").split(/[^а-яa-z0-9]+/).filter((w) => w.length >= 3).map((w) => w.slice(0, 4)).filter((r) => !ROOT_STOP.has(r)));
+
+/**
+ * Жёсткие проверки после модели (их не уговорить): заголовок про запросы группы, у «заказа» нет «записи»,
+ * нет восклицаний в заголовке, длины в лимитах. Не прошло — объявление не берём (останется шаблонное).
+ */
+export function gateAd(a: AdDraft, g: Pick<GroupDraft, "name" | "keywords" | "service">, queries: string[], order: boolean, ch: keyof typeof LIMITS): boolean {
+  const L = LIMITS[ch];
+  if (!a?.title || !a?.text) return false;
+  if (a.title.length > L.title || a.text.length > L.text || (a.title2 && "title2" in L && a.title2.length > (L as { title2: number }).title2)) return false;
+  if (/!/.test(a.title) || (a.text.match(/!/g) ?? []).length > 1) return false;
+  if (order && /запис|удобное время/i.test(`${a.title} ${a.title2 ?? ""} ${a.text}`)) return false;
+  // Про запрос: в заголовке есть слово из названия группы или из её запросов (кроме «доставка», «цена» и т. п.)
+  const want = new Set([...rootsOf(g.name), ...rootsOf(g.service ?? ""), ...queries.slice(0, 5).flatMap((q) => [...rootsOf(q)])]);
+  const head = rootsOf(`${a.title} ${a.title2 ?? ""}`);
+  return !want.size || [...head].some((r) => want.has(r));
+}
+
+/** Старший директолог: проверка объявлений группы по чек-листу и правка. Ответ — исправленный список того же размера */
+async function reviewAds(b: Business, g: GroupDraft, queries: string[], ads: AdDraft[], ch: keyof typeof LIMITS, kindRule: string, until: number): Promise<AdDraft[]> {
+  if (!ads.length) return ads;
+  const L = LIMITS[ch];
+  const r = await gptJson<{ ads: (AdDraft & { ok?: boolean; problems?: string[] })[] }>(
+    "Ты — старший директолог, проверяешь объявления младшего перед запуском. Ответ — строго JSON.",
+    `${bizBrief(b)}
+${kindRule}
+Группа «${g.name}». Запросы, по которым покажется объявление: ${queries.join("; ")}.
+
+Проверь каждое объявление по чек-листу и, если нужно, исправь:
+1. Заголовок отвечает на запрос: главные слова первого запроса — в заголовке. Человек ищет «доставка пиццы» — объявление про доставку пиццы.
+2. Ни слова о товарах и услугах, которых нет в запросах этой группы (в группе «Пицца» — не десерты и не роллы).
+3. Только факты из описания бизнеса: цены, сроки, акции, гарантии — только если они есть в описании.
+4. Призыв соответствует бизнесу (заказ или запись), без канцелярита и штампов, без восклицательных знаков в заголовке, без «лучший», «№1», капслока.
+5. Лимиты: заголовок до ${L.title} символов${"title2" in L ? `, второй заголовок до ${(L as { title2: number }).title2}` : ""}, текст до ${L.text}.
+6. Объявления не повторяют друг друга.
+
+Объявления:
+${ads.map((a, i) => `${i + 1}. ${a.title}${a.title2 ? ` | ${a.title2}` : ""} | ${a.text} (angle: ${a.angle})`).join("\n")}
+
+JSON: {"ads": [{"ok": true|false, "problems": ["…"], "angle": "…", "title": "…", ${"title2" in L ? '"title2": "…", ' : ""}"text": "…"}]} — в том же порядке; если ok=false, в title/text — исправленный вариант.`,
+    { temperature: 0.2, maxTokens: 1500, timeoutMs: 20_000, until },
+  );
+  const out: AdDraft[] = [];
+  for (const [i, x] of (r.ads ?? []).entries()) {
+    const title = x.title || ads[i]?.title, text = x.text || ads[i]?.text;
+    if (title && text) out.push({ angle: x.angle || ads[i]?.angle || "result", title, title2: x.title2 ?? ads[i]?.title2 ?? null, text });
+  }
+  return out.length ? out : ads;
+}
+
 /** deadline — к какому моменту нужен ответ (лимит времени функции): не успела модель — шаблонные объявления */
 export async function generateCopyPlan(b: Business, channels: { search: boolean; network: boolean; vk: boolean }, core: SemanticCore = buildSemanticCore(b), opts: { deadline?: number } = {}): Promise<CopyPlan> {
   const n = nicheById(b.niche);
@@ -358,20 +410,24 @@ ${KIND_RULE}
           const { g, gi } = list[next++];
           const queries = [...new Set(g.keywords.map((k) => displayKeyword(k).replace(/"/g, "")))].slice(0, 8);
           const svc = b.services?.find((x) => x.name === g.service);
-          const others = (g.services ?? []).filter((x) => x !== g.service).slice(0, 6);
+          const items = (g.services ?? []).filter((x) => x !== g.service).map((x) => b.services?.find((y) => y.name === x)).filter((x): x is Service => !!x).slice(0, 8);
+          const others = items.map((x) => `${x.name}${x.price ? ` — ${x.price}` : ""}`);
           try {
-            const r = await gptJson<{ ads: AdDraft[] }>(SYSTEM,
+            const r0 = await gptJson<{ ads: AdDraft[] }>(SYSTEM,
               `${bizBrief(b)}
 ${medical ? `\n${MEDICAL_RULES}\n` : ""}
 ${KIND_RULE}
 
 Группа «${g.name}». Люди ищут: ${queries.join("; ")}.
-${svc ? `Позиция прайса: ${svc.name}${svc.price ? ` — ${svc.price}` : ""}${svc.note ? ` (${svc.note})` : ""}.` : "Это общий запрос о бизнесе, а не конкретная позиция прайса."}${others.length ? ` Связанные позиции: ${others.join(", ")}.` : ""}
+${svc ? `Позиция прайса: ${svc.name}${svc.price ? ` — ${svc.price}` : ""}${svc.note ? ` (${svc.note})` : ""}.` : others.length ? `Это раздел «${g.name}». Позиции раздела (можно назвать одну-две как пример, с ценой): ${others.join("; ")}.` : "Это общий запрос о бизнесе, а не конкретная позиция прайса."}
 Напиши 4 объявления ${ch === "search" ? "для поиска Яндекса" : "для РСЯ (картинка + текст)"} ровно под эти запросы: главные слова первого запроса — в заголовке; ни слова о позициях и услугах, которые не относятся к этим запросам.
 Разные подходы (angle: price|offer|proof|convenience|result|emotion), у каждого свой первый факт в тексте.
 JSON: {"ads": [{"angle": "...", "title": "до 56 символов", ${ch === "search" ? '"title2": "до 30 символов", ' : ""}"text": "до 81 символа"}]}`,
               { temperature: 0.7, maxTokens: 1200, timeoutMs: 25_000, until });
-            if (r.ads?.length) out.push({ group: gi + 1, ads: r.ads });
+            // Второй взгляд: старший директолог проверяет каждое объявление по чек-листу и правит; затем — жёсткие проверки кода
+            const reviewed = await reviewAds(b, g, queries, r0.ads ?? [], ch, KIND_RULE, until).catch(() => r0.ads ?? []);
+            const ok = reviewed.filter((a) => gateAd(a, g, queries, order, ch));
+            if (ok.length) out.push({ group: gi + 1, ads: ok });
           } catch {
             /* у группы останутся шаблонные объявления */
           }
