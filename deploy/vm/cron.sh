@@ -4,6 +4,8 @@
 set -euo pipefail
 while IFS= read -r l; do [ -z "$l" ] || export "$l"; done < /etc/polny-zal.env  # не через «.»: в строках подключения есть «&»
 OLD=$(echo "${LEGACY_ORIGINS:-}" | cut -d, -f1)
+# *.vercel.app из облака в РФ часто недоступен — после переключения ставим метку: sudo touch /opt/polny-zal/cutover
+if [ -f /opt/polny-zal/cutover ]; then OLD=""; fi
 if [ -n "$OLD" ] && ! curl -fsSI --max-time 20 "$OLD/api/health" | grep -qi '^x-served-by: yc-vm'; then
   echo "cron: $OLD ещё работает сам — робот запускается там"; exit 0
 fi
