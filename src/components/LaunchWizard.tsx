@@ -425,7 +425,7 @@ export function LaunchWizard(p: Props) {
 
   const photoStrip = (
     <div className="grid gap-2">
-      <p className="text-sm text-muted leading-relaxed"><span className="font-semibold text-ink">Фото для объявлений с картинками</span> (необязательно). Лучше всего — настоящие: работа крупным планом, интерьер, мастер за работой. {p.flags.ai ? "Нет фото — сгенерируем по вашей нише." : ""}</p>
+      <p className="text-sm text-muted leading-relaxed"><span className="font-semibold text-ink">Фото для объявлений с картинками</span> (необязательно). Лучше всего — настоящие: работа крупным планом, интерьер, мастер за работой. {p.flags.ai ? "Ваши фото используем вместе с новыми картинками, которые нарисуем под ваши услуги, — робот проверит, что работает лучше." : ""}</p>
       <div className="flex flex-wrap gap-2.5">
           {p.photos.map((ph) => (
             <div key={ph.id} className="relative w-20 h-20 rounded-xl overflow-hidden border border-line group">

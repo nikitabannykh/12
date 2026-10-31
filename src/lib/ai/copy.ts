@@ -280,6 +280,13 @@ const SYSTEM = `Ты — сильный директолог и копирайт
 - Второй заголовок не повторяет первый: туда — факт из описания (преимущество, адрес, часы работы, предложение).
 - Город не склоняй вслепую: пиши «— Казань» или «, Казань», а не «в Казань».
 - Каждое объявление проверяет свою гипотезу (угол подачи): price, offer, proof, convenience, result, emotion.
+Как писать не шаблонно:
+- Начинай с ситуации или желания клиента, а не с названия салона: «Нужен маникюр к пятнице?», «Ногти после лета — в порядок». Вопрос-ситуация — не обещание, его можно.
+- Бери самую конкретную деталь из описания: материал, бренд, длительность, район, часы, что входит в услугу. Конкретика продаёт лучше общих слов.
+- Каждое объявление звучит по-своему: одно — короткое и деловое, другое — разговорное, третье — через деталь или цену.
+- Запрещённые штампы: «качественно и недорого», «профессиональные мастера», «уютная атмосфера», «доступные цены», «широкий спектр», «ждём вас», «у нас вы найдёте».
+- Призыв к действию — разный: «Запишитесь онлайн», «Выберите время», «Напишите в WhatsApp», «Свободные окна на неделю» (последнее — только если есть онлайн-запись).
+Плохо: «Маникюр в Екатеринбурге. Качественно и недорого. Запишитесь!» Хорошо: «Маникюр с покрытием за 2 300 ₽ — ул. Шейнкмана» / «Покрытие держится, ногти не страдают. Выберите время онлайн».
 Ответ — строго JSON без пояснений.`;
 
 /** Медицинские услуги: закон «О рекламе», ст. 24, и правила Директа */
@@ -316,10 +323,10 @@ ${list(fallback.network)}
 Подготовь рекламу. Верни JSON:
 {
  "search": [ // по элементу на каждую группу поиска из списка, в том же порядке
-   {"group": 1, "ads": [3 объявления про услугу этой группы, с разными подходами: {"angle": "price|offer|proof|convenience|result|emotion", "title": "до 56 символов, с услугой группы", "title2": "до 30 символов", "text": "до 81 символа"}]}
+   {"group": 1, "ads": [4 объявления про услугу этой группы (лучшие 3 оставим после проверки), с разными подходами: {"angle": "price|offer|proof|convenience|result|emotion", "title": "до 56 символов, с услугой группы", "title2": "до 30 символов", "text": "до 81 символа"}]}
  ],
  "network": [ // по элементу на каждую группу РСЯ из списка, в том же порядке
-   {"group": 1, "ads": [3 объявления, title до 56 символов, text до 81]}
+   {"group": 1, "ads": [4 разных объявления, title до 56 символов, text до 81]}
  ],
  "vk": [ // 2 группы для ВКонтакте: разные возрастные аудитории (проверим, какая лучше)
    {"name": "...", "audience": "...", "ageFrom": 20, "ageTo": 34, "keywords": [], "ads": [3 объявления, title до 40 символов, text до 90]}
@@ -332,7 +339,9 @@ ${list(fallback.network)}
 
   try {
     type Raw = { search?: { group?: number; ads?: AdDraft[] }[]; network?: { group?: number; ads?: AdDraft[] }[]; vk?: GroupDraft[]; negatives?: string[]; callouts?: string[]; imageIdeas?: string[] };
-    const raw = await gptJson<Raw>(SYSTEM, user, { temperature: 0.55, maxTokens: 8000, timeoutMs: 45_000, until: opts.deadline });
+    // Температура повыше — тексты живее; выдумки всё равно отсекает проверка фактов, а запасное четвёртое объявление
+    // в группе даёт шанс заменить отброшенное не шаблоном, а другим текстом модели
+    const raw = await gptJson<Raw>(SYSTEM, user, { temperature: 0.75, maxTokens: 8000, timeoutMs: 45_000, until: opts.deadline });
     const facts = ownerFacts(b);
     // Объявления модели — в группы семантики по номеру; выдуманный факт — шаблонное объявление того же места
     const fill = (items: Raw["search"], ch: keyof typeof LIMITS, fb: GroupDraft[]): GroupDraft[] =>
@@ -340,11 +349,14 @@ ${list(fallback.network)}
         if ((g.layer ?? "service") !== "service") return g;
         const got = (items ?? []).find((x, xi) => (x?.group ?? xi + 1) === gi + 1);
         if (!got?.ads?.length) return g;
-        const ads = got.ads.slice(0, 3).map((a, i) => {
+        // До 4 вариантов модели: прошедшие проверку фактов — в приоритете, шаблон — только если модели не хватило
+        const passed = got.ads.slice(0, 4).map((a) => {
           const nz = normalizeAd(a, ch);
-          const checked = nz.title && nz.text ? factCheckAd(nz, facts, medical) : null;
-          return checked ?? g.ads[i % Math.max(1, g.ads.length)] ?? null;
-        });
+          return nz.title && nz.text ? factCheckAd(nz, facts, medical) : null;
+        }).filter((a): a is AdDraft => !!a);
+        const byAngle = [...passed.filter((a, i) => passed.findIndex((x) => x.angle === a.angle) === i), ...passed];
+        const ads: (AdDraft | null)[] = [...new Set(byAngle)].slice(0, 3);
+        for (let i = ads.length; i < 3; i++) ads.push(g.ads[i % Math.max(1, g.ads.length)] ?? null);
         // После проверки фактов тексты могут сжаться до одинаковых — повтор заменяем шаблонным объявлением этой группы
         const sameText = (x: AdDraft, y: AdDraft) => titleKey(x.text) === titleKey(y.text) || titleKey(firstSentence(x.text)) === titleKey(firstSentence(y.text));
         const kept: AdDraft[] = [];
@@ -380,7 +392,8 @@ ${list(fallback.network)}
       search: channels.search ? fill(raw.search, "search", fallback.search) : [],
       network: channels.network ? fill(raw.network, "network", fallback.network) : [],
       // Аудитории VK — наши (поиск, интересы, все рядом), объявления — от модели, если прошли проверку
-      vk: channels.vk ? fallback.vk.map((g) => (vk.length && vk[0].ads.length ? { ...g, ads: vk[0].ads } : g)) : [],
+      // Каждой аудитории — свой набор текстов модели (раньше все группы получали тексты первой)
+      vk: channels.vk ? fallback.vk.map((g, i) => { const src = vk[i % Math.max(1, vk.length)]; return src?.ads.length ? { ...g, ads: src.ads } : g; }) : [],
       negatives: [...new Set([...fallback.negatives, ...aiNeg])].filter(Boolean).slice(0, 150),
       callouts: [...new Map([...(raw.callouts ?? []).map((c) => cleanText(c)).filter((c) => c && c.length <= 25 && supportedBy(c, facts) && !hasClaims(c, medical)), ...fallback.callouts].map((c) => [c.toLowerCase(), c])).values()].slice(0, 6),
       imageIdeas: (raw.imageIdeas?.length ? raw.imageIdeas : fallback.imageIdeas).slice(0, 3),

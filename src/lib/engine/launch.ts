@@ -380,14 +380,23 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
     const generatedBefore = own.filter((p) => p.kind === "generated").map((p) => p.id);
     // Фото с карточки (2ГИС, Яндекс Карты) — максимум два; остальное — сгенерированные кадры под услуги.
     // Объявления в группе получают разные картинки, и робот A/B-тестом оставляет ту, после которой чаще обращаются
+    // Свои фото и сгенерированные — вперемешку (своё, новое, своё, новое): иначе первые услуги и группы получали
+    // только фото владельца, а сгенерированные кадры почти не попадали в объявления
     const own2 = photoIds.slice(0, 2);
-    const wantGen = 4 - own2.length;
-    if (generatedBefore.length >= Math.min(2, wantGen)) photoIds = [...own2, ...generatedBefore].slice(0, 4);
+    const wantGen = Math.max(2, 4 - own2.length);
+    const mix = (a: string[], g: string[]) => {
+      const out: string[] = [];
+      for (let i = 0; i < Math.max(a.length, g.length); i++) out.push(...(a[i] ? [a[i]] : []), ...(g[i] ? [g[i]] : []));
+      return [...new Set(out)].slice(0, 4);
+    };
+    if (generatedBefore.length >= wantGen) photoIds = mix(own2, generatedBefore);
     else {
-      const g = await generatePhotos(b, plan.imageIdeas, wantGen);
-      photoIds = [...own2, ...g.ids, ...generatedBefore].slice(0, 4);
-      if (!g.ids.length) photoIds = [...own.filter((p) => p.kind === "photo").map((p) => p.id), ...generatedBefore].slice(0, 4);
-      if (g.errors.length) warnings.push(`Часть картинок не сгенерировалась: ${g.errors[0]}`);
+      const g = await generatePhotos(b, plan.imageIdeas, wantGen - generatedBefore.length);
+      photoIds = mix(own2, [...g.ids, ...generatedBefore]);
+      if (!photoIds.length) photoIds = own.filter((p) => p.kind === "photo").map((p) => p.id).slice(0, 4);
+      if (g.errors.length) warnings.push(/denied|доступ|permission|403/i.test(g.errors[0])
+        ? "Новые картинки не сгенерировались: у сервисного аккаунта Yandex Cloud нет роли ai.imageGeneration.user — объявления пока только с вашими фото и макетами"
+        : `Часть картинок не сгенерировалась: ${g.errors[0]}`);
     }
   }
   const creatives: Record<string, string> = { ...(plan.creatives ?? {}) };
@@ -441,7 +450,7 @@ export async function prepareImages(b: Business, plan: LaunchPlan, deadline = Da
         // Директ: чистое фото и фото с ценником; VK: все макеты по кругу — так тест покажет, что работает
         const net = formatOf(ch.channel) === "network";
         const pool: Layout[] = net
-          ? photoIds.length ? (["photo", "tag"] as Layout[]) : layouts
+          ? photoIds.length ? ([...(["photo", "tag"] as Layout[]), ...layouts.filter((l) => l === "benefit")]) : layouts
           : layouts.filter((l) => l !== "photo");
         const layout = pool[(i + groups.length) % pool.length] ?? "tag";
         const photoId = photoIds.length ? photoIds[(i + groups.length) % photoIds.length] : null;
